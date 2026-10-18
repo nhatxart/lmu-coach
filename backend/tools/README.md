@@ -10,6 +10,7 @@ The first run downloads the packages, and later runs use uv's cache.
 | `VALIDATE_TIRE_MODEL.ps1` | nothing | Checks how accurate one car's tyre model is and prints a scorecard row |
 | `LIST_LAPS.ps1` | nothing | Shows each file's laps as the backend sees them |
 | `CHECK_TIRE_FORCES.ps1` | nothing | Checks whether a recording has usable tyre-force channels |
+| `COMPARE_LOAD_SOURCES.ps1` | nothing | Pilot: does Susp Force give the same grip numbers as the game's Tire Load? (needs a car that has both) |
 
 None of these tools ever modify `data/sessions/*.duckdb`. They open it read-only.
 
@@ -105,6 +106,18 @@ The output covers:
 - How well summed lateral force matches lateral G at different time lags. Lag 0 should be best, with r ≈ 0.9 or more.
 
 A file that passes can serve as ground truth for test (a).
+
+---
+
+## COMPARE_LOAD_SOURCES.ps1 — can Susp Force replace Tire Load?
+
+LMU writes zero Tire Load / Tire Lateral Force for the GT3 cars (BMW M4, Porsche, Mustang, ...), so their tyre model takes load from Susp Force (pushrod load). That substitute can only be tested on a car that has **both** channels plus the game's own lateral force. So far that means the 10/18 Hypercar files.
+
+`powershell
+.\COMPARE_LOAD_SOURCES.ps1 "*Genesis*" "*Ferrari AF Corse*"    # quote the globs
+`
+
+Per axle it prints the load correlation and the grip proxy against the game's mu for three load choices: none (raw lat G), Tire Load, and Susp Force. Use it again when you record an LMP2 or LMP3: if that class has both channels, you get a second check. A GT3 file is skipped because it has no true Tire Load.
 
 ---
 
