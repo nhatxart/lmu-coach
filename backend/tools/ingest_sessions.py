@@ -18,6 +18,12 @@ Dry run unless --save. With --save the profiles are copied to
     python -I backend/tools/ingest_sessions.py --month 2026-10
     python -I backend/tools/ingest_sessions.py --since 2026-10-14 --save
     python -I backend/tools/ingest_sessions.py --files "Fuji*.duckdb" --tyre-only --save
+    python -I backend/tools/ingest_sessions.py --month 2026-10 --label-only --save
+
+--label-only adds nothing to any profile: it only fills in where each tyre-model
+lap's load came from (Tire Load / Susp Force / none) for laps ingested before
+that was recorded. Needs the session files; laps whose file is gone stay
+"not recorded".
 """
 from __future__ import annotations
 
@@ -50,6 +56,8 @@ def main() -> int:
     ap.add_argument("--files", help="glob on the file name, e.g. \"Fuji*\"")
     ap.add_argument("--tyre-only", action="store_true",
                     help="only the tyre model; skip ABS/TC/slip baselines and the ledger")
+    ap.add_argument("--label-only", action="store_true",
+                    help="only backfill the per-lap load-source labels; add no samples or baselines")
     ap.add_argument("--save", action="store_true", help="write profiles (default: dry run)")
     args = ap.parse_args()
 
@@ -93,6 +101,11 @@ def main() -> int:
             profiles[car] = gp.load_profile(car)
         prof = profiles[car]
         print(f"  car={car} {'(NEW profile)' if car in new_cars else '(extending)'} track={valid[0].track_name}")
+
+        if args.label_only:
+            done = prof.label_load_sources(laps, path.name)
+            print(f"  load sources labelled for laps: {done or 'none needed'}")
+            continue
 
         if not args.tyre_only:
             if path.name in ledger:
@@ -140,7 +153,7 @@ def main() -> int:
         shutil.copy2(ledger_path, backup / ledger_path.name)
     for prof in profiles.values():
         gp.save_profile(prof)
-    if not args.tyre_only:
+    if not args.tyre_only and not args.label_only:
         ledger_path.write_text(json.dumps(sorted(ledger), indent=1))
     print(f"\nSAVED {len(profiles)} profiles (backup: {backup})")
     return 0

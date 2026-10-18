@@ -91,7 +91,13 @@ front_temp_pressure_load / rear_temp_pressure_load are present, they bucket the 
 optimal slip angle by temperature/pressure/load — temperature and pressure there are \
 confounded with cornering itself (hard cornering heats tyres and raises pressure), so never \
 present them as cause and effect or as pressure/temperature targets; they are observed \
-patterns in this driver's data, not manufacturer specifications.
+patterns in this driver's data, not manufacturer specifications. The baselines' \
+load_normalization.laps_by_load_source says which load the grip numbers (mu) rest on: \
+"Tire Load" is the game's real tyre load; "Susp Force" is a stand-in used for classes where \
+the game provides no tyre load (all GT3 cars so far) and is a somewhat noisier measure of the \
+same thing — when it is the source, treat absolute grip values as approximate, compare \
+laps and corners with each other rather than quoting a friction coefficient, and follow the \
+note given there. Do not bring any of this up when the source is Tire Load.
 
 Your job:
 1. Identify the 2-4 most time-costly or risk-costly moments in this lap, prioritized by \

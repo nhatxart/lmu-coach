@@ -84,6 +84,12 @@ class GripProfile:
     # per axle {"slope","intercept","r","n"}: Susp Pos -> Susp Force, learned
     # from recordings that had both (tire_model.fit_deflection_calibration)
     deflection_calibration: dict = field(default_factory=dict)
+    # "<file>#<lap>" -> where that lap's load came from (front axle, or
+    # "<front> (front), <rear> (rear)" when they differ): "Tire Load",
+    # "Susp Force", "Susp Pos (calibrated to Susp Force)" or "none (...)".
+    # LMU writes zero Tire Load for every LMGT3 recorded so far, so those
+    # cars' mu rests on the Susp Force stand-in (DevNotes 10/18/2026 pilot).
+    tire_model_load_sources: dict = field(default_factory=dict)
 
     # cap each list so the file doesn't grow unbounded over months of use —
     # recent-ish history is what matters for "what's normal for me on this
@@ -103,6 +109,7 @@ class GripProfile:
             "tire_model_version": self.tire_model_version,
             "tire_model_laps": self.tire_model_laps,
             "deflection_calibration": self.deflection_calibration,
+            "tire_model_load_sources": self.tire_model_load_sources,
             "front_axle_obs": self.front_axle_obs.to_dict(),
             "rear_axle_obs": self.rear_axle_obs.to_dict(),
         }
@@ -112,7 +119,8 @@ class GripProfile:
         if d.get("tire_model_version", 1) != TIRE_MODEL_VERSION:
             # see TIRE_MODEL_VERSION: start the tire model over, keep the rest
             d = {k: v for k, v in d.items()
-                 if k not in ("front_axle_obs", "rear_axle_obs", "tire_model_laps")}
+                 if k not in ("front_axle_obs", "rear_axle_obs", "tire_model_laps",
+                                 "tire_model_load_sources")}
         return cls(
             car_name=d["car_name"],
             lap_count=d.get("lap_count", 0),
@@ -126,6 +134,7 @@ class GripProfile:
             rear_axle_obs=AxleSlipObservations.from_dict(d.get("rear_axle_obs", {})),
             tire_model_laps=d.get("tire_model_laps", []),
             deflection_calibration=d.get("deflection_calibration", {}),
+            tire_model_load_sources=d.get("tire_model_load_sources", {}),
         )
 
     def _append_capped(self, lst: list[float], value: float) -> list[float]:
@@ -202,9 +211,54 @@ class GripProfile:
             self.front_axle_obs.extend(obs["front"])
             self.rear_axle_obs.extend(obs["rear"])
             self.tire_model_laps.append(key)
+            self.tire_model_load_sources[key] = _load_source_label(obs)
             added.append(lap.lap_number)
         self.tire_model_laps = self.tire_model_laps[-2000:]
+        self._trim_load_sources()
         return added
+
+    def label_load_sources(self, laps: list, file_key: str) -> list[int]:
+        """Backfills tire_model_load_sources for laps ingested before it
+        existed (or by an older build). Reads only; adds no samples. Returns
+        the lap numbers labelled."""
+        calibration = self.deflection_calibration
+        valid = [l for l in laps if l.lap_time_s < 600]
+        if not valid:
+            return []
+        load_ref = file_load_reference(valid, calibration)
+        done = []
+        for lap in valid:
+            key = f"{file_key}#{lap.lap_number}"
+            if key in self.tire_model_laps and key not in self.tire_model_load_sources:
+                obs = extract_axle_observations_from_lap(lap, calibration, load_ref)
+                self.tire_model_load_sources[key] = _load_source_label(obs)
+                done.append(lap.lap_number)
+        return done
+
+    def _trim_load_sources(self) -> None:
+        keep = set(self.tire_model_laps)
+        self.tire_model_load_sources = {k: v for k, v in self.tire_model_load_sources.items() if k in keep}
+
+    def load_normalization_summary(self) -> dict | None:
+        """Laps in the tire model by load source, for the baselines / LLM.
+        None until there is a tire model lap."""
+        if not self.tire_model_laps:
+            return None
+        counts: dict[str, int] = {}
+        for key in self.tire_model_laps:
+            label = self.tire_model_load_sources.get(key, "not recorded (ingested before sources were tracked)")
+            counts[label] = counts.get(label, 0) + 1
+        out = {"laps_by_load_source": counts}
+        if any(l.startswith("Susp") for l in counts):
+            out["note"] = (
+                "Where the source is Susp Force (pushrod load) the game gave no Tire Load for "
+                "this class. In a Hypercar pilot, mu from Susp Force matched the game's own tyre "
+                "grip a little worse than mu from the real tyre load (cornering correlation "
+                "0.74-0.88 vs 0.85-0.94) and read ~5-15 % high in absolute terms: use it to "
+                "compare laps and corners, not as a true friction coefficient. Laps marked "
+                "none had no load ratio, so they add no samples to the load-normalised curve."
+            )
+        return out
 
     def compute_baselines(self) -> dict:
         """
@@ -238,6 +292,7 @@ class GripProfile:
             "car_name": self.car_name,
             "total_laps_analyzed": self.lap_count,
             "tire_model_laps": len(self.tire_model_laps),
+            "load_normalization": self.load_normalization_summary(),
             "abs_lockup_duration_s": _percentiles(self.abs_lockup_durations_s),
             "tc_active_fraction": _percentiles(self.tc_active_fractions),
             "peak_combined_g": _percentiles(self.peak_combined_g_values),
@@ -255,6 +310,11 @@ class GripProfile:
                 if rear_model["sample_count"] >= 300 else None
             ),
         }
+
+
+def _load_source_label(obs: dict) -> str:
+    front, rear = obs["front"].load_source, obs["rear"].load_source
+    return front if front == rear else f"{front} (front), {rear} (rear)"
 
 
 def _profile_path(car_name: str) -> Path:

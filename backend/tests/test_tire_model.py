@@ -181,3 +181,52 @@ def test_flying_lap_uses_file_reference():
     ref = tm.file_load_reference([fast, _lap()])
     a = tm.extract_axle_observations_from_lap(fast, None, ref)["front"].arrays()
     assert np.allclose(a["load_ratio"][np.abs(a["slip_angle_deg"]) > 1], 1.5)
+
+
+def test_ingest_records_where_the_load_came_from():
+    # Susp Force present: that is the source; no force + no calibration: none
+    p = grip_profile.GripProfile(car_name="Car")
+    with_force = _lap()
+    with_force.lap_number = 0
+    no_force = _lap(susp_force=False)
+    no_force.lap_number = 1
+    p.ingest_tire_laps([with_force, no_force], "f")
+    assert p.tire_model_load_sources["f#0"] == "Susp Force"
+    # the first lap taught the profile a deflection calibration, so the lap
+    # without Susp Force falls back one more step: Susp Pos, calibrated
+    assert p.tire_model_load_sources["f#1"] == "Susp Pos (calibrated to Susp Force)"
+    summary = p.compute_baselines()["load_normalization"]
+    assert summary["laps_by_load_source"]["Susp Force"] == 1
+    assert "note" in summary and "Susp Force" in summary["note"]
+
+    # nothing to take a load from, and no calibration: none, and no ratio
+    bare = grip_profile.GripProfile(car_name="Bare")
+    bare.ingest_tire_laps([_lap(susp_force=False)], "g")
+    assert bare.tire_model_load_sources["g#1"].startswith("none")
+    assert "note" not in bare.compute_baselines()["load_normalization"]
+
+
+def test_tire_load_wins_over_susp_force_and_needs_no_note():
+    lap = _lap()
+    for w in ("FL", "FR", "RL", "RR"):
+        lap.channels[f"Tire Load {w}"] = lap.channels[f"Susp Force {w}"] * 2.0
+    obs = tm.extract_axle_observations_from_lap(lap)
+    assert obs["front"].load_source == "Tire Load"
+    p = grip_profile.GripProfile(car_name="Car")
+    p.ingest_tire_laps([lap], "f")
+    assert "note" not in p.compute_baselines()["load_normalization"]
+
+
+def test_load_sources_round_trip_and_old_profiles_are_labelled_unknown():
+    p = grip_profile.GripProfile(car_name="Car")
+    p.ingest_tire_laps([_lap()], "f")
+    p2 = grip_profile.GripProfile.from_dict(p.to_dict())
+    assert p2.tire_model_load_sources == p.tire_model_load_sources
+    old = p.to_dict()
+    del old["tire_model_load_sources"]  # profile saved before the field existed
+    p3 = grip_profile.GripProfile.from_dict(old)
+    assert "not recorded" in next(iter(p3.compute_baselines()["load_normalization"]["laps_by_load_source"]))
+    lap = _lap()
+    assert p3.label_load_sources([lap], "f") == [lap.lap_number]  # backfill
+    assert p3.tire_model_load_sources["f#1"] == "Susp Force"
+    assert p3.label_load_sources([lap], "f") == []  # already labelled

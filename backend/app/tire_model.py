@@ -135,6 +135,12 @@ class AxleSlipObservations:
     temp_delta_c: list[float] = field(default_factory=list)
 
     MAX_SAMPLES: int = 20000  # keep the most recent; see add_samples
+    # Where THIS extraction's load came from ("Tire Load", "Susp Force",
+    # "Susp Pos (calibrated to Susp Force)" or "none (...)"). Not a per-sample
+    # list, never stored: grip_profile keeps it per lap (tire_model_load_sources)
+    # so the model can say whether its mu rests on the real tyre load or on
+    # the Susp Force stand-in LMU's GT3s force on us (Tire Load is all zero there).
+    load_source: str | None = None
 
     def to_dict(self) -> dict:
         # rounded so a 20k-sample profile stays a few MB, not tens
@@ -582,6 +588,12 @@ def extract_axle_observations_from_lap(
     result = {}
     for axle, s in samples.items():
         obs = AxleSlipObservations()
+        if s["load_ratio"] is not None:
+            obs.load_source = s["load_source"]
+        elif s["load_source"] is not None:
+            obs.load_source = "none (no low-speed straight reference in this file)"
+        else:
+            obs.load_source = "none (no load channel)"
         m = s["mask"]
         if m.any():
             obs.add_samples(**{

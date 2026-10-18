@@ -32,12 +32,14 @@ cd backend\tools
 .\INGEST_SESSIONS.ps1 --since 2026-10-14 --until 2026-10-18 --save
 .\INGEST_SESSIONS.ps1 --files "Fuji*" --save                # glob on the file name
 .\INGEST_SESSIONS.ps1 --files "Fuji*" --tyre-only --save    # tyre model only, ledger untouched
+.\INGEST_SESSIONS.ps1 --month 2026-10 --label-only --save   # only record where each lap's load came from; adds no samples
 ```
 
 - It's a **dry run unless you pass `--save`**. Check the output first.
 - **Backups:** `--save` first copies every profile and the ledger to `data/grip_profiles/backups/<timestamp>/`. To undo a run, copy that folder's files back.
 - **Stop the backend first** (`docker compose down`). It reads and writes the same profile files. Restart it afterwards (`docker compose up -d --build`).
 - **New cars:** a car without a profile gets a new one, named after the car, just as `/analyze` would name it.
+- **Load source labels:** each tyre-model lap is tagged with where its load came from (`Tire Load`, `Susp Force`, `Susp Pos (calibrated...)` or `none`). It is shown in the baselines the LLM sees as `load_normalization`. `--label-only` fills the tag in for laps ingested before it existed.
 - **Old profiles:** a profile from tyre model v1 (no `tire_model_version`) loses its v1 tyre samples when loaded. This is by design. Its baselines are kept.
 
 Typical output per file:
