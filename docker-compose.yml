@@ -1,0 +1,26 @@
+services:
+  backend:
+    build: ./backend
+    container_name: lmu-coach-backend
+    ports:
+      - "8080:8000"
+    volumes:
+      # Your own LMU telemetry recordings, read-only. Set LMU_TELEMETRY_PATH in
+      # the .env file next to this file (Settings > Stack paths can generate the
+      # lines for you), e.g.:
+      # LMU_TELEMETRY_PATH=C:/Users/<you>/Documents/Le Mans Ultimate/UserData/Telemetry
+      - "${LMU_TELEMETRY_PATH}:/data/sessions:ro"
+      # Manually-dropped reference laps (friends' files, your own exports
+      # pulled from MyLMU, etc.). Override with REFERENCE_LAPS_PATH in .env.
+      - "${REFERENCE_LAPS_PATH:-./data/reference_laps}:/data/reference_laps:ro"
+      # Grip profile database - one JSON file per car, accumulated across every
+      # /analyze call. NOT read-only: the backend writes to it after each
+      # analysis. Override with GRIP_PROFILES_PATH in .env.
+      - "${GRIP_PROFILES_PATH:-./data/grip_profiles}:/data/grip_profiles"
+    environment:
+      # FALLBACKS ONLY. The web UI's Settings sends the LLM URL, model and
+      # timeout with every request, so you normally do not need to touch these.
+      # The server runs natively on Windows; host.docker.internal reaches it.
+      - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:8001/v1}
+      - LLM_MODEL=${LLM_MODEL:-local}
+    restart: unless-stopped

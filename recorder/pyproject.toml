@@ -1,0 +1,29 @@
+[project]
+name = "lmu-coach-recorder"
+version = "0.1.0"
+description = "Polls LMU's shared memory API and records per-lap telemetry to DuckDB, richer than LMU's own .duckdb export"
+requires-python = ">=3.11"
+dependencies = [
+    "duckdb>=1.1.3",
+    # recorder_control.py: the local host-side service the web UI's
+    # Recording tab talks to (start/stop/log-stream). Optional in the
+    # sense that recorder.py itself never imports these — only needed if
+    # you run `uv run recorder_control.py` instead of running recorder.py
+    # directly.
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+]
+
+# pyLMUSharedMemory (TinyPedal's project) is vendored directly into
+# ./pyLMUSharedMemory rather than installed as a dependency, since upstream
+# doesn't publish it to PyPI or provide a pyproject.toml of its own — it's
+# meant to be copied in, same as TinyPedal itself does. To update it: pull
+# a fresh copy from https://github.com/TinyPedal/pyLMUSharedMemory and
+# replace the files in ./pyLMUSharedMemory, then diff against this file's
+# field usage in case LMU's struct layout changed (struct size mismatches
+# raise ValueError immediately — see lmu_mmap.py's verify_struct_size, worth
+# running after any update).
+
+[tool.uv]
+# no extra config needed yet — plain venv + lockfile is enough for a
+# single-machine recorder with one real dependency (duckdb)

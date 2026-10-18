@@ -1,0 +1,28 @@
+{
+  "config_version": 1,
+  "host_agent": {
+    "url": "http://localhost:8420",
+    "allowed_origins": [
+      "http://localhost:8080",
+      "http://127.0.0.1:8080"
+    ]
+  },
+  "llm": {
+    "auto_start": true,
+    "launcher_path": "",
+    "health_url": "http://127.0.0.1:8001/health",
+    "backend_base_url": "http://host.docker.internal:8001/v1",
+    "model": "local",
+    "startup_timeout_s": 240,
+    "request_timeout_s": 300,
+    "show_window": true
+  },
+  "recorder": {
+    "output_dir": ""
+  },
+  "stack_paths": {
+    "lmu_telemetry_dir": "",
+    "reference_laps_dir": "",
+    "grip_profiles_dir": ""
+  }
+}
