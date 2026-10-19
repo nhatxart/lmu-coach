@@ -88,6 +88,11 @@ class LapBins:
     def merge(others: list) -> "LapBins":
         if not others:
             raise ValueError("nothing to merge")
+        # WHY: an empty LapBins (a lap with no usable samples) defaults to some
+        # measure and would trip the mixed-measure check against real laps.
+        others = [o for o in others if o.cells]
+        if not others:
+            return LapBins(MEASURE_MU)
         measure = others[0].measure
         if any(o.measure != measure for o in others):
             raise ValueError("cannot merge bins with different measures")

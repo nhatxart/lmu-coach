@@ -64,6 +64,15 @@ def test_merge_rejects_mixed_measures():
         tb.LapBins.merge([a, b])
 
 
+def test_merge_ignores_empty_bins():
+    # An empty lap (no usable samples) must not trip the mixed-measure check.
+    a = _bin(_s(10))
+    empty = tb.LapBins(tb.MEASURE_LAT)
+    m = tb.LapBins.merge([empty, a, tb.LapBins(tb.MEASURE_LAT)])
+    assert m.measure == tb.MEASURE_MU and m.n_samples() == 10
+    assert tb.LapBins.merge([empty, empty]).cells == {}
+
+
 def test_nan_state_goes_to_unknown_bin():
     a = _bin(_s(10, wear=np.full(10, np.nan)))
     key = next(iter(a.cells))

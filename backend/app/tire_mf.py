@@ -1,0 +1,346 @@
+"""Factorized Magic Formula fit for one axle (tyre model v3).
+
+    mu = D * sin(C * atan(B*a - E*(B*a - atan(B*a))))          a = |slip angle| in DEGREES
+
+with D and B scaled by state factors (load ratio, tyre temperature vs optimum,
+pressure residual given temperature, wear, camber), C and E shared:
+
+    D = D0 * (1 + kDL*(L-L0)) * T(td) * (1 + kDP*dp) * (1 - kDW*(w-w0)) * (1 + kDC*(c-c0))
+    B = B0 * (1 + kBL*(L-L0)) * (1 + kBP*dp)
+    T(td) = exp(-((td-T0)/wl)^2) for td < T0, exp(-((td-T0)/wh)^2) otherwise
+
+Conventions (all deliberate):
+- Slip is in degrees throughout, so B0 is "per degree".
+- D0 is the peak mu AT the temperature optimum T0 (T(T0) = 1) and at the reference
+  load/wear/camber (L0, w0, c0 = count-weighted medians of the fit's data) and zero
+  pressure residual. The peak at the reference *state* is peak_at(fit), which also
+  includes T(td_ref).
+- dp is the pressure residual given temperature: pressure minus a count-weighted linear
+  fit of pressure on temp_delta. Pressure rises with temperature, so raw pressure would
+  be collinear with the temperature factor. The regression coefficients are stored in
+  params (pt_slope, pt_intercept) so predict() takes RAW pressure + temp_delta.
+- A state value that is NaN for a cell contributes that factor at its neutral value
+  (L0 / w0 / c0, T = 1, dp = 0). NaN never reaches the residuals.
+- Factors the data cannot identify are fixed neutral and reported, never guessed.
+"""
+
+from dataclasses import asdict, dataclass
+
+import numpy as np
+from scipy.optimize import least_squares
+
+from .tire_bins import LapBins, cell_arrays
+
+ALL_FACTORS = ("load", "temp", "pressure", "wear", "camber")
+ENABLED_FACTORS: tuple = ALL_FACTORS
+
+BOUNDS = {
+    "D0": (0.1, 5.0), "B0": (0.05, 3.0), "C": (1.0, 2.0), "E": (-3.0, 1.0),
+    "kDL": (-1.0, 0.5), "kBL": (-1.0, 1.0), "T0": (-30.0, 30.0),
+    "wl": (5.0, 80.0), "wh": (5.0, 80.0), "kDP": (-0.05, 0.05), "kBP": (-0.05, 0.05),
+    "kDW": (0.0, 2.0), "kDC": (-0.2, 0.2),
+}
+BASE_PARAMS = ("D0", "B0", "C", "E")
+FACTOR_PARAMS = {
+    "load": ("kDL", "kBL"), "temp": ("T0", "wl", "wh"), "pressure": ("kDP", "kBP"),
+    "wear": ("kDW",), "camber": ("kDC",),
+}
+NEUTRAL = {"kDL": 0.0, "kBL": 0.0, "T0": 0.0, "wl": 30.0, "wh": 30.0,
+           "kDP": 0.0, "kBP": 0.0, "kDW": 0.0, "kDC": 0.0}
+# state variable name used by predict()/ref_state for each factor
+STATE_KEY = {"load": "load_ratio", "temp": "temp_delta_c", "pressure": "pressure_kpa",
+             "wear": "wear", "camber": "camber_deg"}
+# Identifiability thresholds: (kind, value). std for load, p95-p05 spread for the rest.
+GATE = {"load": ("std", 0.05), "temp": ("spread", 10.0), "pressure": ("spread", 5.0),
+        "wear": ("spread", 0.02), "camber": ("spread", 0.3)}
+GATE_MIN_SLIP_DEG = 1.5
+MIN_CELLS = 30
+MIN_CELL_N = 5
+MIN_SLIP_SPAN_DEG = 2.5
+F_SCALE = 0.1
+PEAK_GRID = np.arange(0.0, 15.0 + 1e-9, 0.01)
+PEAK_OBS_MIN_N = 20
+PEAK_OBS_MARGIN_DEG = 0.4
+PEAK_OBS_RATIO = 0.97
+FACTOR_FLOOR = 0.05  # a state factor that would go <= 0 is clipped, keeping D, B > 0
+START_C = (1.3, 1.5, 1.8)
+MAX_NFEV = 300
+
+
+@dataclass
+class MFFit:
+    params: dict
+    ref_state: dict
+    factors_status: dict
+    measure: str
+    n_cells: int
+    n_samples: int
+    rmse: float
+    peak_slip_deg: float
+    peak_mu: float
+    peak_observed: bool
+    max_observed_slip_deg: float
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(d: dict) -> "MFFit":
+        return MFFit(**d)
+
+
+# ---------------------------------------------------------------- model --------------
+
+def _wquantile(x, w, q):
+    o = np.argsort(x)
+    x, w = x[o], w[o]
+    cw = (np.cumsum(w) - 0.5 * w) / w.sum()
+    return float(np.interp(q, cw, x))
+
+
+def _dp(params, pressure, td):
+    """Pressure residual given temperature; NaN where it cannot be computed."""
+    slope, icpt = params["pt_slope"], params["pt_intercept"]
+    pred = icpt + (slope * td if slope != 0.0 else 0.0)
+    return pressure - pred
+
+
+def _state_arrays(params, ref, state, shape):
+    """Broadcast a state dict to arrays; missing keys -> reference, NaN -> neutral."""
+    def get(key):
+        v = np.asarray(ref[key] if state is None or key not in state else state[key], float)
+        return np.broadcast_to(v, shape).astype(float)
+
+    load, wear, camber = get("load_ratio"), get("wear"), get("camber_deg")
+    td, pr = get("temp_delta_c"), get("pressure_kpa")
+    with np.errstate(invalid="ignore"):
+        dp = _dp(params, pr, td)
+    return {
+        "L": np.where(np.isfinite(load), load, ref["load_ratio"]),
+        "w": np.where(np.isfinite(wear), wear, ref["wear"]),
+        "c": np.where(np.isfinite(camber), camber, ref["camber_deg"]),
+        "td": td,  # NaN kept: T = 1 there
+        "dp": np.where(np.isfinite(dp), dp, 0.0),
+    }
+
+
+def _scales(params, temp_on, ref, st):
+    """(D multiplier incl. D0 excluded, B multiplier) for state arrays st."""
+    p = params
+    dl = np.maximum(1 + p["kDL"] * (st["L"] - ref["load_ratio"]), FACTOR_FLOOR)
+    bl = np.maximum(1 + p["kBL"] * (st["L"] - ref["load_ratio"]), FACTOR_FLOOR)
+    dpf = np.maximum(1 + p["kDP"] * st["dp"], FACTOR_FLOOR)
+    bpf = np.maximum(1 + p["kBP"] * st["dp"], FACTOR_FLOOR)
+    dw = np.maximum(1 - p["kDW"] * (st["w"] - ref["wear"]), FACTOR_FLOOR)
+    dc = np.maximum(1 + p["kDC"] * (st["c"] - ref["camber_deg"]), FACTOR_FLOOR)
+    if temp_on:
+        td = st["td"]
+        width = np.where(td < p["T0"], p["wl"], p["wh"])
+        with np.errstate(invalid="ignore"):
+            t = np.where(np.isfinite(td), np.exp(-(((td - p["T0"]) / width) ** 2)), 1.0)
+    else:
+        t = 1.0
+    return dl * t * dpf * dw * dc, bl * bpf
+
+
+def _mf(slip, D, B, C, E):
+    ba = B * slip
+    return D * np.sin(C * np.arctan(ba - E * (ba - np.arctan(ba))))
+
+
+def _predict_raw(params, temp_on, ref, slip, state):
+    slip = np.asarray(slip, float)
+    st = _state_arrays(params, ref, state, slip.shape)
+    dm, bm = _scales(params, temp_on, ref, st)
+    return _mf(slip, params["D0"] * dm, params["B0"] * bm, params["C"], params["E"])
+
+
+def predict(fit: MFFit, slip_deg, state=None) -> np.ndarray:
+    return _predict_raw(fit.params, fit.factors_status.get("temp") == "fitted",
+                        fit.ref_state, slip_deg, state)
+
+
+def peak_at(fit: MFFit, state=None) -> tuple:
+    mu = predict(fit, PEAK_GRID, state)
+    i = int(np.argmax(mu))
+    return float(PEAK_GRID[i]), float(mu[i])
+
+
+def _shape_peak(C, E):
+    """max over slip of sin(C*atan(u - E*(u - atan u))): D scales it, B only stretches u."""
+    u = np.arange(0.0, 200.0, 0.02)
+    return float(np.max(np.sin(C * np.arctan(u - E * (u - np.arctan(u))))))
+
+
+# ---------------------------------------------------------------- fitting ------------
+
+def _initial_guess(slip, y, n):
+    """D0 from the max smoothed binned mean; B0 from the slip at that max (E=0 start)."""
+    bins = np.floor(slip / 0.4).astype(int)
+    uniq = np.unique(bins)
+    mean = np.array([np.average(y[bins == b], weights=n[bins == b]) for b in uniq])
+    sl = np.array([np.average(slip[bins == b], weights=n[bins == b]) for b in uniq])
+    if len(mean) >= 3:
+        mean = np.convolve(np.pad(mean, 1, mode="edge"), np.ones(3) / 3, mode="valid")
+    i = int(np.argmax(mean))
+    return float(mean[i]), max(float(sl[i]), 0.5)
+
+
+def fit_mf(bins: LapBins, target: str = "mu", prior=None, prior_weight: float = 0.0,
+           factors=None):
+    factors = ENABLED_FACTORS if factors is None else tuple(factors)
+    a = cell_arrays(bins)
+    if len(a["n"]) == 0:
+        return None
+    if target == "true":
+        y, n = a["true_mean"], a["true_n"]
+    else:
+        y, n = a["mu_mean"], a["n"]
+    slip = a["slip"]
+    ok = np.isfinite(y) & np.isfinite(slip) & (n > 0)
+    if ok.sum() == 0:
+        return None
+    y, n, slip = y[ok], n[ok], slip[ok]
+    st_all = {k: a[k][ok] for k in ("load_ratio", "temp_delta_c", "pressure_kpa",
+                                     "wear", "camber_deg")}
+
+    well = n >= MIN_CELL_N
+    if well.sum() < MIN_CELLS or slip[well].max() < MIN_SLIP_SPAN_DEG:
+        return None
+    max_obs = float(slip[well].max())
+
+    # Reference state: count-weighted medians over cells with real slip (the cells that
+    # carry the peak information); fall back to all cells if none reach it.
+    hi = slip >= GATE_MIN_SLIP_DEG
+    sel = hi if hi.any() else np.ones_like(hi)
+    fallback = {"load_ratio": 1.0, "temp_delta_c": 0.0, "pressure_kpa": 0.0,
+                "wear": 0.0, "camber_deg": 0.0}
+    ref = {}
+    for k, v in st_all.items():
+        f = sel & np.isfinite(v)
+        ref[k] = _wquantile(v[f], n[f], 0.5) if f.any() else fallback[k]
+
+    # Pressure ~ temp regression (count-weighted, all cells with both finite).
+    pt = {"pt_slope": 0.0, "pt_intercept": 0.0}
+    fp = np.isfinite(st_all["pressure_kpa"])
+    ft = fp & np.isfinite(st_all["temp_delta_c"])
+    if fp.any():
+        pt["pt_intercept"] = float(np.average(st_all["pressure_kpa"][fp], weights=n[fp]))
+    if ft.sum() >= 2:
+        w, x, z = n[ft], st_all["temp_delta_c"][ft], st_all["pressure_kpa"][ft]
+        xm, zm = np.average(x, weights=w), np.average(z, weights=w)
+        vx = np.sum(w * (x - xm) ** 2)
+        if vx > 1e-9:
+            pt["pt_slope"] = float(np.sum(w * (x - xm) * (z - zm)) / vx)
+            pt["pt_intercept"] = float(zm - pt["pt_slope"] * xm)
+    with np.errstate(invalid="ignore"):
+        dp_cells = _dp(pt, st_all["pressure_kpa"], st_all["temp_delta_c"])
+
+    # Identifiability gate.
+    gate_var = {"load": st_all["load_ratio"], "temp": st_all["temp_delta_c"],
+                "pressure": dp_cells, "wear": st_all["wear"], "camber": st_all["camber_deg"]}
+    status = {}
+    for f in ALL_FACTORS:
+        if f not in factors:
+            status[f] = "disabled"
+            continue
+        v = gate_var[f]
+        g = hi & np.isfinite(v)
+        if g.sum() < 3:
+            status[f] = "not_identifiable"
+            continue
+        kind, thr = GATE[f]
+        if kind == "std":
+            m = np.average(v[g], weights=n[g])
+            val = float(np.sqrt(np.average((v[g] - m) ** 2, weights=n[g])))
+        else:
+            val = _wquantile(v[g], n[g], 0.95) - _wquantile(v[g], n[g], 0.05)
+        status[f] = "fitted" if val >= thr else "not_identifiable"
+
+    free = list(BASE_PARAMS)
+    for f in ALL_FACTORS:
+        if status[f] == "fitted":
+            free += list(FACTOR_PARAMS[f])
+    temp_on = status["temp"] == "fitted"
+
+    fixed = {**NEUTRAL, **pt}
+    scale = np.array([(BOUNDS[p][1] - BOUNDS[p][0]) / 10 for p in free])
+    lo = np.array([BOUNDS[p][0] for p in free])
+    hi_b = np.array([BOUNDS[p][1] for p in free])
+
+    st_cell = _state_arrays({**fixed}, ref, st_all, slip.shape)
+    sqrt_n = np.sqrt(n)
+    n_total = float(n.sum())
+
+    def full(x):
+        p = dict(fixed)
+        p.update(zip(free, x))
+        return p
+
+    # Prior: pulls only parameters that are free here AND meaningful in the prior.
+    prior_terms = []
+    if prior is not None and prior_weight > 0:
+        pp = dict(prior.params)
+        # The prior's D0/B0 refer to ITS reference state; re-express at ours so the pull
+        # compares like with like (load, wear, camber shifts; temperature/pressure left).
+        dl = 1 + pp["kDL"] * (ref["load_ratio"] - prior.ref_state["load_ratio"])
+        dw = 1 - pp["kDW"] * (ref["wear"] - prior.ref_state["wear"])
+        dc = 1 + pp["kDC"] * (ref["camber_deg"] - prior.ref_state["camber_deg"])
+        bl = 1 + pp["kBL"] * (ref["load_ratio"] - prior.ref_state["load_ratio"])
+        pp["D0"] = pp["D0"] * max(dl, FACTOR_FLOOR) * max(dw, FACTOR_FLOOR) * max(dc, FACTOR_FLOOR)
+        pp["B0"] = pp["B0"] * max(bl, FACTOR_FLOOR)
+        owner = {p: f for f, ps in FACTOR_PARAMS.items() for p in ps}
+        coef = np.sqrt(prior_weight * n_total / len(free))
+        for i, p in enumerate(free):
+            f = owner.get(p)
+            if f is None or prior.factors_status.get(f) == "fitted":
+                prior_terms.append((i, pp[p], coef / scale[i]))
+
+    def resid(x):
+        p = full(x)
+        pred = _predict_raw(p, temp_on, ref, slip, st_all)
+        r = sqrt_n * (y - pred)
+        if prior_terms:
+            extra = np.array([c * (x[i] - t) for i, t, c in prior_terms])
+            r = np.concatenate([r, extra])
+        return r
+
+    d0_guess, slip_peak = _initial_guess(slip, y, n)
+    wmed_td = ref["temp_delta_c"]
+    best = None
+    for c0 in START_C:
+        x0 = {"D0": d0_guess, "B0": np.tan(np.pi / (2 * c0)) / slip_peak, "C": c0, "E": 0.0,
+              "kDL": 0.0, "kBL": 0.0, "T0": wmed_td, "wl": 30.0, "wh": 30.0,
+              "kDP": 0.0, "kBP": 0.0, "kDW": 0.05, "kDC": 0.0}
+        x = np.array([x0[p] for p in free])
+        x = np.clip(x, lo + 1e-6 * scale, hi_b - 1e-6 * scale)
+        try:
+            res = least_squares(resid, x, bounds=(lo, hi_b), loss="soft_l1", f_scale=F_SCALE,
+                                x_scale=scale, max_nfev=MAX_NFEV)
+        except (ValueError, FloatingPointError):
+            continue
+        if res.status <= 0 or not np.all(np.isfinite(res.x)):
+            continue
+        if best is None or res.cost < best.cost:
+            best = res
+    if best is None:
+        return None
+
+    params = {k: float(v) for k, v in full(best.x).items()}
+    pred = _predict_raw(params, temp_on, ref, slip, st_all)
+    rmse = float(np.sqrt(np.sum(n * (y - pred) ** 2) / n_total))
+    fit = MFFit(params=params, ref_state={k: float(v) for k, v in ref.items()},
+                factors_status=status, measure=bins.measure, n_cells=int(len(y)),
+                n_samples=int(n_total), rmse=rmse, peak_slip_deg=0.0, peak_mu=0.0,
+                peak_observed=False, max_observed_slip_deg=max_obs)
+    fit.peak_slip_deg, fit.peak_mu = peak_at(fit)
+
+    # Peak observed: a well-sampled bin beyond the peak whose mean sits below the model's
+    # peak AT THAT CELL'S STATE (D scales the whole curve; B only stretches slip, so the
+    # state-specific peak is D(state) * shape_peak(C, E)).
+    far = (n >= PEAK_OBS_MIN_N) & (slip >= fit.peak_slip_deg + PEAK_OBS_MARGIN_DEG)
+    if far.any():
+        dm, _ = _scales(params, temp_on, ref, st_cell)
+        cell_peak = params["D0"] * dm * _shape_peak(params["C"], params["E"])
+        fit.peak_observed = bool(np.any(y[far] <= PEAK_OBS_RATIO * cell_peak[far]))
+    return fit
