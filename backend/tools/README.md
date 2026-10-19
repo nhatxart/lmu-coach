@@ -11,6 +11,7 @@ The first run downloads the packages, and later runs use uv's cache.
 | `LIST_LAPS.ps1` | nothing | Shows each file's laps as the backend sees them |
 | `CHECK_TIRE_FORCES.ps1` | nothing | Checks whether a recording has usable tyre-force channels |
 | `COMPARE_LOAD_SOURCES.ps1` | nothing | Pilot: does Susp Force give the same grip numbers as the game's Tire Load? (needs a car that has both) |
+| `MF_EXPERIMENT.ps1` | nothing | Tyre model v3 experiment: which state factors (load, temp, pressure, wear, camber) improve held-out prediction of the game's true mu? |
 
 None of these tools ever modify `data/sessions/*.duckdb`. They open it read-only.
 
@@ -120,6 +121,19 @@ LMU writes zero Tire Load / Tire Lateral Force for the GT3 cars (BMW M4, Porsche
 `
 
 Per axle it prints the load correlation and the grip proxy against the game's mu for three load choices: none (raw lat G), Tire Load, and Susp Force. Use it again when you record an LMP2 or LMP3: if that class has both channels, you get a second check. A GT3 file is skipped because it has no true Tire Load.
+
+---
+
+## MF_EXPERIMENT.ps1 — which tyre-model factors earn their place?
+
+Tyre model v3 fits a Magic Formula whose peak and stiffness are scaled by load, tyre temperature, pressure, wear and camber. This tool tests, on recordings that carry the game's own tyre forces (true mu), whether each factor makes the model predict **unseen** data better. It bins the laps like the profile ingest does, then leaves one file out (one lap out, for a car with a single file), fits on the rest and scores the held-out cornering cells (slip of 1.5 degrees or more) against the true mu.
+
+```powershell
+.\MF_EXPERIMENT.ps1 --sessions-dir C:\path\to\data\sessions --class Hypercar
+.\MF_EXPERIMENT.ps1 --sessions-dir C:\path\to\data\sessions --files "*Valkyrie*"
+```
+
+It prints one table per car and axle: held-out R², the change from the previous factor, RMSE, and the factor status of the training fits (`fit` = fitted, `NI` = not identifiable, `AB` = at a bound). `NI` means the data could not test that factor; it is not the same as "fitted but no gain". It runs in seconds and needs recordings with Tire Load and Tire Lateral Force (Hypercars today).
 
 ---
 

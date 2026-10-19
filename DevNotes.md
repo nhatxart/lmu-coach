@@ -113,3 +113,19 @@ Findings:
 - Coaching layer now uses the race-engineer-coach skill (Almeida-method). Files in backend/app/coach_skill/ (method.md = compressed prompt used at runtime, example.md = few-shot pair, SKILL.md + references/ kept for reference). coach.py builds SYSTEM_PROMPT = method + our data-reading notes; output format is the skill's (Lap summary / issue blocks / Drill / Confidence), length target ~350-500 words, corner names optional (only for location-specific points).
 - Few-shot example is on by default (~600 tokens); set LLM_COACH_FEWSHOT=0 to turn it off. Tests: backend/tests/test_coach_prompt.py.
 - NOT yet run against the real local LLM. Known gap: the lap report has no per-corner features (MRP, rotation share, brake-steer lag, downshift timing), so most of the skill's diagnoses cannot fire yet; the prompt tells the model to list missing signals under Confidence. Next project: derive those features in the backend.
+- Hypercar MF experiment (backend/tools/mf_experiment.py, MF_EXPERIMENT.ps1; 6 s wall). Held-out count-weighted R2 vs the game's true mu, cornering cells (slip >= 1.5 deg, true_n >= 3), leave-one-file-out. Valkyrie = 4 files/14 laps, Cadillac = 2 files/14 laps (Road Atlanta, 20 Hz grid as in production):
+
+  | variant | Valkyrie F | Valkyrie R | Cadillac F | Cadillac R |
+  |---|---|---|---|---|
+  | binned_v2 (true mu) | 0.293 | -0.336 | 0.194 | 0.218 |
+  | binned_v2_proxy | -0.710 | -2.923 | -0.421 | -1.136 |
+  | mf_slip_only | 0.315 | -0.552 | 0.230 | 0.290 |
+  | +load | 0.484 | -0.438 | 0.685 | 0.470 |
+  | +load+temp | 0.484 | -0.438 | 0.685 | 0.470 |
+  | +load+temp+pressure | 0.468 | -0.624 | 0.666 | 0.470 |
+  | +...+wear / +...+camber | = previous | = previous | = previous | = previous |
+  | mf_all_on_proxy | -0.988 | -4.593 | -0.480 | -1.730 |
+
+- Factor gate on those rows: load = fitted everywhere; temp = not identifiable everywhere (spread < 10 C in the cornering cells); pressure = fitted on Valkyrie F/R, 1 of 2 folds on Cadillac F, not identifiable on Cadillac R; wear and camber = not identifiable everywhere (Valkyrie/Cadillac files have no wear/camber channels). So the data says: load is worth +0.11..+0.46 R2, pressure costs -0.02..-0.19 where fitted, temp/wear/camber were never tested.
+- Ferrari 499P and Genesis GMR-001 (the only files with wear/camber/carcass) give no result: 1 file each, ~240 steady samples/lap at the 20 Hz grid, so the 5-D cells hold 1-2 samples; no n >= 5 cell has slip > 1.1 deg and fit_mf refuses (MIN_SLIP_SPAN 2.5 deg) on all-laps data, only 0-6 held-out cells have true_n >= 3. Wear and camber therefore remain untested; they would need coarser cells or the full-rate (non-20 Hz) data.
+- The proxy mu fit (mf_all_on_proxy) and the v2 proxy curve score far below the true-target fits: the proxy (lat G / load ratio) is not the game's mu in absolute terms, as the 10/18 pilot found.
