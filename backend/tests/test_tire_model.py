@@ -230,3 +230,22 @@ def test_load_sources_round_trip_and_old_profiles_are_labelled_unknown():
     assert p3.label_load_sources([lap], "f") == [lap.lap_number]  # backfill
     assert p3.tire_model_load_sources["f#1"] == "Susp Force"
     assert p3.label_load_sources([lap], "f") == []  # already labelled
+
+
+# -- new HF channels ----------------------------------------------------------
+
+def test_hf_wheel_channels_registered():
+    from app.telemetry import WHEEL_CHANNELS
+    for ch in ("Camber", "TyresWear", "TyresCarcassTemp", "Surface Type", "Tire Lateral Force"):
+        assert ch in WHEEL_CHANNELS
+
+
+def test_surface_type_not_interpolated():
+    from app.telemetry import _resample_to_grid
+    src_t = np.arange(4) / 10.0                      # 10 Hz
+    src_v = np.array([0.0, 0.0, 5.0, 5.0])
+    grid = np.arange(0, 0.3, 0.01)                   # 100 Hz
+    out = _resample_to_grid(src_t, src_v, grid, categorical=True)
+    assert set(np.unique(out)) <= {0.0, 5.0}
+    # linear would put values strictly between 0 and 5 around t=0.1..0.2
+    assert not np.allclose(_resample_to_grid(src_t, src_v, grid), out)

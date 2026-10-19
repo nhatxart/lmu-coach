@@ -74,7 +74,17 @@ WHEEL_CHANNELS = [
     # _read_channel_frequencies when the recorder marked them unpopulated.
     "Tire Load",
     "Susp Force",
+    # recorder_hf only; absent tables are skipped like any missing channel.
+    "Camber",             # rad per wheel
+    "TyresWear",          # fraction per wheel
+    "TyresCarcassTemp",   # Celsius per wheel
+    "Surface Type",       # categorical code per wheel (see CATEGORICAL_CHANNELS)
+    "Tire Lateral Force", # N; zero/flagged unpopulated on GT3
 ]
+
+# Codes, not quantities: linear interpolation would invent surface types that
+# never occurred (e.g. 2.5 between 0 and 5), so these hold the previous sample.
+CATEGORICAL_CHANNELS = {"Surface Type"}
 
 # Event channels: sparse, logged on change only. We forward-fill these onto
 # the common grid (the value holds until the next logged change).
@@ -298,11 +308,12 @@ def _unwrap_lap_distance(v: np.ndarray, drop_threshold_m: float = -500.0) -> np.
 
 
 def _resample_to_grid(
-    src_t: np.ndarray, src_v: np.ndarray, grid_t: np.ndarray, forward_fill: bool = False
+    src_t: np.ndarray, src_v: np.ndarray, grid_t: np.ndarray,
+    forward_fill: bool = False, categorical: bool = False,
 ) -> np.ndarray:
     if len(src_t) == 0:
         return np.full_like(grid_t, np.nan)
-    if forward_fill:
+    if forward_fill or categorical:
         # step function: value holds until next change (correct for ABS/TC flags)
         idx = np.searchsorted(src_t, grid_t, side="right") - 1
         idx = np.clip(idx, 0, len(src_v) - 1)
@@ -497,7 +508,8 @@ def load_telemetry_file(
         for ch, (t, per_wheel) in wheel_series.items():
             for wheel_label, v in per_wheel.items():
                 channels[f"{ch} {wheel_label}"] = _resample_to_grid(
-                    t, v, abs_grid_t, forward_fill=False
+                    t, v, abs_grid_t, forward_fill=False,
+                    categorical=ch in CATEGORICAL_CHANNELS,
                 )
 
         for ch, (t, v, is_sparse) in event_series.items():
