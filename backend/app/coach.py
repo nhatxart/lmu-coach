@@ -17,6 +17,7 @@ import json
 import httpx
 
 import os
+from pathlib import Path
 
 # Defaults come from the container environment (LLM_* preferred, OLLAMA_* still
 # honoured for older compose files). The web UI's Settings normally overrides
@@ -43,8 +44,21 @@ def _normalize_base_url(url: str | None) -> str:
         raise ValueError("LLM base URL must start with http:// or https://")
     return base.rstrip("/")
 
-SYSTEM_PROMPT = """You are a sim racing engineer coach reviewing telemetry from a Le Mans Ultimate session. \
-You are given a structured summary of one lap: lap time, ABS lockup events, traction control \
+# The coaching method (persona, tyre/technique model, output format) lives in
+# coach_skill/method.md: the race-engineer-coach skill's compressed prompt. This
+# file keeps only what is specific to OUR data: how to read the report fields.
+# Worked example for few-shot priming: coach_skill/example.md (toggle below).
+_SKILL_DIR = Path(__file__).parent / "coach_skill"
+USE_FEWSHOT = os.environ.get("LLM_COACH_FEWSHOT", "1").lower() not in ("0", "false", "no", "off")
+
+
+def _load_skill(name: str) -> str:
+    return (_SKILL_DIR / name).read_text(encoding="utf-8").strip()
+
+
+_DATA_NOTES = """DATA YOU ARE GIVEN (how to read lmu-coach's report)
+
+You are given a structured summary of one lap from a Le Mans Ultimate session: lap time, ABS lockup events, traction control \
 intervention zones, understeer candidates, peak combined G, per-wheel slip figures, slip \
 angle analysis (yaw rate, front/rear axle slip angle), and grip utilization — all derived \
 directly from the car's physics, not from comparing against another driver's lap.
@@ -99,30 +113,60 @@ same thing — when it is the source, treat absolute grip values as approximate,
 laps and corners with each other rather than quoting a friction coefficient, and follow the \
 note given there. Do not bring any of this up when the source is Tire Load.
 
-Your job:
-1. Identify the 2-4 most time-costly or risk-costly moments in this lap, prioritized by \
+WHAT THIS REPORT CANNOT SHOW YET: the report is lap-level. It does not contain the per-corner \
+features the method's diagnoses lean on (minimum-speed point alignment, rotation share at \
+throttle pickup, brake-to-steering lag, downshift timing, throttle shape). Only use a \
+diagnosis when the fields you were given actually support it, quote the driver's real numbers, \
+and name in the Confidence section which signals were missing and what they would have decided. \
+Never invent values to fit a diagnosis.
+
+YOUR TASK AND OUTPUT
+1. Identify the 1-3 most time-costly or risk-costly moments or habits in this lap, prioritized by \
 severity (duration, how many events cluster in one zone, how extreme the numbers are, and — \
-when available — how far grip_utilization/cornering_efficiency deviate from a healthy pairing).
-2. For each, explain in plain language what physically happened (e.g. "front tires locked \
-under braking" not just "ABS fired") and what that likely cost the driver — time, stability, \
-or both.
-3. Give one concrete technique adjustment per flagged moment — something the driver can \
-actually change in inputs (brake release rate, throttle application timing, steering smoothness), \
-not vague advice like "be smoother."
-4. Keep total output under 300 words. Say where on track each issue occurred. When \
-corner_names_available is true, every event already carries a "corner" field (and \
-"corner_end" if it runs into the next reference point), computed from its lap distance \
-against corner_index ([metres, name] pairs, sorted): use those names exactly as given, \
-e.g. "into T3 Apex (Coca-Cola Corner)", and do not work out corners yourself from the \
-distances. For follow-up questions about a distance, look it up in corner_index. The \
-"(+25 m)" offset means past that point; "between X and Y" means between two reference \
-points. When corner_names_available is false, there are no corner names for this track: \
-use the lap distance (meters into the lap) instead and never invent corner names.
+when available — how far grip_utilization/cornering_efficiency deviate from a healthy pairing). \
+When the same habit shows up in several places, report it once as a habit.
+2. Explain in plain language what physically happened (e.g. "front tires locked under braking" \
+not just "ABS fired"), what it likely cost, and give one concrete input change per issue with a \
+feel cue. Follow the OUTPUT format from the method above: Lap summary, the issue blocks, Drill \
+for next run, Confidence.
+3. Length: aim for roughly 350-500 words. Be complete but do not pad.
+4. Corner names are optional, not required. Use one only when the point is specific to that \
+location (a particular braking zone, a one-off lockup). When you are describing a general \
+behaviour or habit, describe it in terms of the corner type or phase ("your slow hard-braking \
+corners", "on entry") and leave names and distances out. When you do name a location: if \
+corner_names_available is true, every event already carries a "corner" field (and "corner_end" \
+if it runs into the next reference point), computed from its lap distance against corner_index \
+([metres, name] pairs, sorted): use those names exactly as given, e.g. "into T3 Apex \
+(Coca-Cola Corner)", and do not work out corners yourself from the distances. For follow-up \
+questions about a distance, look it up in corner_index. The "(+25 m)" offset means past that \
+point; "between X and Y" means between two reference points. When corner_names_available is \
+false, there are no corner names for this track: use the lap distance (meters into the lap) \
+instead and never invent corner names. Issue headings use the corner name when there is one, \
+otherwise the phase or habit.
 5. If the data shows a genuinely clean lap with no major issues, say so plainly instead of \
 inventing problems — do not manufacture critique to fill space.
+6. The worked example you may see is invented data for style only: never reuse its numbers, \
+corners or car.
 
 Do not mention that you are an AI or that this is telemetry data "provided to you" — just coach, \
 the way a race engineer would over the radio after a session."""
+
+# Method first (who you are, how to think, output format), then our data notes
+# and task, which win where they differ (length, optional corner names).
+SYSTEM_PROMPT = _load_skill("method.md") + "\n\n" + _DATA_NOTES
+
+
+def _fewshot_messages() -> list[dict]:
+    """The skill's worked example as a user/assistant pair; empty if disabled."""
+    if not USE_FEWSHOT:
+        return []
+    raw = _load_skill("example.md")
+    user_part, _, assistant_part = raw.partition("## ASSISTANT")
+    user_text = user_part.replace("## USER", "", 1).strip()
+    return [
+        {"role": "user", "content": user_text},
+        {"role": "assistant", "content": assistant_part.strip()},
+    ]
 
 
 def build_user_prompt(grip_report: dict, grip_baselines: dict | None = None) -> str:
@@ -149,6 +193,15 @@ def build_user_prompt(grip_report: dict, grip_baselines: dict | None = None) -> 
     return prompt
 
 
+def _base_messages(grip_report: dict, grip_baselines: dict | None) -> list[dict]:
+    """system prompt, optional few-shot pair, then the real lap."""
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        *_fewshot_messages(),
+        {"role": "user", "content": build_user_prompt(grip_report, grip_baselines)},
+    ]
+
+
 def build_followup_messages(
     grip_report: dict,
     conversation_history: list[dict],
@@ -160,10 +213,7 @@ def build_followup_messages(
     from prior turns in this session's chat, so follow-up questions have
     context without re-sending the full report each time.
     """
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": build_user_prompt(grip_report, grip_baselines)},
-    ]
+    messages = _base_messages(grip_report, grip_baselines)
     messages.extend(conversation_history)
     messages.append({"role": "user", "content": new_question})
     return messages
@@ -177,10 +227,7 @@ async def get_coaching_analysis(
     base_url: str | None = None,
 ) -> str:
     """First-pass analysis: no conversation history yet."""
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": build_user_prompt(grip_report, grip_baselines)},
-    ]
+    messages = _base_messages(grip_report, grip_baselines)
     return await _call_ollama(messages, model=model, timeout_s=timeout_s, base_url=base_url)
 
 
