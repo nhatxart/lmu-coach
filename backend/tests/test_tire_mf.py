@@ -198,3 +198,65 @@ def test_predict_uses_raw_pressure_and_temp():
     assert hi[0] < lo[0]
     arr = mf.predict(fit, np.array([3.0, 3.0]), {"load_ratio": np.array([1.0, 1.5])})
     assert arr[0] > arr[1]  # kDL < 0
+
+
+# ---------------------------------------------------------------- bootstrap ----------
+
+def test_warm_start_matches_cold_fit():
+    bins = _merged()
+    cold = mf.fit_mf(bins)
+    warm = mf.fit_mf(bins, x0=cold.params)
+    assert warm is not None
+    assert warm.peak_slip_deg == pytest.approx(cold.peak_slip_deg, abs=0.05)
+    assert warm.peak_mu == pytest.approx(cold.peak_mu, rel=0.01)
+
+
+def test_ci_contains_truth():
+    laps = make_bins(n_laps=8, seed=11)
+    out = mf.bootstrap_fit(laps, n_boot=30)
+    tslip, tmu = _true_peak({})
+    lo, hi = out["peak_slip_ci90"]
+    mlo, mhi = out["peak_mu_ci90"]
+    print("\nslip CI", out["peak_slip_ci90"], "truth", tslip,
+          "mu CI", out["peak_mu_ci90"], "truth", tmu, "conf", out["confidence"])
+    assert out["n_boot_ok"] >= 25
+    assert lo <= out["fit"].peak_slip_deg <= hi
+    assert lo - 0.2 <= tslip <= hi + 0.2
+    assert mlo - 0.03 * tmu <= tmu <= mhi + 0.03 * tmu
+
+
+def test_confidence_lower_when_peak_unobserved():
+    full = mf.bootstrap_fit(make_bins(n_laps=8, seed=3), n_boot=20)
+    short = mf.bootstrap_fit(make_bins(n_laps=8, seed=3, slip_range=(0.0, 3.0)), n_boot=20)
+    assert full["fit"].peak_observed is True and short["fit"].peak_observed is False
+    assert short["confidence"] < full["confidence"]
+
+
+def test_confidence_capped():
+    out = mf.bootstrap_fit(make_bins(n_laps=24, seed=4, noise=0.005), n_boot=10)
+    assert 0.0 < out["confidence"] <= 0.95
+
+
+def test_single_lap_confidence_capped_at_0_3():
+    out = mf.bootstrap_fit(make_bins(n_laps=1, seed=2), n_boot=10)
+    assert out["fit"] is not None and out["n_boot_ok"] > 0
+    assert 0.0 < out["confidence"] <= 0.3
+
+
+def test_degenerate_falls_back():
+    out = mf.bootstrap_fit(make_bins(n_laps=6, slip_range=(0.0, 1.9)), n_boot=10)
+    assert out == {"fit": None, "peak_slip_ci90": None, "peak_mu_ci90": None,
+                   "n_boot_ok": 0, "confidence": 0.0}
+    assert mf.bootstrap_fit([], n_boot=10)["fit"] is None
+
+
+def test_runtime_budget():
+    # 25 laps, both axles sequentially (front then rear), full n_boot.
+    axles = [make_bins(n_laps=25, n_per_lap=450, seed=s) for s in (21, 22)]
+    print("\ncells per lap:", [len(l.cells) for l in axles[0][:3]])
+    t0 = time.perf_counter()
+    outs = [mf.bootstrap_fit(laps, n_boot=50) for laps in axles]
+    wall = time.perf_counter() - t0
+    print("bootstrap wall (2 axles, n_boot=50): %.2fs" % wall)
+    assert all(o["fit"] is not None for o in outs)
+    assert wall < 20.0

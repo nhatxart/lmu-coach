@@ -29,7 +29,7 @@ from dataclasses import asdict, dataclass, field
 import numpy as np
 from scipy.optimize import least_squares
 
-from .tire_bins import LapBins, cell_arrays
+from .tire_bins import _CELL_FIELDS, Cell, LapBins, cell_arrays
 
 ALL_FACTORS = ("load", "temp", "pressure", "wear", "camber")
 ENABLED_FACTORS: tuple = ALL_FACTORS
@@ -197,7 +197,11 @@ def _initial_guess(slip, y, n):
 
 
 def fit_mf(bins: LapBins, target: str = "mu", prior=None, prior_weight: float = 0.0,
-           factors=None):
+           factors=None, x0=None):
+    """x0: optional warm start (param name -> value, e.g. a previous fit's params). When
+    given it is the ONLY start (no multi-start over C): the bootstrap refits many
+    resamples of data the full fit already explained, so one start from its optimum is
+    enough and ~3x cheaper. Names not free in this fit are ignored."""
     factors = ENABLED_FACTORS if factors is None else tuple(factors)
     a = cell_arrays(bins)
     if len(a["n"]) == 0:
@@ -338,11 +342,13 @@ def fit_mf(bins: LapBins, target: str = "mu", prior=None, prior_weight: float = 
     d0_guess, slip_peak = _initial_guess(slip, y, n)
     wmed_td = ref["temp_delta_c"]
     best = None
-    for c0 in START_C:
-        x0 = {"D0": d0_guess, "B0": np.tan(np.pi / (2 * c0)) / slip_peak, "C": c0, "E": 0.0,
-              "kDL": 0.0, "kBL": 0.0, "T0": wmed_td, "wl": 30.0, "wh": 30.0,
-              "kDP": 0.0, "kBP": 0.0, "kDW": 0.05, "kDC": 0.0}
-        x = np.array([x0[p] for p in free])
+    for c0 in (START_C if x0 is None else (START_C[1],)):
+        start = {"D0": d0_guess, "B0": np.tan(np.pi / (2 * c0)) / slip_peak, "C": c0,
+                 "E": 0.0, "kDL": 0.0, "kBL": 0.0, "T0": wmed_td, "wl": 30.0, "wh": 30.0,
+                 "kDP": 0.0, "kBP": 0.0, "kDW": 0.05, "kDC": 0.0}
+        if x0 is not None:
+            start.update({k: float(v) for k, v in x0.items() if k in start})
+        x = np.array([start[p] for p in free])
         x = np.clip(x, lo + 1e-6 * scale, hi_b - 1e-6 * scale)
         try:
             res = least_squares(resid, x, bounds=(lo, hi_b), loss="soft_l1", f_scale=F_SCALE,
@@ -382,3 +388,100 @@ def fit_mf(bins: LapBins, target: str = "mu", prior=None, prior_weight: float = 
         cell_peak = params["D0"] * dm * _shape_peak(params["C"], params["E"])
         fit.peak_observed = bool(np.any(y[far] <= PEAK_OBS_RATIO * cell_peak[far]))
     return fit
+
+
+# ---------------------------------------------------------------- bootstrap ----------
+
+BOOT_SINGLE_LAP_CAP = 0.3   # one lap cannot show lap-to-lap variation
+BOOT_CONF_CAP = 0.95        # never claim certainty
+BOOT_LAPS_TAU = 8.0         # confidence ~ 1 - exp(-n_laps / tau)
+BOOT_UNOBSERVED_PEAK = 0.6  # peak extrapolated beyond the data
+BOOT_AT_BOUND = 0.8         # a factor pinned at a bound is an extrapolation
+_INT_FIELDS = {f for f in _CELL_FIELDS if f.startswith("n")}
+
+
+class _CellTable:
+    """All cells of all laps as one matrix, so a resample is a weighted group-by-key sum.
+
+    WHY: LapBins.merge walks every cell/field in Python; doing that for each of 50
+    resamples costs more than the fits. Cell fields are plain sums, so resampling with
+    multiplicity k is exactly "add the cell k times" = weight the row by k.
+    """
+
+    def __init__(self, laps):
+        keys, rows, owner = [], [], []
+        for i, lap in enumerate(laps):
+            for k, c in lap.cells.items():
+                keys.append(k)
+                rows.append([getattr(c, f) for f in _CELL_FIELDS])
+                owner.append(i)
+        self.measure = laps[0].measure
+        self.mat = np.array(rows, dtype=float)
+        self.owner = np.array(owner)
+        uniq, self.inv = np.unique(np.array(keys), axis=0, return_inverse=True)
+        self.inv = self.inv.ravel()
+        self.keys = [tuple(int(v) for v in u) for u in uniq]
+
+    def build(self, weights) -> LapBins:
+        """LapBins of the rows weighted by `weights` (per row)."""
+        m = len(self.keys)
+        cols = [np.bincount(self.inv, weights=weights * self.mat[:, j], minlength=m)
+                for j in range(self.mat.shape[1])]
+        out = LapBins(self.measure)
+        n_col = _CELL_FIELDS.index("n")
+        for g in np.flatnonzero(cols[n_col] > 0):
+            out.cells[self.keys[g]] = Cell(**{
+                f: (int(round(cols[j][g])) if f in _INT_FIELDS else float(cols[j][g]))
+                for j, f in enumerate(_CELL_FIELDS)})
+        return out
+
+
+def bootstrap_fit(lap_bins: list, n_boot: int = 50, seed: int = 0, **fit_kw) -> dict:
+    """Fit all laps, then bootstrap over LAPS to get 90 % CIs on the peak and a confidence.
+
+    Laps (not samples) are the resampling unit: samples within a lap are strongly
+    correlated, laps are the independent replicates. With a single lap there is nothing
+    to resample, so cells are resampled instead and confidence is capped at 0.3.
+    """
+    empty = {"fit": None, "peak_slip_ci90": None, "peak_mu_ci90": None,
+             "n_boot_ok": 0, "confidence": 0.0}
+    laps = [l for l in lap_bins if l.cells]
+    if not laps:
+        return empty
+    n_laps = len(laps)
+    fit = fit_mf(LapBins.merge(laps), **fit_kw)
+    if fit is None:
+        return empty
+
+    table = _CellTable(laps)
+    rng = np.random.default_rng(seed)
+    slips, mus = [], []
+    for _ in range(n_boot):
+        if n_laps > 1:
+            w = np.bincount(rng.integers(0, n_laps, n_laps), minlength=n_laps)[table.owner]
+        else:
+            w = np.bincount(rng.integers(0, len(table.owner), len(table.owner)),
+                            minlength=len(table.owner))
+        # Warm start from the full fit; resamples are perturbations of the same data.
+        f = fit_mf(table.build(w.astype(float)), x0=fit.params, **fit_kw)
+        if f is not None:
+            slips.append(f.peak_slip_deg)
+            mus.append(f.peak_mu)
+
+    out = {"fit": fit, "peak_slip_ci90": None, "peak_mu_ci90": None,
+           "n_boot_ok": len(slips), "confidence": 0.0}
+    if not slips:
+        return out
+    lo, hi = (float(v) for v in np.percentile(slips, [5, 95]))
+    out["peak_slip_ci90"] = [lo, hi]
+    out["peak_mu_ci90"] = [float(v) for v in np.percentile(mus, [5, 95])]
+
+    width = float(np.clip(1.0 - (hi - lo) / fit.peak_slip_deg, 0.0, 1.0))
+    conf = ((1.0 - np.exp(-n_laps / BOOT_LAPS_TAU)) * width
+            * (1.0 if fit.peak_observed else BOOT_UNOBSERVED_PEAK) * (len(slips) / n_boot))
+    if "at_bound" in fit.factors_status.values():
+        conf *= BOOT_AT_BOUND
+    if n_laps == 1:
+        conf = min(conf, BOOT_SINGLE_LAP_CAP)
+    out["confidence"] = round(min(conf, BOOT_CONF_CAP), 3)
+    return out
