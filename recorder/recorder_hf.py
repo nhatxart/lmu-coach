@@ -155,6 +155,27 @@ def _safe_decode(raw: bytes) -> str:
     return raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
 
 
+def _session_meta(data, player_scor) -> dict[str, str]:
+    """Per-session facts that live outside the telemetry slot: car class,
+    game build and weather temps. Written once to the metadata table (never
+    per sample). WHY: tyre force channels are populated by class and the
+    game build changes what LMU exposes, so a reader needs both to know
+    which files to trust. A missing source gives "" rather than a missing
+    key, so readers can tell "not recorded" from "recorder too old"."""
+    def get(fn) -> str:
+        try:
+            return fn()
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return ""
+    info = getattr(getattr(data, "scoring", None), "scoringInfo", None)
+    return {
+        "VehicleClass": get(lambda: _safe_decode(player_scor.mVehicleClass)),
+        "GameVersion":  get(lambda: str(int(data.generic.gameVersion))),
+        "TrackTempC":   get(lambda: f"{float(info.mTrackTemp):.1f}"),
+        "AmbientTempC": get(lambda: f"{float(info.mAmbientTemp):.1f}"),
+    }
+
+
 def _slip_angle(lat_vel: float, lon_vel: float) -> float:
     return math.atan(lat_vel / lon_vel) if lon_vel else 0.0
 
@@ -461,12 +482,14 @@ class SessionBuffer:
     # ── Per-sample recording ─────────────────────────────────────────────────
 
     def add_sample(self, telem, wheels, player_scor, current_et: float,
-                   poll_time: float = 0.0) -> None:
+                   poll_time: float = 0.0, session_meta: dict | None = None) -> None:
         """Record one sample.  current_et = telem.mElapsedTime; poll_time =
-        wall-clock seconds since this session started (when we read it)."""
+        wall-clock seconds since this session started (when we read it);
+        session_meta = extra static facts (see _session_meta), taken once."""
         s   = self.s                       # alias
 
         if not self.meta:
+            self.meta.update(session_meta or {})
             self.meta.update({
                 "TyreRadiusCm": ",".join(
                     str(int(w.mStaticUndeflectedRadius)) for w in wheels),
@@ -1250,7 +1273,10 @@ def run_recorder(output_dir: Path, poll_hz: float, every_poll: bool = False) -> 
                 buf.update_official_lap_time(float(pscor.mLastLapTime), current_et)
                 if every_poll or current_et != last_sample_et:
                     buf.add_sample(telem, telem.mWheels, pscor, current_et,
-                                   poll_time=time.perf_counter() - stats_t0)
+                                   poll_time=time.perf_counter() - stats_t0,
+                                   # Only the first sample uses it; skip the work after.
+                                   session_meta=None if buf.meta
+                                   else _session_meta(data, pscor))
                     last_sample_et = current_et
 
             except (OSError, ValueError) as e:

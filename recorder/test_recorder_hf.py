@@ -122,7 +122,7 @@ def fake_telem(et=100.0, lap=0, pos_x=0.0, **over):
 def fake_scor(**over):
     s = dict(mID=3, mIsPlayer=True, mDriverName=b"Tester", mInPits=False,
              mInGarageStall=False, mPathLateral=0.5, mTrackEdge=6.0,
-             mLapDist=1234.0, mLastLapTime=-1.0)
+             mLapDist=1234.0, mLastLapTime=-1.0, mVehicleClass=b"LMGT3")
     s.update(over)
     return SimpleNamespace(**s)
 
@@ -364,8 +364,11 @@ class FakeMMap:
             raise KeyboardInterrupt   # same path as Ctrl+C: flush and exit
         telem, scor = FakeMMap.script[self._i]
         self.data = SimpleNamespace(
-            scoring=SimpleNamespace(scoringInfo=SimpleNamespace(mNumVehicles=1),
-                                    vehScoringInfo=[scor]),
+            generic=SimpleNamespace(gameVersion=1234),
+            scoring=SimpleNamespace(
+                scoringInfo=SimpleNamespace(mNumVehicles=1, mTrackTemp=31.5,
+                                            mAmbientTemp=22.04),
+                vehScoringInfo=[scor]),
             telemetry=SimpleNamespace(telemInfo=[telem]))
 
 
@@ -431,6 +434,21 @@ class RecorderLoopTest(unittest.TestCase):
         # tell where lap 1 stopped and counts the tail of lap 2 into it.
         self.assertEqual([(round(ts, 2), lap) for ts, lap in self.laps],
                          [(100.0, 0), (102.5, 1), (105.0, 2)])
+
+    def test_metadata_has_class_version_and_temps(self):
+        scor = fake_scor()
+        script = [(fake_telem(et=100.0 + i * 0.01, pos_x=float(i)), scor) for i in range(300)]
+        _, meta, _, _ = self._run(script)
+        self.assertEqual(meta["VehicleClass"], "LMGT3")
+        self.assertEqual(meta["GameVersion"], "1234")
+        self.assertEqual(meta["TrackTempC"], "31.5")
+        self.assertEqual(meta["AmbientTempC"], "22.0")
+
+    def test_session_meta_missing_sources_are_empty_strings(self):
+        # Older/odd shared-memory layouts: key still written, value "".
+        m = hf._session_meta(SimpleNamespace(), SimpleNamespace())
+        self.assertEqual(m, {"VehicleClass": "", "GameVersion": "",
+                             "TrackTempC": "", "AmbientTempC": ""})
 
     def test_telemetry_slot_miss_does_not_cost_half_a_second(self):
         # Online, a car joining can leave scoring and telemetry disagreeing
