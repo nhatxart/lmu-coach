@@ -18,7 +18,7 @@ is not counted as explained variance).
 
 Variants: binned_v2 / binned_v2_proxy (slip-bin means of the training data, trained on
 true / proxy mu, interpolated by slip), mf_slip_only, +load, +load+temp, ... and
-mf_all_on_proxy (all factors, fitted on the proxy mu, scored on true mu).
+mf_all_on_proxy (all factors, fitted on the proxy mu, scored on true mu; it measures the\nproxy-vs-game scale mismatch, not shape quality).\nCaveat: for a single-file car (leave-one-lap-out) the held-out lap still contributes to the\nfile-level load reference (input normalisation only, not target leakage).
 The status column says what the factor gate decided in the training fits
 (fit = fitted, NI = not identifiable, AB = at bound), so "not identifiable" is not
 mistaken for "fitted but no gain".
@@ -127,52 +127,71 @@ def _status_str(statuses: list) -> str:
 
 
 def score_axle(units: list) -> dict:
-    """units: [(fold_id, LapBins)]. Leave-one-fold-out over fold_id; returns
-    {variant: {r2, rmse, folds, skipped, n_cells, status}} plus 'n_folds'."""
+    """units: [(fold_id, LapBins)]. Leave-one-fold-out over fold_id.
+
+    Folds without scorable held-out cells are counted (`no_cells`), not silently
+    dropped. Every variant's headline R2/RMSE/cells is pooled over the COMMON folds -
+    those where ALL variants produced a fit - so the variants and the dR2 column are
+    compared on identical held-out data. `r2_all` keeps the pool over every fold that
+    variant could score. Returns {variant: {...}} plus n_folds / no_cells / n_scored /
+    n_common.
+    """
     fold_ids = sorted({f for f, _ in units})
-    acc = {v: {"sw": 0.0, "sse": 0.0, "sst": 0.0, "n_cells": 0, "folds": 0,
-               "skipped": 0, "statuses": []} for v in VARIANT_NAMES}
+    per_fold, statuses, no_cells = [], {v: [] for v in VARIANT_NAMES}, 0
     for held in fold_ids:
         test = LapBins.merge([b for f, b in units if f == held])
         train_laps = [b for f, b in units if f != held]
         if not train_laps:
+            no_cells += 1
+            continue
+        if not _heldout_cells(test)[1].any():
+            no_cells += 1  # nothing to score on this fold, for any variant
             continue
         train = LapBins.merge(train_laps)
-        if not _heldout_cells(test)[1].any():
-            continue  # nothing to score on this fold, for any variant
+        row = {}
         for name, target in (("binned_v2", "true"), ("binned_v2_proxy", "mu")):
             pred = binned_predictor(train, target)
-            r = heldout_r2(None, test, pred) if pred else None
-            _add(acc[name], r)
+            row[name] = heldout_r2(None, test, pred) if pred else None
         for name, factors, target in MF_VARIANTS:
             fit = tire_mf.fit_mf(train, target=target, factors=factors)
-            r = heldout_r2(fit, test) if fit else None
-            _add(acc[name], r)
+            row[name] = heldout_r2(fit, test) if fit else None
             if fit:
-                acc[name]["statuses"].append(fit.factors_status)
-    out = {"n_folds": len(fold_ids)}
-    for name, d in acc.items():
+                statuses[name].append(fit.factors_status)
+        per_fold.append(row)
+    common = [r for r in per_fold if all(r[v] is not None for v in VARIANT_NAMES)]
+
+    def pool(rows):
+        sw = sum(r["sw"] for r in rows); sse = sum(r["sse"] for r in rows)
+        sst = sum(r["sst"] for r in rows)
+        return (1.0 - sse / sst if sst > 0 else float("nan"),
+                float(np.sqrt(sse / sw)) if sw > 0 else float("nan"),
+                sum(r["n_cells"] for r in rows))
+
+    out = {"n_folds": len(fold_ids), "no_cells": no_cells, "n_scored": len(per_fold),
+           "n_common": len(common)}
+    for name in VARIANT_NAMES:
+        ok = [r[name] for r in per_fold if r[name] is not None]
+        r2, rmse, cells = pool([r[name] for r in common])
         out[name] = {
-            "r2": 1.0 - d["sse"] / d["sst"] if d["sst"] > 0 else float("nan"),
-            "rmse": float(np.sqrt(d["sse"] / d["sw"])) if d["sw"] > 0 else float("nan"),
-            "folds": d["folds"], "skipped": d["skipped"], "n_cells": d["n_cells"],
-            "status": _status_str(d["statuses"]),
+            "r2": r2, "rmse": rmse, "n_cells": cells,
+            "r2_all": pool(ok)[0], "folds": len(ok), "skipped": len(per_fold) - len(ok),
+            "status": _status_str(statuses[name]),
         }
     return out
 
 
-def _add(d, r):
-    if r is None:
-        d["skipped"] += 1
-        return
-    d["sw"] += r["sw"]; d["sse"] += r["sse"]; d["sst"] += r["sst"]
-    d["n_cells"] += r["n_cells"]; d["folds"] += 1
-
-
 def format_table(title: str, res: dict) -> str:
-    lines = [f"#### {title}  (folds: {res['n_folds']})", "",
-             "| variant | R2 | dR2 vs prev MF | RMSE | cells | folds ok/skipped | factor status |",
-             "|---|---|---|---|---|---|---|"]
+    lines = [f"#### {title}",
+             f"folds: {res['n_folds']} total, {res['no_cells']} without scorable held-out "
+             f"cells, {res['n_scored']} scored, {res['n_common']} common (every variant fitted)",
+             "",
+             "R2 / dR2 / RMSE / cells are pooled over the common folds; R2(all) over every fold "
+             "the variant could score. mf_all_on_proxy fits the proxy mu and is scored on true "
+             "mu, so it measures the proxy-vs-game scale mismatch, not shape quality.",
+             "",
+             "| variant | R2 | dR2 vs prev MF | RMSE | cells | R2(all) | folds ok/skipped "
+             "| factor status |",
+             "|---|---|---|---|---|---|---|---|"]
     prev = None
     for name in VARIANT_NAMES:
         d = res[name]
@@ -182,14 +201,13 @@ def format_table(title: str, res: dict) -> str:
             delta = "" if prev is None else f"{d['r2'] - prev:+.3f}"
             prev = d["r2"]
         lines.append(f"| {name} | {d['r2']:.3f} | {delta} | {d['rmse']:.3f} | {d['n_cells']} "
-                     f"| {d['folds']}/{d['skipped']} | {d['status']} |")
+                     f"| {d['r2_all']:.3f} | {d['folds']}/{d['skipped']} | {d['status']} |")
     return "\n".join(lines)
-
 
 # ------------------------------------------------------------------ data ---------------
 
 def file_lap_bins(path) -> tuple:
-    """(CarIdentity, {axle: [(lap_number, LapBins)]}, calibration) for one recording,
+    """(CarIdentity, {axle: [(lap_number, LapBins)]}) for one recording,
     with the same lap selection as GripProfile.ingest_tire_laps. Laps without
     any true-mu sample are kept out (nothing to score or fit on the true target)."""
     laps = telemetry.load_telemetry_file(path, grid_hz=tm.TIRE_GRID_HZ)

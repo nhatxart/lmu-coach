@@ -60,3 +60,47 @@ def test_fold_with_unfittable_training_is_counted_as_skipped():
     # holding out "a" trains on the tiny fold only -> MF fits return None
     res = mfx.score_axle([("a", good[0]), ("b", tiny[0])])
     assert res["+load"]["skipped"] >= 1
+
+def test_held_out_fold_is_excluded_from_training(monkeypatch):
+    units = [(f"f{i}", b) for i in range(3) for b in _laps(30 + i, n_laps=1)]
+    totals = {f: b.n_samples() for f, b in units}
+    seen = []
+    real = mfx.tire_mf.fit_mf
+
+    def spy(train, **kw):
+        seen.append(train.n_samples())
+        return real(train, **kw)
+
+    monkeypatch.setattr(mfx.tire_mf, "fit_mf", spy)
+    mfx.score_axle(units)
+    total = sum(totals.values())
+    assert set(seen) == {total - n for n in totals.values()}
+
+
+def test_outlier_fold_changes_heldout_score_not_training_fit():
+    normal = [(f"f{i}", b) for i in range(2) for b in _laps(40 + i, n_laps=2)]
+    outlier = ("odd", make_bins(n_laps=1, factors=("load", "temp"), seed=49,
+                                n_per_lap=20000, true_scale=3.0)[0])
+    base = mfx.score_axle(normal)
+    mixed = mfx.score_axle(normal + [outlier])
+    # holding out an outlier must be judged by a model trained only on normal folds:
+    # the outlier fold scores badly; the normal folds' training now contains the outlier
+    assert base["+load+temp"]["r2"] > 0.9
+    assert mixed["+load+temp"]["r2_all"] < base["+load+temp"]["r2"] - 0.1
+
+
+def test_true_n_below_three_is_not_scored():
+    lap = _laps(50, n_laps=1)[0]
+    full = mfx.heldout_r2(None, lap, predictor=lambda s: np.full(len(s), 0.5))
+    for c in lap.cells.values():
+        c.n_true = min(c.n_true, 2)
+    assert mfx.heldout_r2(None, lap, predictor=lambda s: s) is None
+    assert full is not None
+
+
+def test_folds_without_cells_are_counted():
+    good = _laps(60, n_laps=2)
+    empty = make_bins(n_laps=1, n_per_lap=500, slip_range=(0.0, 1.0), true_scale=1.0)[0]
+    res = mfx.score_axle([("a", good[0]), ("b", good[1]), ("c", empty)])
+    assert res["no_cells"] == 1 and res["n_folds"] == 3
+    assert "1 without scorable" in mfx.format_table("t", res)
