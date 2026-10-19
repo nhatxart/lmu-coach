@@ -52,10 +52,11 @@ from .car_identity import identify_car
 from .telemetry import reference_lap_time
 from .tire_bins import MEASURE_MU, LapBins, bin_axle_samples
 from .tire_class import CLASS_PRIOR_WEIGHT, fit_car_with_prior, fit_class_prior
-from .tire_mf import PEAK_GRID, MFFit, fit_mf, predict
+from .tire_mf import MFFit, fit_mf
 from .tire_model import (
     _lap_axle_samples,
     axle_load_source,
+    build_axle_tire_model,
     file_load_reference,
     fit_deflection_calibration,
 )
@@ -328,7 +329,8 @@ class GripProfile:
                  for fk, f in self.tire_files.items() for ln, lap in f["laps"].items()
                  if lap.get(axle, {}).get("rows")]
         if not items:
-            return {"fit": [], "older": [], "version": None, "note": None, "measure": None}
+            return {"fit": [], "older": [], "version": None, "note": None, "measure": None,
+                    "unused_newer": []}
         measure = _majority_measure([b for _, _, b in items])
         items = [it for it in items if it[2]["measure"] == measure]
         by_version: dict = {}
@@ -337,11 +339,18 @@ class GripProfile:
         eligible = [vk for vk, v in by_version.items() if len(v) >= MIN_VERSION_LAPS]
         if eligible:
             newest = max(eligible)
+            # PREVIOUSLY laps of a newer game version with < MIN_VERSION_LAPS laps were
+            # dropped without a word, so the coach did not know the physics had changed.
+            # Fix: report them so the version note can say they are not used yet.
+            unused = [(vk[1] or "unknown", len(v)) for vk, v in sorted(by_version.items())
+                      if vk > newest]
             return {"fit": by_version[newest],
                     "older": [kb for vk, v in by_version.items() if vk < newest for kb in v],
-                    "version": newest[1] or "unknown", "note": None, "measure": measure}
+                    "version": newest[1] or "unknown", "note": None, "measure": measure,
+                    "unused_newer": unused}
         return {"fit": [(k, b) for _, k, b in items], "older": [], "version": None,
-                "note": "mixed_versions" if len(by_version) > 1 else None, "measure": measure}
+                "note": "mixed_versions" if len(by_version) > 1 else None, "measure": measure,
+                "unused_newer": []}
 
     def _resolve_prior(self, axle: str, plan: dict, class_prior, load_class_prior: bool):
         """(prior MFFit | None, kind, weight) for one axle."""
@@ -404,7 +413,39 @@ class GripProfile:
         self.tire_fit_cache = out
         return out
 
-    def compute_baselines(self) -> dict:
+    def cached_fit(self, axle: str) -> MFFit | None:
+        """The cached Magic Formula fit of one axle (None before the first refit)."""
+        entry = self.tire_fit_cache.get(axle) or {}
+        return MFFit.from_dict(entry["fit"]) if entry.get("fit") else None
+
+    def _axle_tire_model(self, axle: str, entry: dict) -> dict:
+        """v3 model of one axle from its cache entry and the stored bins of its fit set."""
+        plan = self._plan_axle(axle)
+        lap_bins = [LapBins.from_dict(b) for _, b in plan["fit"]]
+        out = build_axle_tire_model(entry, lap_bins)
+        # version_note is rebuilt from the plan on each call, NOT read from the cache: the
+        # newer-version laps it describes are not part of the cache fingerprint.
+        notes = [plan["note"]] if plan["note"] else []
+        for version, n in plan["unused_newer"]:
+            notes.append(f"newest game version {version} has {n} lap{'s' if n != 1 else ''} "
+                         f"(< {MIN_VERSION_LAPS}), not used yet; the model is from "
+                         f"{plan['version']} laps")
+        out["version_note"] = "; ".join(notes) or None
+        return out
+
+    @staticmethod
+    def _factor_block(model: dict, reason: str | None) -> dict:
+        fx = model.get("factor_effects") or {}
+        if not fx:
+            return {"available": False,
+                    "note": reason or "no fitted factor (load, temperature, pressure) yet"}
+        return {
+            "available": True, "factor_effects": fx,
+            "note": ("Peak mu at the p10 / median / p90 of this driver's own data for each "
+                     "fitted factor; use it to judge a setup target, never outside that range."),
+        }
+
+    def compute_baselines(self, tire_unavailable: str | None = None) -> dict:
         """
         Percentile-based baselines for prompt injection. Returns None for
         any metric with too few samples to be meaningful (avoid treating a
@@ -429,7 +470,18 @@ class GripProfile:
                 "sample_count": len(values),
             }
 
-        fits = self.refit_tyre_model(load_class_prior=True)
+        # `/analyze` must never fail because of the tyre model: with tire_unavailable set
+        # (the caller caught an error) no fit is attempted and the axles degrade to the
+        # empty v2-fallback shape carrying the reason.
+        if tire_unavailable:
+            models = {}
+            for axle in AXLES:
+                m = build_axle_tire_model(None, [])
+                m["note"] = f"tyre model unavailable: {tire_unavailable}"
+                models[axle] = m
+        else:
+            fits = self.refit_tyre_model(load_class_prior=True)
+            models = {axle: self._axle_tire_model(axle, fits[axle]) for axle in AXLES}
 
         return {
             "car_name": self.car_name,
@@ -442,48 +494,11 @@ class GripProfile:
             "peak_front_slip_angle_deg": _percentiles(self.peak_front_slip_angle_values),
             "peak_rear_slip_angle_deg": _percentiles(self.peak_rear_slip_angle_values),
             "max_wheel_slip_ratio": _percentiles(self.max_wheel_slip_ratio_values),
-            "front_tire_model": _axle_model(fits["front"]),
-            "rear_tire_model": _axle_model(fits["rear"]),
-            "front_temp_pressure_load": None,
-            "rear_temp_pressure_load": None,
+            "front_tire_model": models["front"],
+            "rear_tire_model": models["rear"],
+            "front_temp_pressure_load": self._factor_block(models["front"], tire_unavailable),
+            "rear_temp_pressure_load": self._factor_block(models["rear"], tire_unavailable),
         }
-
-
-# ── cached fit -> the v2-shaped model dict ───────────────────────────────────
-
-def _axle_model(entry: dict) -> dict:
-    fit = MFFit.from_dict(entry["fit"]) if entry["fit"] else None
-    out = {
-        "peak": None, "efficient_range": None, "peak_observed": False,
-        "peak_grip": None, "available_grip": None, "max_observed_slip_deg": None,
-        "confidence": entry["confidence"], "sample_count": entry["n_samples"],
-        "grip_measure": entry["measure"], "tyre_temperature": {"known": False},
-        "peak_slip_ci90": entry["peak_slip_ci90"], "peak_mu_ci90": entry["peak_mu_ci90"],
-        "prior_used": entry["prior_used"], "version_note": entry["version_note"],
-        "fit_game_version": entry["fit_game_version"], "n_fit_laps": entry["n_fit_laps"],
-    }
-    if fit is None:
-        return out
-    # Efficient range = contiguous slip span around the peak within 5 % of the peak mu.
-    mu = predict(fit, PEAK_GRID)
-    ip = int(np.argmax(mu))
-    lo = hi = ip
-    while lo > 0 and mu[lo - 1] >= 0.95 * mu[ip]:
-        lo -= 1
-    while hi < len(mu) - 1 and mu[hi + 1] >= 0.95 * mu[ip]:
-        hi += 1
-    out.update({
-        "peak": round(fit.peak_slip_deg, 2),
-        "efficient_range": [round(float(PEAK_GRID[lo]), 2), round(float(PEAK_GRID[hi]), 2)],
-        "peak_observed": fit.peak_observed,
-        "peak_grip": round(fit.peak_mu, 3),
-        # v2's available_grip was a p90 envelope of raw samples; without them the fit's
-        # own peak mu is the available grip (the lap side of cornering efficiency is a p90).
-        "available_grip": round(fit.peak_mu, 3),
-        "max_observed_slip_deg": round(fit.max_observed_slip_deg, 2),
-        "grip_measure": fit.measure,
-    })
-    return out
 
 
 # ── class prior across the other cars of a class ─────────────────────────────

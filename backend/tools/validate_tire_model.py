@@ -249,7 +249,9 @@ def _model(per_lap, ks, axle) -> dict:
     arr = _concat(per_lap, ks, axle)
     obs = tm.AxleSlipObservations()
     obs.add_samples(**{n: arr[n] for n in tm._OBS_FIELDS})
-    return tm.build_axle_tire_model(obs)
+    # PREVIOUSLY build_axle_tire_model(obs). That name now builds the v3 model from the
+    # profile's fit; this tool validates the v2 histogram model, which is kept for it.
+    return tm.build_v2_axle_model(obs)
 
 
 def _heldout(per_lap, groups, ax, measure):

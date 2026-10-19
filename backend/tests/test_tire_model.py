@@ -1,4 +1,4 @@
-﻿"""Tire model: per-lap extraction (tire_model.py) and profile ingest (grip_profile.py).
+"""Tire model: per-lap extraction (tire_model.py) and profile ingest (grip_profile.py).
 
 Run from the repo root:
     uv run --no-project --with pytest --with fastapi --with duckdb --with numpy `
@@ -10,8 +10,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from app import grip_profile, tire_model as tm
+from app import grip_profile, tire_class, tire_model as tm
+from app.tire_bins import LapBins, bin_axle_samples
 from app.telemetry import LapTelemetry, load_telemetry_file
+from synthetic_tyre import make_bins
 
 FUJI = (Path(__file__).resolve().parents[2] / "data" / "sessions"
         / "Fuji Speedway-Team WRT 2026 _69_LP-2026-10-15T03_10_17Z.duckdb")
@@ -115,8 +117,16 @@ def test_steady_state_filter_drops_braking_and_yaw_transients():
 
 
 def test_cold_tyres_are_flagged():
-    model = tm.build_axle_tire_model(tm.extract_axle_observations_from_lap(_lap())["front"])
+    # the v2 raw-sample builder (kept for validate_tire_model.py) ...
+    model = tm.build_v2_axle_model(tm.extract_axle_observations_from_lap(_lap())["front"])
     assert "cold-tyre" in model["tyre_temperature"]["warning"]
+    # ... and the v3 path, which reads the temperature from the stored bins
+    p = grip_profile.GripProfile(car_name="Car")
+    p.ingest_tire_laps([_lap()], "f")
+    bins = [LapBins.from_dict(l["front"]) for l in p.tire_files["f"]["laps"].values()]
+    v3 = tm.build_axle_tire_model(None, bins)
+    assert "cold-tyre" in v3["tyre_temperature"]["warning"]
+    assert v3["tyre_temperature"]["median_delta_c"] == pytest.approx(-20.0, abs=2.5)
 
 
 # ── profile ──────────────────────────────────────────────────────────────────
@@ -333,3 +343,100 @@ def test_surface_type_not_interpolated():
     assert set(np.unique(out)) <= {0.0, 5.0}
     # linear would put values strictly between 0 and 5 around t=0.1..0.2
     assert not np.allclose(_resample_to_grid(src_t, src_v, grid), out)
+
+
+# -- v3 outputs (build_axle_tire_model / state-aware CE) ------------------------
+
+V2_KEYS = {"peak", "efficient_range", "peak_observed", "peak_grip", "available_grip",
+           "max_observed_slip_deg", "confidence", "sample_count", "grip_measure",
+           "tyre_temperature"}
+V3_KEYS = {"model", "peak_slip_ci90", "peak_grip_ci90", "factors", "factor_effects",
+           "prior_used", "version_note", "game_version", "coverage"}
+
+
+def _cached(laps, version="1.0", n_boot=5):
+    """One axle's tire_fit_cache entry, built the way GripProfile.refit_tyre_model does."""
+    res = tire_class.fit_car_with_prior(laps, None, n_boot=n_boot)
+    fit = res["fit"]
+    return {"fit": fit.to_dict() if fit else None, "peak_slip_ci90": res["peak_slip_ci90"],
+            "peak_mu_ci90": res["peak_mu_ci90"], "n_boot_ok": res["n_boot_ok"],
+            "confidence": res["confidence"], "prior_used": res["prior_used"],
+            "version_note": None, "fit_game_version": version, "n_fit_laps": len(laps),
+            "n_samples": sum(l.n_samples() for l in laps), "measure": laps[0].measure}
+
+
+def _mf_laps():
+    return make_bins(n_laps=3, true_params={"D0": 1.8}, factors=("load",), seed=0,
+                     n_per_lap=1500)
+
+
+def test_v3_output_has_all_v2_keys():
+    laps = _mf_laps()
+    out = tm.build_axle_tire_model(_cached(laps), laps)
+    assert V2_KEYS | V3_KEYS <= set(out)
+    assert out["model"] == "magic_formula_v3"
+    assert out["peak_slip_ci90"][0] <= out["peak"] <= out["peak_slip_ci90"][1] + 0.5
+    assert out["peak_grip_ci90"] is not None and out["game_version"] == "1.0"
+    lo, hi = out["efficient_range"]
+    assert lo <= out["peak"] <= hi
+    assert out["sample_count"] == sum(l.n_samples() for l in laps)
+    assert out["factors"]["load"] == "fitted" and out["factors"]["temp"] == "disabled"
+    # only fitted factors get an effect; load lowers mu at the peak (kDL < 0 in the truth)
+    assert set(out["factor_effects"]) == {"load"}
+    eff = out["factor_effects"]["load"]
+    assert eff["variable"] == "load_ratio" and len(eff["values"]) == 3
+    assert eff["values"] == sorted(eff["values"])
+    assert eff["peak_mu"][0] > eff["peak_mu"][1] > eff["peak_mu"][2]
+    assert out["coverage"]["available"] is True
+
+
+def test_fallback_when_no_fit():
+    laps = _mf_laps()
+    # a profile whose MF fit failed still has bins: the v2 binned curve is the fallback
+    out = tm.build_axle_tire_model({**_cached(laps), "fit": None, "confidence": 0.0}, laps)
+    assert out["model"] == "binned_v2_fallback"
+    assert V2_KEYS | V3_KEYS <= set(out)
+    assert out["peak"] is not None and out["peak_slip_ci90"] is None
+    assert out["confidence"] <= tm.FALLBACK_MAX_CONFIDENCE
+    assert out["factor_effects"] == {}
+    # no data at all: every number is None, never a guess
+    empty = tm.build_axle_tire_model(None, [])
+    assert empty["model"] == "binned_v2_fallback"
+    assert empty["peak"] is None and empty["sample_count"] == 0 and empty["confidence"] == 0.0
+
+
+def test_coverage_lists_under_sampled_load_cells():
+    def block(load, n):
+        s = {"slip_angle_deg": np.full(n, 3.0), "lateral_g": np.full(n, 1.5 * load),
+             "load_ratio": np.full(n, load), "temp_delta_c": np.full(n, -20.0),
+             "tire_pressure_kpa": np.full(n, 170.0), "wear": np.full(n, 0.1),
+             "camber_deg": np.full(n, 2.0), "carcass_delta_c": np.full(n, 0.0),
+             "long_g": np.zeros(n), "true_mu": np.full(n, np.nan)}
+        return bin_axle_samples(s, np.ones(n, bool))
+    bins = LapBins.merge([block(1.45, 400), block(1.55, 40)])
+    cov = tm.coverage_summary(bins)
+    assert cov["available"] is True
+    thin = [c for c in cov["under_covered"] if c["samples"] == 40]
+    assert thin and thin[0]["load_ratio"] == [1.5, 1.6]
+    assert all(c["samples"] < tm.UNDER_COVERED_N for c in cov["under_covered"])
+    assert cov["n_under_covered"] >= len(cov["under_covered"]) >= 1
+    assert "load_ratio" in cov["summary"]
+
+
+def test_ce_state_aware_used_with_fit():
+    laps = _mf_laps()
+    cached = _cached(laps)
+    front = tm.build_axle_tire_model(cached, laps)
+    lap = _lap()
+    cal = tm.fit_deflection_calibration(lap)
+    ref = tm.file_load_reference([lap], cal)
+    v2 = tm.compute_grip_utilization_for_lap(lap, front, front, cal, ref)
+    assert v2["ce_method"] == "v2_envelope"
+    fit = tm.MFFit.from_dict(cached["fit"])
+    v3 = tm.compute_grip_utilization_for_lap(lap, front, front, cal, ref, front_fit=fit)
+    assert v3["ce_method"] == "state_aware_mf"
+    assert v3["front_grip_utilization"] == v2["front_grip_utilization"]      # GU unchanged
+    assert v3["lap_grip_p90"] == v2["lap_grip_p90"]
+    # lap mu is 1.0 at load ratio 1.5; the fit's ceiling there (D0 1.8, kDL -0.4) is ~1.6
+    assert 0.5 < v3["cornering_efficiency"] < 0.8
+    assert v3["cornering_efficiency"] != v2["cornering_efficiency"]

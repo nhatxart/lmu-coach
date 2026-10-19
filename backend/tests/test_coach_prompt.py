@@ -40,3 +40,14 @@ def test_message_order_first_pass_and_followup(monkeypatch):
         "system", "user", "assistant", "user", "assistant", "user"]
     assert "driver_name" not in msgs[3]["content"]
     assert msgs[-1]["content"] == "why?"
+
+
+def test_prompt_mentions_magic_formula_and_ci():
+    p = coach.SYSTEM_PROMPT
+    assert "peak_slip_ci90" in p and "factor_effects" in p
+    assert "Magic Formula" in p and "prior_used" in p and "coverage" in p
+    assert "binned_v2_fallback" in p
+    # the effects are estimates inside the observed range, never setup targets
+    assert "setup target" in p
+    # the v2 temperature bucket paragraph is gone
+    assert "bucket the learned" not in p

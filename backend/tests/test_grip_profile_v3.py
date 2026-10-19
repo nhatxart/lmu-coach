@@ -178,7 +178,7 @@ def test_newest_version_selected_with_older_prior(boot_calls, monkeypatch):
     old, new = _bins(3, d0=1.2, seed=1), _bins(3, d0=1.8, seed=2)
     p = _profile({"old": ("1.9", old), "new": ("1.10", new)})
     m = p.compute_baselines()["front_tire_model"]
-    assert m["fit_game_version"] == "1.10" and m["n_fit_laps"] == 3
+    assert m["game_version"] == "1.10" and m["n_fit_laps"] == 3
     fit = tb.LapBins.merge(new)
     own = p.tire_fit_cache["front"]["fit"]["params"]["D0"]
     assert own > 1.6                                  # the old version's 1.2 did not leak in
@@ -187,7 +187,7 @@ def test_newest_version_selected_with_older_prior(boot_calls, monkeypatch):
     # ... but with the lap guard lifted the older version enters as the prior
     monkeypatch.setattr(tire_class, "PRIOR_MAX_LAPS", 10)
     m2 = p.compute_baselines()["front_tire_model"]
-    assert m2["prior_used"] == "older_version" and m2["fit_game_version"] == "1.10"
+    assert m2["prior_used"] == "older_version" and m2["game_version"] == "1.10"
     assert p.tire_fit_cache["front"]["fit"]["params"]["D0"] < own     # pulled toward 1.2
     assert fit.n_samples() > 0
 
@@ -196,7 +196,7 @@ def test_mixed_versions_note(boot_calls):
     p = _profile({"a": ("1.1", _bins(2, seed=1)), "b": ("1.2", _bins(2, seed=2))})
     m = p.compute_baselines()["front_tire_model"]
     assert m["version_note"] == "mixed_versions" and m["n_fit_laps"] == 4
-    assert m["fit_game_version"] is None
+    assert m["game_version"] is None
     # one version below the threshold is not "mixed"
     single = _profile({"a": ("1.1", _bins(2, seed=1))}).compute_baselines()["front_tire_model"]
     assert single["version_note"] is None
@@ -274,3 +274,39 @@ def test_profile_stores_bins_not_samples():
     rows = sum(len(l["front"]["rows"]) for l in d["tire_files"]["f"]["laps"].values())
     assert rows <= sum(b.n_samples() for b in laps)
     json.dumps(d)
+
+# -- v3 outputs in the baselines (Task 10) ---------------------------------------
+
+def test_version_note_says_when_the_newest_version_is_not_used_yet(boot_calls):
+    # 3 laps of 1.9 fit; 2 laps of 1.10 are too few and were dropped silently before
+    p = _profile({"old": ("1.9", _bins(3, seed=1)), "new": ("1.10", _bins(2, seed=2))})
+    m = p.compute_baselines()["front_tire_model"]
+    assert m["game_version"] == "1.9" and m["n_fit_laps"] == 3
+    assert "1.10" in m["version_note"] and "2 lap" in m["version_note"]
+    assert "not used yet" in m["version_note"]
+    # the note is not part of the cached fit: adding the 3rd newer lap changes the fit set
+    assert "version_note" in p.tire_fit_cache["front"]
+    p.tire_files["new"]["laps"]["9"] = p.tire_files["new"]["laps"]["0"]
+    m3 = p.compute_baselines()["front_tire_model"]
+    assert m3["game_version"] == "1.10" and m3["version_note"] is None
+
+
+def test_temp_pressure_load_key_carries_factor_effects(boot_calls):
+    b = _profile({"f": ("1.0", _bins(3))}).compute_baselines()
+    tpl = b["front_temp_pressure_load"]
+    assert tpl["available"] is True and "load" in tpl["factor_effects"]
+    assert "setup target" in tpl["note"]
+    assert tpl["factor_effects"] == b["front_tire_model"]["factor_effects"]
+    empty = gp.GripProfile(car_name="E").compute_baselines()
+    assert empty["front_temp_pressure_load"]["available"] is False
+
+
+def test_tire_unavailable_degrades_without_raising(boot_calls):
+    p = _profile({"f": ("1.0", _bins(3))})
+    b = p.compute_baselines(tire_unavailable="fit failed: RuntimeError")
+    for axle in ("front", "rear"):
+        m = b[f"{axle}_tire_model"]
+        assert m["model"] == "binned_v2_fallback" and m["peak"] is None
+        assert "fit failed" in m["note"]
+    assert boot_calls == []                        # no fit was attempted
+    assert b["tc_active_fraction"] is None         # the rest of the baselines are intact

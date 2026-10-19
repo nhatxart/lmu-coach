@@ -14,6 +14,7 @@ tool, not a multi-tenant service, so there's no need for a real DB here yet.
 
 from __future__ import annotations
 
+import logging
 import math
 import uuid
 from pathlib import Path
@@ -38,11 +39,13 @@ from pydantic import BaseModel
 from .coach import LLMError, ask_followup, get_coaching_analysis
 from .track_db import find_track_in_registry, find_layout_in_track, annotate_report_with_corners
 from .grip_analysis import build_grip_report
-from .grip_profile import load_profile, save_profile
-from .tire_model import compute_grip_utilization_for_lap, file_load_reference
+from .grip_profile import load_profile_for_lap, save_profile
+from .tire_model import TIRE_GRID_HZ, compute_grip_utilization_for_lap, file_load_reference
 from .vehicle_dynamics import (body_slip_from_local_vel_deg, compute_body_slip_deg,
                                handling_balance)
 from .telemetry import load_telemetry_file, get_car_setup_json, session_time_axes, reference_lap_time
+
+log = logging.getLogger(__name__)
 
 app = FastAPI(title="LMU Telemetry Coach")
 
@@ -282,15 +285,35 @@ async def analyze(ref: LapRef):
     # itself in its own reference curve. So: load the current profile's
     # baselines first, compute this lap's utilization against THAT, and
     # only then fold this lap's samples into the saved profile.
-    pre_update_profile = load_profile(lap.car_name)
-    pre_update_baselines = pre_update_profile.compute_baselines()
-    grip_report["grip_utilization"] = compute_grip_utilization_for_lap(
-        lap,
-        pre_update_baselines["front_tire_model"],
-        pre_update_baselines["rear_tire_model"],
-        calibration=pre_update_profile.deflection_calibration,
-        load_ref=file_load_reference(valid_laps, pre_update_profile.deflection_calibration),
-    )
+    # PREVIOUSLY the profile was keyed by lap.car_name (one file per livery) and the
+    # tyre model read the same 20 Hz load as the coaching report, which leaves too few
+    # steady samples per lap to populate the v3 state cells. Fix: the profile is the car
+    # MODEL's, and the tyre steps load the file a second time at TIRE_GRID_HZ (same lap
+    # number); the coaching report above keeps the 20 Hz load.
+    pre_update_profile = load_profile_for_lap(lap)
+    profile = pre_update_profile
+    tire_laps: list = []
+    tire_error: str | None = None
+    grip_report["grip_utilization"] = None
+    try:
+        tire_laps = load_telemetry_file(path, grid_hz=TIRE_GRID_HZ)
+        tire_valid = [l for l in tire_laps if l.lap_time_s < 600]
+        tire_lap = next((l for l in tire_valid if l.lap_number == lap.lap_number), None)
+        pre_update_baselines = pre_update_profile.compute_baselines()
+        if tire_lap is not None:
+            grip_report["grip_utilization"] = compute_grip_utilization_for_lap(
+                tire_lap,
+                pre_update_baselines["front_tire_model"],
+                pre_update_baselines["rear_tire_model"],
+                calibration=pre_update_profile.deflection_calibration,
+                load_ref=file_load_reference(tire_valid, pre_update_profile.deflection_calibration),
+                front_fit=pre_update_profile.cached_fit("front"),
+            )
+    except Exception as e:  # /analyze must never fail because of the tyre model
+        log.exception("tyre model failed on %s lap %s", path.name, lap.lap_number)
+        tire_error = f"{type(e).__name__}: {e}"
+        tire_laps = []
+        grip_report["grip_utilization"] = None
 
     # fold this lap into the car's running grip profile (including its raw
     # slip-angle/lateral-G/temp/pressure/load samples for the probabilistic
@@ -305,10 +328,14 @@ async def analyze(ref: LapRef):
     # GripProfile.ingest_tire_laps); the ABS/TC/slip baselines still take
     # only the analyzed lap. Caveat: analyzing a second lap of an already
     # ingested file scores it against a model that already contains it.
-    profile = pre_update_profile
     profile.update_from_grip_report(grip_report)
-    profile.ingest_tire_laps(laps, file_key=path.name)
-    grip_baselines = profile.compute_baselines()
+    if tire_error is None:
+        try:
+            profile.ingest_tire_laps(tire_laps, file_key=path.name)
+        except Exception as e:
+            log.exception("tyre ingest failed on %s", path.name)
+            tire_error = f"{type(e).__name__}: {e}"
+    grip_baselines = profile.compute_baselines(tire_unavailable=tire_error)
 
     try:
         analysis_text = await get_coaching_analysis(

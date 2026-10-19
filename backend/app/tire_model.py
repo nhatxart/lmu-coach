@@ -67,6 +67,21 @@ Checked against 7 laps of the 10/14 Fuji BMW M4 LMGT3 file:
    p90 envelope in the efficient range (v1 divided a lap p95 by a bin MEAN,
    so an ordinary lap read ~1.08).
 Old (v1) observations are discarded on load — see grip_profile.py.
+
+── Model v3 (10/19/2026) — Magic Formula fit on state cells ─────────────────
+The coach's tyre model is now a Magic Formula curve (tire_mf.py) fitted by
+grip_profile.py to per-lap sufficient-statistic bins (tire_bins.py), with
+bootstrap 90 % CIs over laps and a class prior (tire_class.py) when the car
+has few laps. build_axle_tire_model(cached, lap_bins) keeps every v2 key and
+adds model, peak_slip_ci90, peak_grip_ci90, factors, factor_effects,
+prior_used, version_note, game_version and coverage. Only the load factor is
+enabled; factor_effects reports peak mu at p10/median/p90 of the driver's own
+data, never an extrapolation. When no MF fits, the v2 histogram curve is used
+on the stored cells with confidence capped (model = "binned_v2_fallback").
+Cornering efficiency divides by the MF peak at each sample's own load/temp
+state when a fit is given (ce_method = "state_aware_mf"), else by the v2
+envelope. v2's build_axle_tire_model(obs) is now build_v2_axle_model(obs)
+(validate_tire_model.py compares against it).
 """
 
 from __future__ import annotations
@@ -76,6 +91,9 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .telemetry import LapTelemetry, WHEEL_LABELS
+from .tire_bins import BIN, UNKNOWN_BIN, LapBins, cell_arrays
+from .tire_bins import coverage as tb_coverage
+from .tire_mf import PEAK_GRID, STATE_KEY, MFFit, peak_at, predict
 
 # Minimum speed to trust slip-angle/G readings for tire-model purposes —
 # below this, steering noise and low-speed maneuvering (pit lane, hairpin
@@ -315,9 +333,9 @@ def _temp_selection(arr: dict[str, np.ndarray]) -> tuple[np.ndarray, dict]:
     return np.ones(n, dtype=bool), summary
 
 
-def build_axle_tire_model(obs: AxleSlipObservations) -> dict:
+def build_v2_axle_model(obs: AxleSlipObservations) -> dict:
     """
-    One axle's model, e.g.
+    The v2 binned model of one axle from RAW samples, e.g.
         {"peak": 3.2, "efficient_range": [2.8, 4.0], "peak_observed": true,
          "confidence": 0.71, "sample_count": 4888,
          "grip_measure": "mu_load_normalized", "peak_grip": 1.52,
@@ -325,6 +343,10 @@ def build_axle_tire_model(obs: AxleSlipObservations) -> dict:
     peak/efficient_range/peak_grip/available_grip are null when there isn't
     enough data. peak_observed False means the curve was still rising at
     the largest well-sampled slip angle: "peak" is then a LOWER BOUND.
+
+    PREVIOUSLY this was build_axle_tire_model and the profile fed it. The profile now
+    stores per-lap bins and the Magic Formula fit (build_axle_tire_model below); this
+    stays for validate_tire_model.py, which re-extracts raw samples to hold laps out.
     """
     arr = obs.arrays()
     grip, measure, has_grip = grip_values(arr)
@@ -347,70 +369,273 @@ def build_axle_tire_model(obs: AxleSlipObservations) -> dict:
     return out
 
 
-def build_temp_pressure_load_relationships(obs: AxleSlipObservations) -> dict:
-    """
-    Observed (not first-principles) relationships between the learned
-    optimal slip angle and temperature / pressure / load, by quantile bucket.
-    Each sub-relationship checks it has enough data and reports null + a
-    reason if not.
-    """
-    arr = obs.arrays()
-    grip, _, has_grip = grip_values(arr)
-    arr = {k: v[has_grip] for k, v in arr.items()}
-    sa = arr["slip_angle_deg"]
-    g = grip[has_grip]
-    temp = np.where(np.isfinite(arr["temp_delta_c"]), arr["temp_delta_c"], np.nan)
-    temp_label = "temp_delta_c"
-    if not np.isfinite(temp).any():
-        temp, temp_label = arr["tire_temp_c"], "temp_c"
-    load = arr["load_ratio"]
-    load_label = "load_ratio"
-    if not np.isfinite(load).any():
-        load, load_label = arr["susp_deflection_m"], "susp_deflection_m"
+# ── Model v3 outputs: the cached Magic Formula fit -> the dict the coach reads ──────
 
-    def _bucketed_optimal_slip(bucket_values: np.ndarray, n_buckets: int, label: str) -> dict:
-        valid = np.isfinite(bucket_values) & np.isfinite(sa) & np.isfinite(g)
-        if valid.sum() < MIN_SAMPLES_FOR_MODEL:
-            return {"available": False, "reason": f"insufficient {label} samples ({int(valid.sum())})"}
-        bv, sa_v, g_v = bucket_values[valid], sa[valid], g[valid]
-        edges = np.unique(np.quantile(bv, np.linspace(0, 1, n_buckets + 1)))
-        if len(edges) < 3:
-            return {"available": False, "reason": f"{label} range too narrow to bucket"}
-        # decimals scale with the bucketed quantity's span (susp deflection
-        # in metres vs temps in tens of degrees)
-        span = float(edges[-1] - edges[0])
-        decimals = 3 if span == 0 else max(0, 3 - int(np.floor(np.log10(abs(span) + 1e-12))))
-        idx = np.digitize(bv, edges[1:-1])
-        buckets = []
-        for b in range(len(edges) - 1):
-            mask = idx == b
-            if mask.sum() < 30:
-                continue
-            fit = _fit_curve(sa_v[mask], g_v[mask])
-            buckets.append({
-                f"{label}_range": [round(float(edges[b]), decimals), round(float(edges[b + 1]), decimals)],
-                "optimal_slip_angle_deg": fit["peak"] if fit else None,
-                "peak_observed": fit["peak_observed"] if fit else False,
-                "sample_count": int(mask.sum()),
-            })
-        if not buckets:
-            return {"available": False, "reason": f"no {label} bucket had enough samples"}
-        return {"available": True, "buckets": buckets}
+MODEL_MF = "magic_formula_v3"
+MODEL_FALLBACK = "binned_v2_fallback"
+# v3's confidence is a bootstrap-over-laps number. The fallback is a plain slip histogram
+# with no interval at all, so its (sample-count based) confidence is capped below the
+# coach's "tentative" line of 0.5 rather than claiming more than it knows.
+FALLBACK_MAX_CONFIDENCE = 0.3
+# A (load, temperature) region with fewer cornering samples than this does not pin the
+# curve there.
+UNDER_COVERED_N = 50
+COVERAGE_LISTED = 4
+CORNERING_SLIP_DEG = 1.5   # same line coverage() and the MF reference state use
 
-    return {
-        "temperature": _bucketed_optimal_slip(temp, 4, temp_label),
-        "pressure": _bucketed_optimal_slip(arr["tire_pressure_kpa"], 4, "pressure_kpa"),
-        "load_proxy": _bucketed_optimal_slip(load, 4, load_label),
-        "note": (
-            "OBSERVED correlations, not a physics model. Temperature and "
-            "pressure are CONFOUNDED with cornering itself: hard cornering "
-            "heats the tyre and raises its pressure, so hot/high-pressure "
-            "buckets are simply the hard-cornering samples. Do not read them "
-            "as 'the tyre wants X kPa'. temp_delta_c is tyre temp minus the "
-            "car's optimal temperature. load_ratio is axle load ÷ low-speed "
-            "straight-line load (>1 = downforce/load transfer)."
-        ),
+
+def _wq(values: np.ndarray, weights: np.ndarray, q: float) -> float:
+    o = np.argsort(values)
+    v, w = values[o], weights[o]
+    cw = (np.cumsum(w) - 0.5 * w) / w.sum()
+    return float(np.interp(q, cw, v))
+
+
+def _merge_usable(lap_bins: list, measure: str | None) -> LapBins | None:
+    """One LapBins of the laps that share a measure (the cached one, else the first's)."""
+    usable = [b for b in lap_bins if b.cells]
+    if not usable:
+        return None
+    measure = measure or usable[0].measure
+    usable = [b for b in usable if b.measure == measure]
+    return LapBins.merge(usable) if usable else None
+
+
+def _tyre_temperature(bins: LapBins | None) -> dict:
+    """Tyre temperature vs the car's optimum over the stored cells.
+
+    Kept from v2 because the coach still names a cold-tyre curve as a root cause. v3 fits
+    all temperatures (temperature is not a fitted factor), so there is no in-window
+    selection any more, only the description."""
+    if bins is None:
+        return {"known": False}
+    a = cell_arrays(bins)
+    known = np.isfinite(a["temp_delta_c"]) & (a["n"] > 0)
+    if not known.any():
+        return {"known": False}
+    td, w = a["temp_delta_c"][known], a["n"][known]
+    median = _wq(td, w, 0.5)
+    out = {
+        "known": True,
+        "median_delta_c": round(median, 1),
+        "fraction_in_window": round(float(w[np.abs(td) <= TEMP_WINDOW_C].sum() / w.sum()), 3),
+        "window_c": TEMP_WINDOW_C,
+        "fit_on": "all samples",
     }
+    if median < -TEMP_WINDOW_C:
+        out["warning"] = "tyres mostly below optimal temperature: this is a cold-tyre curve"
+    elif median > TEMP_WINDOW_C:
+        out["warning"] = "tyres mostly above optimal temperature: this is an overheated-tyre curve"
+    return out
+
+
+def coverage_summary(bins: LapBins) -> dict:
+    """Which (load, temperature) regions of the driver's own data are thinly sampled.
+
+    Built on tire_bins.coverage: cornering samples (slip >= 1.5 deg) per (load_ratio bin,
+    temp_delta bin). The region that counts is the box between the data's weighted p05
+    and p95 on each known dimension; inside it a cell with fewer than UNDER_COVERED_N
+    samples (including empty ones) is under-covered. A dimension with no known values at
+    all (no load source / no optimal temperature) is left out instead of reported empty."""
+    raw = tb_coverage(bins)["counts"]
+    use_load = any(k[0] != UNKNOWN_BIN for k in raw)
+    use_temp = any(k[1] != UNKNOWN_BIN for k in raw)
+    if not raw or not (use_load or use_temp):
+        return {"available": False, "reason": "no cornering samples with a known load or temperature"}
+    counts: dict = {}
+    for (lb, tb_), n in raw.items():
+        if (use_load and lb == UNKNOWN_BIN) or (use_temp and tb_ == UNKNOWN_BIN):
+            continue
+        key = (lb if use_load else None, tb_ if use_temp else None)
+        counts[key] = counts.get(key, 0) + n
+    if not counts:
+        return {"available": False, "reason": "no cornering samples with a known load or temperature"}
+    keys = list(counts)
+    w = np.array([counts[k] for k in keys], dtype=float)
+
+    def span(i):
+        # discrete weighted quantile (smallest bin reaching the cumulative share): an
+        # interpolated one lands between two bins and can cut a thin outer bin out of the box
+        v = np.array([k[i] for k in keys])
+        o = np.argsort(v)
+        cum = np.cumsum(w[o])
+
+        def pick(q):
+            return int(v[o][min(int(np.searchsorted(cum, q * cum[-1])), len(v) - 1)])
+        return pick(0.05), pick(0.95)
+
+    l_lo, l_hi = span(0) if use_load else (None, None)
+    t_lo, t_hi = span(1) if use_temp else (None, None)
+    loads = range(l_lo, l_hi + 1) if use_load else [None]
+    temps = range(t_lo, t_hi + 1) if use_temp else [None]
+    under = []
+    for lb in loads:
+        for tb_ in temps:
+            n = counts.get((lb, tb_), 0)
+            if n < UNDER_COVERED_N:
+                cell = {"samples": int(n)}
+                if use_load:
+                    cell["load_ratio"] = [round(lb * BIN["load_ratio"], 2),
+                                          round((lb + 1) * BIN["load_ratio"], 2)]
+                if use_temp:
+                    cell["temp_delta_c"] = [round(tb_ * BIN["temp_delta_c"], 1),
+                                            round((tb_ + 1) * BIN["temp_delta_c"], 1)]
+                under.append(cell)
+    under.sort(key=lambda c: c["samples"])
+    out = {
+        "available": True,
+        "box": {**({"load_ratio": [round(l_lo * BIN["load_ratio"], 2),
+                                   round((l_hi + 1) * BIN["load_ratio"], 2)]} if use_load else {}),
+                **({"temp_delta_c": [round(t_lo * BIN["temp_delta_c"], 1),
+                                     round((t_hi + 1) * BIN["temp_delta_c"], 1)]} if use_temp else {})},
+        "min_samples": UNDER_COVERED_N,
+        "n_cells": len(loads) * len(temps),
+        "n_under_covered": len(under),
+        "under_covered": under[:COVERAGE_LISTED],
+    }
+    if under:
+        parts = []
+        for c in under[:2]:
+            where = " / ".join(
+                f"{k} {c[k][0]}..{c[k][1]}" for k in ("load_ratio", "temp_delta_c") if k in c)
+            parts.append(f"{where} ({c['samples']} samples)")
+        out["summary"] = (f"{len(under)} of {out['n_cells']} regions inside the data's range have "
+                          f"under {UNDER_COVERED_N} cornering samples, e.g. " + "; ".join(parts))
+    else:
+        out["summary"] = "every region inside the data's range has enough cornering samples"
+    return out
+
+
+def _state_p(a: dict, var: str, q: float) -> float | None:
+    """Count-weighted quantile of one state variable over the cornering cells."""
+    ok = np.isfinite(a[var]) & (a["n"] > 0) & (a["slip"] >= CORNERING_SLIP_DEG)
+    if not ok.any():
+        return None
+    return _wq(a[var][ok], a["n"][ok], q)
+
+
+def _factor_effects(fit: MFFit, bins: LapBins) -> dict:
+    """Peak mu at three representative values of every FITTED factor.
+
+    The values are the p10 / median / p90 of that state variable in the driver's own
+    cornering data, so the effect is only ever stated inside the observed range, never
+    extrapolated. Factors that are disabled or not identifiable are not listed (their
+    status is in `factors`). Everything else is held at the fit's reference state."""
+    a = cell_arrays(bins)
+    out = {}
+    for factor, status in fit.factors_status.items():
+        if status not in ("fitted", "at_bound"):
+            continue
+        var = STATE_KEY[factor]
+        qs = [_state_p(a, var, q) for q in (0.1, 0.5, 0.9)]
+        if any(v is None for v in qs) or qs[0] == qs[2]:
+            continue
+        peaks = [peak_at(fit, {var: v}) for v in qs]
+        out[factor] = {
+            "variable": var, "status": status,
+            "values": [round(v, 3) for v in qs],
+            "peak_mu": [round(p[1], 3) for p in peaks],
+            "peak_slip_deg": [round(p[0], 2) for p in peaks],
+            "range": "p10 / median / p90 of this driver's cornering data",
+        }
+    return out
+
+
+def _available_state(fit: MFFit, a: dict) -> dict:
+    """The p90 load / temperature state of the data (fitted factors only)."""
+    state = {}
+    for factor in ("load", "temp"):
+        if fit.factors_status.get(factor) in ("fitted", "at_bound"):
+            v = _state_p(a, STATE_KEY[factor], 0.9)
+            if v is not None:
+                state[STATE_KEY[factor]] = v
+    return state
+
+
+def _binned_v2_fallback(bins: LapBins) -> dict | None:
+    """v2's slip histogram curve from the stored bins, for when no MF could be fitted.
+
+    Each cell contributes its mean mu `n` times (the bins keep sums, not samples), so the
+    fit sees the same counts per slip bin as the raw data would, at cell-mean resolution."""
+    a = cell_arrays(bins)
+    ok = (a["n"] > 0) & np.isfinite(a["mu_mean"]) & np.isfinite(a["slip"])
+    if not ok.any():
+        return None
+    reps = a["n"][ok].astype(int)
+    return _fit_curve(np.repeat(a["slip"][ok], reps), np.repeat(a["mu_mean"][ok], reps))
+
+
+def build_axle_tire_model(cached: dict | None, lap_bins: list) -> dict:
+    """
+    One axle's model for the coach, from the profile's cached fit entry and the stored
+    LapBins of the laps that fit used.
+
+    `cached` is one axle of GripProfile.tire_fit_cache (fit dict + bootstrap CIs +
+    confidence + prior_used + version_note + fit_game_version), or None. Every v2 key keeps
+    its name and meaning (peak, efficient_range, peak_observed, peak_grip, available_grip,
+    max_observed_slip_deg, confidence, sample_count, grip_measure, tyre_temperature); v3
+    adds model, peak_slip_ci90, peak_grip_ci90, factors, factor_effects, prior_used,
+    version_note, game_version, coverage.
+
+    model == "magic_formula_v3" when the fit exists. Otherwise "binned_v2_fallback": the v2
+    histogram curve from the bins (or all-null when there are no bins), with no interval.
+    """
+    cached = cached or {}
+    fit = MFFit.from_dict(cached["fit"]) if cached.get("fit") else None
+    bins = _merge_usable(lap_bins, fit.measure if fit else cached.get("measure"))
+    n_samples = bins.n_samples() if bins is not None else 0
+    out = {
+        "model": MODEL_FALLBACK,
+        "peak": None, "efficient_range": None, "peak_observed": False,
+        "peak_grip": None, "available_grip": None, "max_observed_slip_deg": None,
+        "confidence": 0.0, "sample_count": n_samples,
+        "grip_measure": bins.measure if bins is not None else cached.get("measure"),
+        "tyre_temperature": _tyre_temperature(bins),
+        "peak_slip_ci90": None, "peak_grip_ci90": None,
+        "factors": {}, "factor_effects": {},
+        "prior_used": cached.get("prior_used", "none"),
+        "version_note": cached.get("version_note"),
+        "game_version": cached.get("fit_game_version"),
+        "n_fit_laps": cached.get("n_fit_laps", sum(1 for b in lap_bins if b.cells)),
+        "coverage": coverage_summary(bins) if bins is not None else {
+            "available": False, "reason": "no stored laps"},
+    }
+    if fit is None:
+        curve = _binned_v2_fallback(bins) if bins is not None else None
+        if curve:
+            out.update(curve)
+            out["confidence"] = min(_confidence_from_sample_count(n_samples),
+                                    FALLBACK_MAX_CONFIDENCE)
+        return out
+
+    # Efficient range = the slip span around the peak within 5 % of the peak mu, at the
+    # fit's reference state.
+    mu = predict(fit, PEAK_GRID)
+    ip = int(np.argmax(mu))
+    lo = hi = ip
+    while lo > 0 and mu[lo - 1] >= 0.95 * mu[ip]:
+        lo -= 1
+    while hi < len(mu) - 1 and mu[hi + 1] >= 0.95 * mu[ip]:
+        hi += 1
+    a = cell_arrays(bins)
+    out.update({
+        "model": MODEL_MF,
+        "peak": round(fit.peak_slip_deg, 2),
+        "efficient_range": [round(float(PEAK_GRID[lo]), 2), round(float(PEAK_GRID[hi]), 2)],
+        "peak_observed": fit.peak_observed,
+        "peak_grip": round(fit.peak_mu, 3),
+        # peak mu at the p90 load / temperature state of the data: what the tyre can give
+        # when it is loaded as hard as this driver loads it
+        "available_grip": round(peak_at(fit, _available_state(fit, a))[1], 3),
+        "max_observed_slip_deg": round(fit.max_observed_slip_deg, 2),
+        "grip_measure": fit.measure,
+        "confidence": cached.get("confidence", 0.0),
+        "peak_slip_ci90": cached.get("peak_slip_ci90"),
+        "peak_grip_ci90": cached.get("peak_mu_ci90"),
+        "factors": dict(fit.factors_status),
+        "factor_effects": _factor_effects(fit, bins),
+    })
+    return out
 
 
 # ── Per-lap sample extraction ─────────────────────────────────────────────────
@@ -679,10 +904,38 @@ def extract_axle_observations_from_lap(
     return result
 
 
+# Sample-dict key for each MF state variable (STATE_KEY names the fit's variable).
+_SAMPLE_KEY = {"load_ratio": "load_ratio", "temp_delta_c": "temp_delta_c",
+               "pressure_kpa": "tire_pressure_kpa"}
+_STATE_ROUND = {"load_ratio": 0.02, "temp_delta_c": 1.0, "pressure_kpa": 2.0}
+
+
+def _state_aware_ceiling(fit: MFFit, s: dict, mask: np.ndarray) -> float | None:
+    """Mean over the masked samples of the fit's peak mu AT EACH SAMPLE'S OWN state.
+
+    PREVIOUSLY the ceiling was one number (the p90 envelope of the model), so a lap
+    through fast corners (high load, higher mu) and one through slow corners were
+    divided by the same value. Fix: the denominator follows the state the tyre was in.
+    States are rounded and de-duplicated first, since peak_at scans a slip grid."""
+    keys = [k for f, k in STATE_KEY.items()
+            if fit.factors_status.get(f) in ("fitted", "at_bound") and s.get(_SAMPLE_KEY[k]) is not None]
+    if not keys:
+        return None
+    cols = np.column_stack([np.round(np.asarray(s[_SAMPLE_KEY[k]], dtype=float)[mask] / _STATE_ROUND[k])
+                            * _STATE_ROUND[k] for k in keys])
+    cols = cols[np.all(np.isfinite(cols), axis=1)]
+    if len(cols) < 20:
+        return None
+    uniq, counts = np.unique(cols, axis=0, return_counts=True)
+    peaks = np.array([peak_at(fit, dict(zip(keys, row)))[1] for row in uniq])
+    return float(np.average(peaks, weights=counts))
+
+
 def compute_grip_utilization_for_lap(
     lap: LapTelemetry, front_model: dict, rear_model: dict,
     calibration: dict[str, dict] | None = None,
     load_ref: dict[str, float] | None = None,
+    front_fit: MFFit | None = None,
 ) -> dict | None:
     """
     Grip utilization + cornering efficiency for THIS lap, scored against the
@@ -730,6 +983,11 @@ def compute_grip_utilization_for_lap(
     else:
         grip = s["lateral_g"]
     available = front_model.get("available_grip")
+    ce_method = "v2_envelope"
+    if front_fit is not None:
+        ceiling = _state_aware_ceiling(front_fit, s, m)
+        if ceiling:
+            available, ce_method = ceiling, "state_aware_mf"
     if grip is not None and m.sum() >= 20 and available:
         lap_grip = float(np.nanpercentile(grip[m], ENVELOPE_PERCENTILE))
         ce = round(min(lap_grip / available, 1.5), 3)
@@ -744,6 +1002,7 @@ def compute_grip_utilization_for_lap(
         "lap_grip_p90": round(lap_grip, 3) if lap_grip is not None else None,
         "grip_measure": front_model.get("grip_measure"),
         "cornering_efficiency": ce,
+        "ce_method": ce_method,
         "note": (
             "Steady-state cornering samples only. grip_utilization = this lap's "
             "p95 |slip angle| ÷ the learned peak slip angle for that axle (>1.0 "
@@ -751,6 +1010,8 @@ def compute_grip_utilization_for_lap(
             "model's peak was not actually observed). cornering_efficiency = "
             "this lap's p90 grip ÷ the model's p90 grip envelope near its peak, "
             "in grip_measure units (mu_load_normalized = lateral G per unit of "
-            "actual axle load, removing downforce differences between corners)."
+            "actual axle load, removing downforce differences between corners). With "
+            "ce_method state_aware_mf the divisor is the fitted peak at each sample's "
+            "own load, not one envelope value."
         ),
     }

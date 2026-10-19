@@ -42,6 +42,7 @@ sys.path.insert(0, str(REPO / "backend"))
 from app import grip_profile as gp  # noqa: E402
 from app.grip_analysis import build_grip_report  # noqa: E402
 from app.telemetry import get_car_setup_json, load_telemetry_file  # noqa: E402
+from app.tire_model import TIRE_GRID_HZ  # noqa: E402
 
 STAMP = re.compile(r"(\d{4}-\d{2}-\d{2})T[\d_]+Z")
 
@@ -86,7 +87,8 @@ def main() -> int:
     for _, path in files:
         print(f"\n== {path.name}")
         try:
-            laps = load_telemetry_file(path)
+            # the tyre bins are built at the tyre grid, as /analyze does
+            laps = load_telemetry_file(path, grid_hz=TIRE_GRID_HZ)
         except Exception as e:  # one bad file should not stop the batch
             print(f"  LOAD FAILED: {e}")
             continue
