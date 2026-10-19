@@ -54,8 +54,10 @@ STATE_KEY = {"load": "load_ratio", "temp": "temp_delta_c", "pressure": "pressure
 GATE = {"load": ("std", 0.05), "temp": ("spread", 10.0), "pressure": ("spread", 5.0),
         "wear": ("spread", 0.02), "camber": ("spread", 0.3)}
 GATE_MIN_SLIP_DEG = 1.5
-MIN_CELLS = 30
-MIN_CELL_N = 5
+MIN_TOTAL_SAMPLES = 300   # replaces the old "30 cells with n >= 5" gate (Ruling 8)
+MIN_SLIP_BINS = 8         # slip bins whose marginal n >= MIN_CELL_N
+MIN_CELL_N = 5            # (kept name) marginal n for a slip bin to count as sampled
+SLIP_BIN_DEG = 0.4
 MIN_SLIP_SPAN_DEG = 2.5
 F_SCALE = 0.1
 PEAK_GRID = np.arange(0.0, 15.0 + 1e-9, 0.01)
@@ -218,10 +220,24 @@ def fit_mf(bins: LapBins, target: str = "mu", prior=None, prior_weight: float = 
     st_all = {k: a[k][ok] for k in ("load_ratio", "temp_delta_c", "pressure_kpa",
                                      "wear", "camber_deg")}
 
-    well = n >= MIN_CELL_N
-    if well.sum() < MIN_CELLS or slip[well].max() < MIN_SLIP_SPAN_DEG:
+    # PREVIOUSLY these gates counted individual cells (n >= 5). Cells are keyed by five
+    # state dimensions, so a dense lap spreads over many 1-2 sample cells and the gate
+    # refused data that is perfectly good along slip (HF Hypercar files, 10/19 run).
+    # Fix (Ruling 8): "well sampled" is decided on the SLIP MARGINAL - counts summed
+    # over all cells sharing a slip bin.
+    slip_bin = np.floor(slip / SLIP_BIN_DEG).astype(int)
+    bin_ids, inv = np.unique(slip_bin, return_inverse=True)
+    inv = inv.ravel()
+    bin_n = np.bincount(inv, weights=n)
+    if n.sum() < MIN_TOTAL_SAMPLES or (bin_n >= MIN_CELL_N).sum() < MIN_SLIP_BINS:
         return None
-    max_obs = float(slip[well].max())
+    dense = bin_n >= PEAK_OBS_MIN_N
+    if not dense.any():
+        return None
+    centres = (bin_ids + 0.5) * SLIP_BIN_DEG
+    if centres[dense].max() - centres[dense].min() < MIN_SLIP_SPAN_DEG:
+        return None
+    max_obs = float(centres[dense].max())
 
     # Reference state: count-weighted medians over cells with real slip (the cells that
     # carry the peak information); fall back to all cells if none reach it.
@@ -382,11 +398,17 @@ def fit_mf(bins: LapBins, target: str = "mu", prior=None, prior_weight: float = 
     # Peak observed: a well-sampled bin beyond the peak whose mean sits below the model's
     # peak AT THAT CELL'S STATE (D scales the whole curve; B only stretches slip, so the
     # state-specific peak is D(state) * shape_peak(C, E)).
-    far = (n >= PEAK_OBS_MIN_N) & (slip >= fit.peak_slip_deg + PEAK_OBS_MARGIN_DEG)
-    if far.any():
-        dm, _ = _scales(params, temp_on, ref, st_cell)
-        cell_peak = params["D0"] * dm * _shape_peak(params["C"], params["E"])
-        fit.peak_observed = bool(np.any(y[far] <= PEAK_OBS_RATIO * cell_peak[far]))
+    # Ruling 8: judged per SLIP BIN (marginal n >= 20) on the count-weighted mean of
+    # cell mean / model peak at the cell's state, not per sparse cell.
+    dm, _ = _scales(params, temp_on, ref, st_cell)
+    cell_peak = params["D0"] * dm * _shape_peak(params["C"], params["E"])
+    ratio = y / cell_peak
+    for j in np.flatnonzero(dense):
+        sel_b = inv == j
+        if np.average(slip[sel_b], weights=n[sel_b]) >= fit.peak_slip_deg + PEAK_OBS_MARGIN_DEG:
+            if np.average(ratio[sel_b], weights=n[sel_b]) <= PEAK_OBS_RATIO:
+                fit.peak_observed = True
+                break
     return fit
 
 

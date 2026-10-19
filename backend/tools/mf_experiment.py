@@ -192,7 +192,7 @@ def file_lap_bins(path) -> tuple:
     """(CarIdentity, {axle: [(lap_number, LapBins)]}, calibration) for one recording,
     with the same lap selection as GripProfile.ingest_tire_laps. Laps without
     any true-mu sample are kept out (nothing to score or fit on the true target)."""
-    laps = telemetry.load_telemetry_file(path)
+    laps = telemetry.load_telemetry_file(path, grid_hz=tm.TIRE_GRID_HZ)
     ident = identify_car(laps[0].meta, laps[0].car_name) if laps else None
     valid = [l for l in laps if l.lap_time_s < 600]
     out = {"front": [], "rear": []}

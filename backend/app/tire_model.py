@@ -92,6 +92,12 @@ REF_LOAD_SPEED_KMH = (40.0, 120.0)
 REF_LOAD_MAX_G = 0.1
 REF_LOAD_MIN_SAMPLES = 20
 
+# Time grid the tyre model loads recordings at. PREVIOUSLY the 20 Hz coaching grid
+# left only ~240 steady samples per lap on HF files, too few to populate the state
+# cells. Bins are sufficient statistics and the bootstrap resamples whole laps, so
+# the autocorrelated 50 Hz samples add information without faking independence.
+TIRE_GRID_HZ = 50.0
+
 # Bin width for the slip-angle -> grip histogram, degrees.
 SLIP_ANGLE_BIN_DEG = 0.4
 # A bin needs this many samples to count toward the curve at all, and

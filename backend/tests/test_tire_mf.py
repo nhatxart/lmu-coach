@@ -142,6 +142,24 @@ def test_returns_none_on_few_cells():
     assert mf.fit_mf(bins) is None
 
 
+def test_sparse_cells_dense_slip_marginal_fits():
+    # Ruling 8: 3000 samples spread over many 1-3 sample cells (wide load/temp/pressure)
+    # used to fail the "30 cells with n >= 5" gate although slip is densely covered.
+    bins = tb.LapBins.merge(make_bins(n_laps=1, n_per_lap=3000, seed=5, true_scale=1.0,
+                                      td_range=(-40.0, 20.0)))
+    a = tb.cell_arrays(bins)
+    assert (a["n"] >= 5).sum() < 30 and a["n"].sum() >= 3000
+    fit = mf.fit_mf(bins, target="true")
+    assert fit is not None
+    assert fit.max_observed_slip_deg > 6.0
+
+
+def test_marginal_gate_still_refuses_thin_slip_coverage():
+    # plenty of samples but all inside 4 slip bins (1.6 deg): fewer than 8 sampled bins
+    bins = tb.LapBins.merge(make_bins(n_laps=1, n_per_lap=3000, slip_range=(0.0, 1.5)))
+    assert mf.fit_mf(bins) is None
+
+
 def test_returns_none_on_narrow_slip_span():
     bins = tb.LapBins.merge(make_bins(slip_range=(0.0, 2.0)))
     assert mf.fit_mf(bins) is None
