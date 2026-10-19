@@ -24,7 +24,7 @@ Conventions (all deliberate):
 - Factors the data cannot identify are fixed neutral and reported, never guessed.
 """
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 import numpy as np
 from scipy.optimize import least_squares
@@ -80,12 +80,21 @@ class MFFit:
     peak_mu: float
     peak_observed: bool
     max_observed_slip_deg: float
+    # What was fitted: "mu" (the proxy `measure`) or "true" (the game's tyre-force mu).
+    target: str = "mu"
+    # Fitted params within 1 % of their bound width of a bound: the data did not pin them.
+    at_bound: list = field(default_factory=list)
+    notes: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @staticmethod
     def from_dict(d: dict) -> "MFFit":
+        d = dict(d)
+        d.setdefault("target", "mu")
+        d["at_bound"] = list(d.get("at_bound") or [])
+        d["notes"] = list(d.get("notes") or [])
         return MFFit(**d)
 
 
@@ -156,7 +165,8 @@ def _predict_raw(params, temp_on, ref, slip, state):
 
 
 def predict(fit: MFFit, slip_deg, state=None) -> np.ndarray:
-    return _predict_raw(fit.params, fit.factors_status.get("temp") == "fitted",
+    # "at_bound" temperature params are still used for prediction.
+    return _predict_raw(fit.params, fit.factors_status.get("temp") in ("fitted", "at_bound"),
                         fit.ref_state, slip_deg, state)
 
 
@@ -221,12 +231,22 @@ def fit_mf(bins: LapBins, target: str = "mu", prior=None, prior_weight: float = 
         ref[k] = _wquantile(v[f], n[f], 0.5) if f.any() else fallback[k]
 
     # Pressure ~ temp regression (count-weighted, all cells with both finite).
+    # PREVIOUSLY: always fitted, so with temperature NOT fitted pt_slope still fed dp in
+    # predict() and predictions depended on temp_delta_c. Fix: the temperature gate runs
+    # first; if temp is not fitted the slope stays 0 (dp = pressure - weighted mean).
     pt = {"pt_slope": 0.0, "pt_intercept": 0.0}
     fp = np.isfinite(st_all["pressure_kpa"])
     ft = fp & np.isfinite(st_all["temp_delta_c"])
     if fp.any():
         pt["pt_intercept"] = float(np.average(st_all["pressure_kpa"][fp], weights=n[fp]))
-    if ft.sum() >= 2:
+    temp_ok = False
+    if "temp" in factors:
+        g = hi & np.isfinite(st_all["temp_delta_c"])
+        if g.sum() >= 3:
+            td_g = st_all["temp_delta_c"][g]
+            temp_ok = (_wquantile(td_g, n[g], 0.95) - _wquantile(td_g, n[g], 0.05)
+                       >= GATE["temp"][1])
+    if temp_ok and ft.sum() >= 2:
         w, x, z = n[ft], st_all["temp_delta_c"][ft], st_all["pressure_kpa"][ft]
         xm, zm = np.average(x, weights=w), np.average(z, weights=w)
         vx = np.sum(w * (x - xm) ** 2)
@@ -279,6 +299,16 @@ def fit_mf(bins: LapBins, target: str = "mu", prior=None, prior_weight: float = 
 
     # Prior: pulls only parameters that are free here AND meaningful in the prior.
     prior_terms = []
+    notes = []
+    if prior is not None and prior_weight > 0:
+        # A prior fitted on another measure/target is on a different scale of mu; pulling
+        # toward it would be wrong, so ignore it and say so.
+        if prior.measure != bins.measure:
+            notes.append("prior ignored: measure mismatch")
+            prior = None
+        elif prior.target != target:
+            notes.append("prior ignored: target mismatch")
+            prior = None
     if prior is not None and prior_weight > 0:
         pp = dict(prior.params)
         # The prior's D0/B0 refer to ITS reference state; re-express at ours so the pull
@@ -332,7 +362,15 @@ def fit_mf(bins: LapBins, target: str = "mu", prior=None, prior_weight: float = 
     fit = MFFit(params=params, ref_state={k: float(v) for k, v in ref.items()},
                 factors_status=status, measure=bins.measure, n_cells=int(len(y)),
                 n_samples=int(n_total), rmse=rmse, peak_slip_deg=0.0, peak_mu=0.0,
-                peak_observed=False, max_observed_slip_deg=max_obs)
+                peak_observed=False, max_observed_slip_deg=max_obs, target=target,
+                notes=notes)
+    for p in free:
+        lo_p, hi_p = BOUNDS[p]
+        if min(params[p] - lo_p, hi_p - params[p]) <= 0.01 * (hi_p - lo_p):
+            fit.at_bound.append(p)
+    if temp_on and any(p in fit.at_bound for p in FACTOR_PARAMS["temp"]):
+        # Prediction still uses the fitted values; the status tells consumers not to trust them.
+        fit.factors_status["temp"] = "at_bound"
     fit.peak_slip_deg, fit.peak_mu = peak_at(fit)
 
     # Peak observed: a well-sampled bin beyond the peak whose mean sits below the model's

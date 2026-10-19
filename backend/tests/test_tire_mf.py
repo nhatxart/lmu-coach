@@ -61,13 +61,65 @@ def test_recovers_wear_and_camber_factors():
 
 def test_unidentifiable_factor_fixed_neutral():
     bins = tb.LapBins.merge(make_bins(factors=("load",), td_range=(-32.0, -28.0)))
-    fit = mf.fit_mf(bins, factors=("load", "temp"))
+    fit = mf.fit_mf(bins)  # all factors enabled
     assert fit.factors_status["temp"] == "not_identifiable"
     assert fit.factors_status["load"] == "fitted"
+    # Temperature unfitted -> pressure slope must be 0, or temp would leak in through dp.
+    assert fit.params["pt_slope"] == 0.0
     slip = np.linspace(0.5, 7, 14)
     ref = mf.predict(fit, slip)
     hot = mf.predict(fit, slip, {"temp_delta_c": 40.0})
     assert np.array_equal(ref, hot)
+
+
+def test_disabled_temp_does_not_leak_through_pressure():
+    fit = mf.fit_mf(_merged(), factors=("load", "pressure"))
+    assert fit.factors_status["temp"] == "disabled" and fit.params["pt_slope"] == 0.0
+    slip = np.linspace(0.5, 7, 14)
+    assert np.array_equal(mf.predict(fit, slip),
+                          mf.predict(fit, slip, {"temp_delta_c": 40.0}))
+
+
+def test_temp_at_bound_when_optimum_never_reached():
+    # True optimum (+40 C) lies beyond the T0 bound and above every sampled temperature,
+    # so the fit can only push T0 to its upper bound.
+    bins = tb.LapBins.merge(make_bins(true_params={"T0": 40.0}, factors=("load", "temp")))
+    fit = mf.fit_mf(bins, factors=("load", "temp"))
+    assert fit is not None
+    assert fit.factors_status["temp"] == "at_bound"
+    assert "T0" in fit.at_bound
+    assert np.all(np.isfinite(mf.predict(fit, np.array([3.0]), {"temp_delta_c": 10.0})))
+
+
+def test_target_recorded_and_prior_incompatibility_ignored():
+    bins = _merged(true_scale=0.9)
+    prior_mu = mf.fit_mf(bins)
+    assert prior_mu.target == "mu"
+    true = mf.fit_mf(bins, target="true", prior=prior_mu, prior_weight=10.0)
+    assert true.target == "true" and true.measure == "mu_load_normalized"
+    assert "prior ignored: target mismatch" in true.notes
+    plain = mf.fit_mf(bins, target="true")
+    assert true.params == plain.params  # ignored prior == no prior
+    lat = tb.LapBins.merge(make_bins(measure="lat", factors=()))
+    f = mf.fit_mf(lat, prior=prior_mu, prior_weight=10.0)
+    assert "prior ignored: measure mismatch" in f.notes
+
+
+def test_peak_not_observed_when_slip_stops_short():
+    bins = _merged(slip_range=(0.0, 3.0), seed=3)
+    fit = mf.fit_mf(bins)
+    assert fit is not None and fit.peak_observed is False
+    assert fit.max_observed_slip_deg < 3.1
+
+
+def test_new_fields_round_trip_and_old_dicts_load():
+    fit = mf.fit_mf(_merged(true_scale=0.9), target="true")
+    assert mf.MFFit.from_dict(json.loads(json.dumps(fit.to_dict()))) == fit
+    d = fit.to_dict()
+    for k in ("target", "at_bound", "notes"):
+        d.pop(k)
+    old = mf.MFFit.from_dict(d)
+    assert old.target == "mu" and old.at_bound == [] and old.notes == []
 
 
 def test_disabled_factor_status():
