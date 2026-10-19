@@ -232,6 +232,77 @@ def test_load_sources_round_trip_and_old_profiles_are_labelled_unknown():
     assert p3.label_load_sources([lap], "f") == []  # already labelled
 
 
+# -- v3 per-sample extraction -------------------------------------------------
+
+def test_kerb_samples_masked():
+    lap = _lap()
+    base = tm._lap_axle_samples(lap)["front"]["mask"].copy()
+    n = len(lap.time_s)
+    for w in ("FL", "FR", "RL", "RR"):
+        lap.channels[f"Surface Type {w}"] = np.zeros(n)
+    lap.channels["Surface Type FL"][1000:1050] = 5.0   # kerb
+    s = tm._lap_axle_samples(lap)
+    assert not s["front"]["mask"][1000:1050].any()
+    assert base[1000:1050].any()                       # was a valid corner sample
+    assert (s["rear"]["mask"] == base).all()
+    assert (s["front"]["mask"][:1000] == base[:1000]).all()
+
+
+def test_true_mu_from_forces():
+    lap = _lap()
+    n = len(lap.time_s)
+    for w in ("FL", "FR"):
+        lap.channels[f"Tire Lateral Force {w}"] = np.full(n, -6000.0)  # sign-agnostic
+        lap.channels[f"Tire Load {w}"] = np.full(n, 4000.0)
+    s = tm._lap_axle_samples(lap)
+    assert np.allclose(s["front"]["true_mu"], 1.5)
+    assert np.isnan(s["rear"]["true_mu"]).all()
+
+
+def test_true_mu_nan_without_forces():
+    s = tm._lap_axle_samples(_lap())
+    assert np.isnan(s["front"]["true_mu"]).all()
+
+
+def test_true_mu_nan_at_low_load():
+    lap = _lap()
+    n = len(lap.time_s)
+    fz = np.full(n, 4000.0)
+    fz[:100] = 500.0                                   # < 30 % of the median
+    for w in ("FL", "FR"):
+        lap.channels[f"Tire Lateral Force {w}"] = np.full(n, 6000.0)
+        lap.channels[f"Tire Load {w}"] = fz
+    mu = tm._lap_axle_samples(lap)["front"]["true_mu"]
+    assert np.isnan(mu[:100]).all() and np.allclose(mu[100:], 1.5)
+
+
+def test_new_state_fields_present():
+    lap = _lap()
+    n = len(lap.time_s)
+    for w in ("FL", "FR", "RL", "RR"):
+        lap.channels[f"Camber {w}"] = np.full(n, -0.05)
+        lap.channels[f"TyresWear {w}"] = np.full(n, 0.9)     # remaining tread
+        lap.channels[f"TyresCarcassTemp {w}"] = np.full(n, 85.0)
+    lap.channels["Camber FL"][:10] = 0.59                    # outlier -> NaN
+    lap.channels["TyresCarcassTemp RL"][:10] = -273.15       # sentinel -> NaN
+    s = tm._lap_axle_samples(lap)
+    f, r = s["front"], s["rear"]
+    assert np.allclose(f["camber_deg"][10:], 2.865, atol=0.001)
+    assert np.isnan(f["camber_deg"][:10]).all()
+    assert np.allclose(f["wear"], 0.1)                       # worn = 1 - remaining
+    assert np.allclose(f["carcass_delta_c"], -5.0)
+    assert np.isnan(r["carcass_delta_c"][:10]).all()
+    assert np.allclose(r["carcass_delta_c"][10:], -5.0)
+    assert np.allclose(f["speed_kmh"], lap.channels["Ground Speed"])
+    assert np.allclose(f["long_g"], 0.0)
+
+
+def test_new_fields_nan_when_channels_absent():
+    f = tm._lap_axle_samples(_lap())["front"]
+    for k in ("carcass_delta_c", "wear", "camber_deg", "true_mu"):
+        assert np.isnan(f[k]).all()
+
+
 # -- new HF channels ----------------------------------------------------------
 
 def test_hf_wheel_channels_registered():

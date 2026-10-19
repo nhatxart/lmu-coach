@@ -550,6 +550,22 @@ def _lap_axle_samples(
         optimal = []
     optimal_by_wheel = dict(zip(WHEEL_LABELS, optimal)) if len(optimal) == 4 else {}
 
+    n = len(speed)
+    nan_arr = np.full(n, np.nan)
+    long_g_arr = np.asarray(long_g, dtype=float) if long_g is not None else nan_arr
+
+    def _clean_pair_mean(ch, wheels, bad):
+        """Axle mean after NaN-ing each wheel's invalid readings (bad(v) -> bool
+        array). Mean of a NaN wheel is NaN: one bad wheel makes the axle unknown
+        rather than silently halving the value. None when a channel is absent."""
+        a, b = lap.channels.get(f"{ch} {wheels[0]}"), lap.channels.get(f"{ch} {wheels[1]}")
+        if a is None or b is None:
+            return None
+        a, b = np.asarray(a, dtype=float).copy(), np.asarray(b, dtype=float).copy()
+        a[bad(a)] = np.nan
+        b[bad(b)] = np.nan
+        return (a + b) / 2
+
     out = {}
     for axle, wheels in (("front", ("FL", "FR")), ("rear", ("RL", "RR"))):
         slip_deg = np.degrees(_pair_mean(lap, "Slip Angle", wheels))
@@ -559,7 +575,48 @@ def _lap_axle_samples(
         temp_delta = None
         if temp is not None and optimal_by_wheel:
             temp_delta = temp - (optimal_by_wheel[wheels[0]] + optimal_by_wheel[wheels[1]]) / 2
+        # PREVIOUSLY the mask ignored the surface. Kerb/grass/gravel samples have
+        # tyre forces unrelated to the road-tyre curve and poisoned the peak.
+        # Fix: when Surface Type exists, both wheels must be dry (0) or wet (1).
+        valid = steady & np.isfinite(slip_deg) & np.isfinite(lat_abs)
+        for w in wheels:
+            surf = lap.channels.get(f"Surface Type {w}")
+            if surf is not None:
+                valid &= np.isin(surf, (0.0, 1.0))
+
+        # Camber is radians (typical -0.035..+0.011); a few samples reach ±0.59
+        # (physics glitches), so |camber| > 0.1 rad is dropped per wheel.
+        camber = _clean_pair_mean("Camber", wheels, lambda v: np.abs(v) > 0.1)
+        # Carcass temp carries a -273.15 C sentinel (0 K = no reading).
+        carcass = _clean_pair_mean("TyresCarcassTemp", wheels, lambda v: v <= -100.0)
+        carcass_delta = None
+        if carcass is not None and optimal_by_wheel:
+            carcass_delta = carcass - (optimal_by_wheel[wheels[0]] + optimal_by_wheel[wheels[1]]) / 2
+        # TyresWear is the REMAINING tread fraction (1.0 = new); store the WORN
+        # fraction so larger = more worn.
+        remaining = _pair_mean(lap, "TyresWear", wheels)
+
+        # True mu = sum|Fy| / sum Fz over the axle's wheels. Needs both channels;
+        # NaN where load < 30 % of the lap's median axle load (unloaded wheel,
+        # ratio blows up). GT3 cars record zeros -> median 0 -> all NaN.
+        true_mu = nan_arr
+        fy = [lap.channels.get(f"Tire Lateral Force {w}") for w in wheels]
+        fz = [lap.channels.get(f"Tire Load {w}") for w in wheels]
+        if all(c is not None for c in fy + fz):
+            fz_sum = np.asarray(fz[0], dtype=float) + np.asarray(fz[1], dtype=float)
+            fy_sum = np.abs(np.asarray(fy[0], dtype=float)) + np.abs(np.asarray(fy[1], dtype=float))
+            med = np.nanmedian(fz_sum)
+            if np.isfinite(med) and med > 0:
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    true_mu = np.where(fz_sum >= 0.3 * med, fy_sum / fz_sum, np.nan)
+
         out[axle] = {
+            "carcass_delta_c": carcass_delta if carcass_delta is not None else nan_arr,
+            "wear": 1.0 - remaining if remaining is not None else nan_arr,
+            "camber_deg": np.degrees(np.abs(camber)) if camber is not None else nan_arr,
+            "long_g": long_g_arr,
+            "speed_kmh": np.asarray(speed, dtype=float),
+            "true_mu": true_mu,
             "slip_angle_deg": slip_deg,
             "lateral_g": lat_abs,
             "tire_temp_c": temp,
@@ -568,7 +625,7 @@ def _lap_axle_samples(
             "load_ratio": load_ratio,
             "temp_delta_c": temp_delta,
             "load_source": load_source,
-            "mask": steady & np.isfinite(slip_deg) & np.isfinite(lat_abs),
+            "mask": valid,
         }
     return out
 
