@@ -297,6 +297,25 @@ def test_new_state_fields_present():
     assert np.allclose(f["long_g"], 0.0)
 
 
+def test_camber_opposite_signs_do_not_cancel():
+    lap = _lap()
+    n = len(lap.time_s)
+    lap.channels["Camber FL"] = np.full(n, 0.05)
+    lap.channels["Camber FR"] = np.full(n, -0.05)
+    s = tm._lap_axle_samples(lap)
+    assert np.allclose(s["front"]["camber_deg"], 2.865, atol=0.001)
+
+
+def test_new_fields_are_independent_arrays():
+    lap = _lap()
+    s = tm._lap_axle_samples(lap)
+    assert not np.shares_memory(s["front"]["speed_kmh"], lap.channels["Ground Speed"])
+    assert not np.shares_memory(s["front"]["long_g"], lap.channels["G Force Long"])
+    f = s["front"]
+    f["wear"][0] = 1.0
+    assert np.isnan(f["camber_deg"][0]) and np.isnan(s["rear"]["wear"][0])
+
+
 def test_new_fields_nan_when_channels_absent():
     f = tm._lap_axle_samples(_lap())["front"]
     for k in ("carcass_delta_c", "wear", "camber_deg", "true_mu"):

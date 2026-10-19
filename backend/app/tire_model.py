@@ -551,10 +551,14 @@ def _lap_axle_samples(
     optimal_by_wheel = dict(zip(WHEEL_LABELS, optimal)) if len(optimal) == 4 else {}
 
     n = len(speed)
-    nan_arr = np.full(n, np.nan)
-    long_g_arr = np.asarray(long_g, dtype=float) if long_g is not None else nan_arr
+    # A fresh array per use: a shared one returned under several keys/axles
+    # would let an in-place edit of one field corrupt the others.
+    def nan_arr():
+        return np.full(n, np.nan)
 
-    def _clean_pair_mean(ch, wheels, bad):
+    long_g_arr = np.array(long_g, dtype=float) if long_g is not None else nan_arr()
+
+    def _clean_pair_mean(ch, wheels, bad, absolute=False):
         """Axle mean after NaN-ing each wheel's invalid readings (bad(v) -> bool
         array). Mean of a NaN wheel is NaN: one bad wheel makes the axle unknown
         rather than silently halving the value. None when a channel is absent."""
@@ -564,6 +568,10 @@ def _lap_axle_samples(
         a, b = np.asarray(a, dtype=float).copy(), np.asarray(b, dtype=float).copy()
         a[bad(a)] = np.nan
         b[bad(b)] = np.nan
+        if absolute:
+            # Per-wheel |v| BEFORE averaging: the mean of signed values cancels
+            # toward 0 when the wheels have opposite signs (e.g. static camber).
+            a, b = np.abs(a), np.abs(b)
         return (a + b) / 2
 
     out = {}
@@ -586,7 +594,7 @@ def _lap_axle_samples(
 
         # Camber is radians (typical -0.035..+0.011); a few samples reach ±0.59
         # (physics glitches), so |camber| > 0.1 rad is dropped per wheel.
-        camber = _clean_pair_mean("Camber", wheels, lambda v: np.abs(v) > 0.1)
+        camber = _clean_pair_mean("Camber", wheels, lambda v: np.abs(v) > 0.1, absolute=True)
         # Carcass temp carries a -273.15 C sentinel (0 K = no reading).
         carcass = _clean_pair_mean("TyresCarcassTemp", wheels, lambda v: v <= -100.0)
         carcass_delta = None
@@ -599,7 +607,7 @@ def _lap_axle_samples(
         # True mu = sum|Fy| / sum Fz over the axle's wheels. Needs both channels;
         # NaN where load < 30 % of the lap's median axle load (unloaded wheel,
         # ratio blows up). GT3 cars record zeros -> median 0 -> all NaN.
-        true_mu = nan_arr
+        true_mu = nan_arr()
         fy = [lap.channels.get(f"Tire Lateral Force {w}") for w in wheels]
         fz = [lap.channels.get(f"Tire Load {w}") for w in wheels]
         if all(c is not None for c in fy + fz):
@@ -611,11 +619,11 @@ def _lap_axle_samples(
                     true_mu = np.where(fz_sum >= 0.3 * med, fy_sum / fz_sum, np.nan)
 
         out[axle] = {
-            "carcass_delta_c": carcass_delta if carcass_delta is not None else nan_arr,
-            "wear": 1.0 - remaining if remaining is not None else nan_arr,
-            "camber_deg": np.degrees(np.abs(camber)) if camber is not None else nan_arr,
-            "long_g": long_g_arr,
-            "speed_kmh": np.asarray(speed, dtype=float),
+            "carcass_delta_c": carcass_delta if carcass_delta is not None else nan_arr(),
+            "wear": 1.0 - remaining if remaining is not None else nan_arr(),
+            "camber_deg": np.degrees(camber) if camber is not None else nan_arr(),
+            "long_g": long_g_arr.copy(),
+            "speed_kmh": np.array(speed, dtype=float),
             "true_mu": true_mu,
             "slip_angle_deg": slip_deg,
             "lateral_g": lat_abs,
