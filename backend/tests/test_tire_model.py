@@ -1,4 +1,4 @@
-"""Tire model v2 (tire_model.py / grip_profile.py).
+﻿"""Tire model: per-lap extraction (tire_model.py) and profile ingest (grip_profile.py).
 
 Run from the repo root:
     uv run --no-project --with pytest --with fastapi --with duckdb --with numpy `
@@ -128,29 +128,32 @@ def test_ingest_adds_each_lap_once_and_skips_slow_laps():
     laps[2].lap_time_s *= 1.5  # out lap
     p = grip_profile.GripProfile(car_name="Car")
     assert p.ingest_tire_laps(laps, "f.duckdb") == [0, 1]
-    n = len(p.front_axle_obs)
+    n = p.tire_sample_count()
+    assert n > 0
     assert p.ingest_tire_laps(laps, "f.duckdb") == []
-    assert len(p.front_axle_obs) == n
+    assert p.tire_sample_count() == n
     assert p.deflection_calibration["front"]["r"] > 0.99
 
 
 def test_v1_profile_tire_observations_are_discarded():
+    # v1 (no version key) and v2 raw-observation profiles lose their tyre data on load
+    # (details in test_grip_profile_v3.py); baselines survive and v3 round-trips.
     v1 = {"car_name": "Car", "lap_count": 3, "tc_active_fractions": [0.5],
           "front_axle_obs": {"slip_angle_deg": [1.0], "lateral_g": [1.0]}}
     p = grip_profile.GripProfile.from_dict(v1)
-    assert len(p.front_axle_obs) == 0 and p.lap_count == 3 and p.tc_active_fractions == [0.5]
-    p2 = grip_profile.GripProfile.from_dict(p.to_dict())  # v2 round trip keeps samples
+    assert p.tire_model_laps == [] and p.lap_count == 3 and p.tc_active_fractions == [0.5]
+    p2 = grip_profile.GripProfile.from_dict(p.to_dict())
     assert p2.tire_model_version == grip_profile.TIRE_MODEL_VERSION
 
 
-def test_round_trip_preserves_nan_fields():
+def test_round_trip_preserves_missing_load_measure():
+    # No load source at all: the lap is binned in raw lateral G and stays that way.
     p = grip_profile.GripProfile(car_name="Car")
     p.ingest_tire_laps([_lap(susp_force=False)], "f")
     p.deflection_calibration = {}
     d = grip_profile.GripProfile.from_dict(p.to_dict())
-    assert len(d.front_axle_obs) == len(p.front_axle_obs)
-    assert not np.isfinite(d.front_axle_obs.arrays()["load_ratio"]).any()
-
+    assert d.tire_files == p.tire_files
+    assert d.tire_files["f"]["laps"]["1"]["front"]["measure"] == "lateral_g"
 
 # ── real recording ───────────────────────────────────────────────────────────
 
@@ -160,13 +163,13 @@ def test_real_fuji_file():
     p = grip_profile.GripProfile(car_name=laps[0].car_name)
     added = p.ingest_tire_laps(laps, FUJI.name)
     assert len(added) >= 7
-    front = tm.build_axle_tire_model(p.front_axle_obs)
+    base = p.compute_baselines()
+    front = base["front_tire_model"]
     assert front["grip_measure"] == "mu_load_normalized"
     assert front["peak"] is not None
-    assert "cold-tyre" in front["tyre_temperature"]["warning"]  # 59-73 °C vs 92
     best = min((l for l in laps if l.lap_time_s < 600), key=lambda l: l.lap_time_s)
     gu = tm.compute_grip_utilization_for_lap(
-        best, front, tm.build_axle_tire_model(p.rear_axle_obs), p.deflection_calibration,
+        best, front, base["rear_tire_model"], p.deflection_calibration,
         tm.file_load_reference(laps, p.deflection_calibration))
     assert 0.7 < gu["cornering_efficiency"] < 1.2
 
@@ -217,20 +220,11 @@ def test_tire_load_wins_over_susp_force_and_needs_no_note():
     assert "note" not in p.compute_baselines()["load_normalization"]
 
 
-def test_load_sources_round_trip_and_old_profiles_are_labelled_unknown():
+def test_load_sources_round_trip():
     p = grip_profile.GripProfile(car_name="Car")
     p.ingest_tire_laps([_lap()], "f")
     p2 = grip_profile.GripProfile.from_dict(p.to_dict())
-    assert p2.tire_model_load_sources == p.tire_model_load_sources
-    old = p.to_dict()
-    del old["tire_model_load_sources"]  # profile saved before the field existed
-    p3 = grip_profile.GripProfile.from_dict(old)
-    assert "not recorded" in next(iter(p3.compute_baselines()["load_normalization"]["laps_by_load_source"]))
-    lap = _lap()
-    assert p3.label_load_sources([lap], "f") == [lap.lap_number]  # backfill
-    assert p3.tire_model_load_sources["f#1"] == "Susp Force"
-    assert p3.label_load_sources([lap], "f") == []  # already labelled
-
+    assert p2.tire_model_load_sources == p.tire_model_load_sources == {"f#1": "Susp Force"}
 
 # -- v3 per-sample extraction -------------------------------------------------
 

@@ -80,6 +80,21 @@ def test_prior_used_label():
         tc.fit_car_with_prior(laps, prior, prior_kind="bogus")
 
 
+def test_prior_not_applied_from_three_laps(monkeypatch):
+    # Ruling 11b: held-out scores showed no benefit (even harm) once a car has its own
+    # laps, so both prior kinds are switched off at PRIOR_MAX_LAPS laps.
+    assert tc.PRIOR_MAX_LAPS == 3 and tc.CLASS_PRIOR_WEIGHT == 0.3
+    prior = tc.fit_class_prior({"a": _car(1.8, 1), "b": _car(1.8, 2)}, tb.MEASURE_MU)
+    two = make_bins(n_laps=2, factors=LOAD_ONLY, seed=5)
+    three = make_bins(n_laps=3, factors=LOAD_ONLY, seed=5)
+    for kind in tc.PRIOR_KINDS:
+        assert tc.fit_car_with_prior(two, prior, n_boot=3, prior_kind=kind)["prior_used"] == kind
+        assert tc.fit_car_with_prior(three, prior, n_boot=3, prior_kind=kind)["prior_used"] == "none"
+    # the guard follows the module constant (grip_profile tests lift it to reach older_version)
+    monkeypatch.setattr(tc, "PRIOR_MAX_LAPS", 4)
+    assert tc.fit_car_with_prior(three, prior, n_boot=3)["prior_used"] == "class"
+
+
 def test_class_prior_skips_other_measure_and_empty():
     cars = {"a": _car(1.8, 1), "lat": make_bins(n_laps=3, measure="lat", factors=()),
             "none": [tb.LapBins(tb.MEASURE_MU)]}

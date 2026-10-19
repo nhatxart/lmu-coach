@@ -644,6 +644,16 @@ def _lap_axle_samples(
     return out
 
 
+def axle_load_source(s: dict) -> str:
+    """Where one axle's load ratio came from (a `_lap_axle_samples` axle dict). Shared by
+    the v2 observation extraction and the v3 profile ingest, which labels each stored lap."""
+    if s["load_ratio"] is not None:
+        return s["load_source"]
+    if s["load_source"] is not None:
+        return "none (no low-speed straight reference in this file)"
+    return "none (no load channel)"
+
+
 def extract_axle_observations_from_lap(
     lap: LapTelemetry, calibration: dict[str, dict] | None = None,
     load_ref: dict[str, float] | None = None,
@@ -659,12 +669,7 @@ def extract_axle_observations_from_lap(
     result = {}
     for axle, s in samples.items():
         obs = AxleSlipObservations()
-        if s["load_ratio"] is not None:
-            obs.load_source = s["load_source"]
-        elif s["load_source"] is not None:
-            obs.load_source = "none (no low-speed straight reference in this file)"
-        else:
-            obs.load_source = "none (no load channel)"
+        obs.load_source = axle_load_source(s)
         m = s["mask"]
         if m.any():
             obs.add_samples(**{

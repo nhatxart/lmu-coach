@@ -103,8 +103,8 @@ def main() -> int:
         print(f"  car={car} {'(NEW profile)' if car in new_cars else '(extending)'} track={valid[0].track_name}")
 
         if args.label_only:
-            done = prof.label_load_sources(laps, path.name)
-            print(f"  load sources labelled for laps: {done or 'none needed'}")
+            # v3 stores each lap's load source at ingest, so there is nothing to backfill.
+            print("  --label-only: load sources are recorded at ingest in profile v3, skipped")
             continue
 
         if not args.tyre_only:
@@ -126,13 +126,13 @@ def main() -> int:
                 print(f"  baselines: +{done} laps (not real laps: {skipped or 'none'})")
                 ledger.add(path.name)
 
-        n0 = len(prof.front_axle_obs)
+        n0 = prof.tire_sample_count()
         try:
             added = prof.ingest_tire_laps(laps, file_key=path.name)
         except Exception as e:
             print(f"  tyre model FAILED: {e}")
             added = []
-        print(f"  tyre model: +laps {added or 'none'} +samples/axle {len(prof.front_axle_obs) - n0}")
+        print(f"  tyre model: +laps {added or 'none'} +samples/axle {prof.tire_sample_count() - n0}")
 
     print("\n== profiles")
     for car, prof in profiles.items():
