@@ -12,6 +12,7 @@ The first run downloads the packages, and later runs use uv's cache.
 | `CHECK_TIRE_FORCES.ps1` | nothing | Checks whether a recording has usable tyre-force channels |
 | `COMPARE_LOAD_SOURCES.ps1` | nothing | Pilot: does Susp Force give the same grip numbers as the game's Tire Load? (needs a car that has both) |
 | `MF_EXPERIMENT.ps1` | nothing | Tyre model v3 experiment: which state factors (load, temp, pressure, wear, camber) improve held-out prediction of the game's true mu? |
+| `CLASS_COLLAPSE.ps1` | nothing | Tyre model v3 experiment: how much should a car lean on the pooled curve of the other cars of its class (works for LMGT3, which has no tyre forces)? |
 
 None of these tools ever modify `data/sessions/*.duckdb`. They open it read-only.
 
@@ -134,6 +135,21 @@ Tyre model v3 fits a Magic Formula whose peak and stiffness are scaled by load, 
 ```
 
 It prints one table per car and axle: held-out R², the change from the previous factor, RMSE, and the factor status of the training fits (`fit` = fitted, `NI` = not identifiable, `AB` = at a bound). `NI` means the data could not test that factor; it is not the same as "fitted but no gain". It runs in seconds and needs recordings with Tire Load and Tire Lateral Force (Hypercars today).
+
+---
+
+## CLASS_COLLAPSE.ps1 - how much should a car borrow from its class?
+
+Cars of one class (all LMGT3, all Hypercars) share tyre physics, so a car with few laps can lean on a Magic Formula pooled over the *other* cars of its class (the "class prior"). This tool measures how much leaning helps. The target is the **proxy mu** (lateral G / load), because LMGT3 cars record no tyre forces.
+
+```powershell
+.\CLASS_COLLAPSE.ps1 --sessions-dir C:\path\to\data\sessions --class LMGT3
+.\CLASS_COLLAPSE.ps1 --sessions-dir C:\path\to\data\sessions --class Hypercar
+```
+
+Per axle and car it prints the car's own fitted peak slip and peak mu (at the class reference state, with the offset vs the class prior; `*` = the peak is beyond that car's data), then leave-one-lap-out held-out R2 for prior weights 0, 0.3, 1, 3 and 10. The prior for a car is always built from the other cars only. The line `BEST WEIGHT` is the weight with the highest mean R2 over the scored cars. A car with one lap cannot be scored (no training lap) and is shown as `n/a`; laps without a load channel (plain lateral G) cannot be pooled and are listed as left out.
+
+**Read it with care:** the cars of a class were recorded on different tracks, so the track is mixed up with the car, and a lap held out from the same file as its training laps is an easy test for weight 0. Runs in about half a minute.
 
 ---
 

@@ -58,10 +58,13 @@ VARIANT_NAMES = ["binned_v2", "binned_v2_proxy"] + [v[0] for v in MF_VARIANTS]
 
 # ------------------------------------------------------------------ scoring ------------
 
-def _heldout_cells(bins: LapBins):
+def _heldout_cells(bins: LapBins, target: str = "true"):
+    """Cornering cells to score on. target "mu" scores the proxy (mu_mean, n) - the only
+    mu a class without tyre forces (LMGT3) has."""
     a = cell_arrays(bins)
-    ok = ((a["slip"] >= HELDOUT_MIN_SLIP_DEG) & (a["true_n"] >= HELDOUT_MIN_TRUE_N)
-          & np.isfinite(a["true_mean"]))
+    n_key, y_key = ("true_n", "true_mean") if target == "true" else ("n", "mu_mean")
+    ok = ((a["slip"] >= HELDOUT_MIN_SLIP_DEG) & (a[n_key] >= HELDOUT_MIN_TRUE_N)
+          & np.isfinite(a[y_key]))
     return {k: v[ok] for k, v in a.items()}, ok
 
 
@@ -72,14 +75,14 @@ def _sums(pred, y, w):
     return sw, float(np.sum(w * (y - pred) ** 2)), float(np.sum(w * (y - ybar) ** 2))
 
 
-def heldout_r2(fit, bins: LapBins, predictor=None) -> dict | None:
+def heldout_r2(fit, bins: LapBins, predictor=None, target: str = "true") -> dict | None:
     """Weighted R^2 and RMSE of `fit` (an MFFit) or `predictor(slip) -> mu` on the
-    held-out cornering cells of `bins` against the game's true mu. None if no cell
-    qualifies."""
-    a, ok = _heldout_cells(bins)
+    held-out cornering cells of `bins` against the game's true mu (target "true") or the
+    proxy mu (target "mu"). None if no cell qualifies."""
+    a, ok = _heldout_cells(bins, target)
     if not ok.any():
         return None
-    w, y = a["true_n"], a["true_mean"]
+    w, y = (a["true_n"], a["true_mean"]) if target == "true" else (a["n"], a["mu_mean"])
     if predictor is not None:
         pred = predictor(a["slip"])
     else:
@@ -206,10 +209,11 @@ def format_table(title: str, res: dict) -> str:
 
 # ------------------------------------------------------------------ data ---------------
 
-def file_lap_bins(path) -> tuple:
+def file_lap_bins(path, require_true: bool = True) -> tuple:
     """(CarIdentity, {axle: [(lap_number, LapBins)]}) for one recording,
     with the same lap selection as GripProfile.ingest_tire_laps. Laps without
-    any true-mu sample are kept out (nothing to score or fit on the true target)."""
+    any true-mu sample are kept out (nothing to score or fit on the true target) unless
+    require_true=False (class_collapse works on the proxy mu, GT3 has no forces)."""
     laps = telemetry.load_telemetry_file(path, grid_hz=tm.TIRE_GRID_HZ)
     ident = identify_car(laps[0].meta, laps[0].car_name) if laps else None
     valid = [l for l in laps if l.lap_time_s < 600]
@@ -232,7 +236,8 @@ def file_lap_bins(path) -> tuple:
             continue
         for axle, s in samples.items():
             bins = bin_axle_samples(s, s["mask"])
-            if any(c.n_true for c in bins.cells.values()):
+            if bins.cells and (not require_true
+                               or any(c.n_true for c in bins.cells.values())):
                 out[axle].append((lap.lap_number, bins))
     return ident, out
 
@@ -242,7 +247,8 @@ def _peek_identity(path):
     return identify_car(meta, meta.get("CarName", "unknown"))
 
 
-def collect(sessions_dir: Path, car_class: str, pattern: str | None) -> dict:
+def collect(sessions_dir: Path, car_class: str, pattern: str | None,
+            require_true: bool = True) -> dict:
     """{model: {axle: [(file name, lap number, LapBins)]}} for the class."""
     cars: dict = {}
     for path in sorted(sessions_dir.glob("*.duckdb")):
@@ -253,7 +259,7 @@ def collect(sessions_dir: Path, car_class: str, pattern: str | None) -> dict:
         try:
             if car_class and _peek_identity(path).car_class != car_class:
                 continue
-            ident, per_axle = file_lap_bins(path)
+            ident, per_axle = file_lap_bins(path, require_true)
             if ident is None:
                 print(f"skip {path.name}: no laps", file=sys.stderr)
                 continue
@@ -265,7 +271,8 @@ def collect(sessions_dir: Path, car_class: str, pattern: str | None) -> dict:
                 cars.setdefault(ident.model, {"front": [], "rear": []})[axle].append(
                     (path.name, lap_no, bins))
         print(f"loaded {path.name}: {ident.model} "
-              f"{len(per_axle['front'])} front / {len(per_axle['rear'])} rear laps with true mu",
+              f"{len(per_axle['front'])} front / {len(per_axle['rear'])} rear laps"
+              + (" with true mu" if require_true else ""),
               file=sys.stderr)
     return cars
 

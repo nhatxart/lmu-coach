@@ -127,3 +127,18 @@ Findings:
   | mf_all_on_proxy | -0.650 | -2.054 | 0.091 | -0.861 | -0.738 | -2.809 | 0.016 |
 
 - Gate status: load fitted everywhere (+0.16..+0.42 on Valkyrie/Cadillac, large on HF). Temp: not identifiable on Valkyrie/Cadillac; on Ferrari/Genesis identifiable but pinned at a bound (AB) in nearly all folds, so +0.56 on Ferrari R but -0.12/-0.42 on Ferrari F/Genesis F. Pressure: fitted where the spread allows, never helped (-0.01..-0.27). Wear: fitted on HF only, -0.12/-0.18 (Ferrari), +0.10 (Genesis F). Camber: ~0 (+0.005 / -0.012; not identifiable on most Ferrari folds). Genesis rear: all fits refused (3 laps, 2-lap training). Caveat: wear grows monotonically with the lap, so leave-one-lap-out asks it to extrapolate.
+
+- PM gate (Ruling 10): `tire_mf.ENABLED_FACTORS = ("load",)`. From the Hypercar experiment above: load is the only factor that generalised (+0.16..+0.42 R2 on Valkyrie/Cadillac); pressure never helped, temperature was mixed and at a bound, wear is confounded with lap number, camber ~0. The other factors stay implemented (pass `factors=`), tests that need them say so.
+- Class pooling (backend/app/tire_class.py: `fit_class_prior`, `fit_car_with_prior`, `CLASS_PRIOR_WEIGHT`) and its experiment (backend/tools/class_collapse.py, CLASS_COLLAPSE.ps1; 26-30 s per class). Target = PROXY mu (LMGT3 has no forces); held-out = leave-one-lap-out per car, cells slip >= 1.5 deg and n >= 3, R2 pooled over folds where every weight fitted; the prior is the pooled fit of the OTHER cars of the class (each car scaled to the median car's n), never the held-out car. Mean held-out R2 over scored cars (front / rear / both axles):
+
+  | class | weight | 0 | 0.3 | 1 | 3 | 10 |
+  |---|---|---|---|---|---|---|
+  | LMGT3 (BMW, Mustang, Porsche) | front | 0.721 | 0.698 | 0.701 | 0.700 | 0.678 |
+  | LMGT3 | rear | 0.342 | 0.347 | 0.319 | 0.276 | 0.224 |
+  | LMGT3 | both | **0.531** | 0.522 | 0.510 | 0.488 | 0.451 |
+  | Hypercar (Valkyrie, Cadillac, Ferrari, Genesis) | front | 0.479 | 0.446 | 0.432 | 0.389 | 0.374 |
+  | Hypercar | rear | 0.136 | 0.020 | -0.021 | -0.098 | -0.119 |
+  | Hypercar | both | **0.332** | 0.263 | 0.238 | 0.180 | 0.163 |
+
+  The tool's best weight is 0 for both classes (0.3 wins on LMGT3 rear by 0.005 only). Per car the prior helps where the car is the odd one out of its own track: Porsche rear R2 0.310 -> 0.635 (w=10), Cadillac rear 0.138 -> 0.244, Valkyrie front +0.04; it hurts BMW (25 laps: rear 0.187 -> -0.371) and Genesis front (0.800 -> 0.326). The prior cannot be scored for a one-lap car (no training lap in a leave-one-lap-out fold; Genesis rear has 3 laps, no fold where every weight fits).
+- Caveats for reading the class tables: (1) GT3 cars were recorded on DIFFERENT TRACKS (BMW #69: WRT Fuji; Porsche #91 Barcelona, #92 Sebring + others; Mustang COTA; Lexus #78 Fuji / Road Atlanta, etc.), so the track is confounded with the car and a car's offset vs the class prior (BMW front peak 6.2 deg extrapolated vs prior 3.85) may be the track. (2) Leave-one-lap-out holds out a lap from the SAME file/track as its training laps, which is the easy case for weight 0; the class prior is meant for a NEW car/track with few laps, which this protocol cannot test. (3) Left out of the LMGT3 pool: Lexus #78 (all 14 laps) and Mercedes #61 / part of Porsche / Mustang laps have no load channel (measure lateral_g) and cannot be mixed with mu_load_normalized. LMGT3 pool = 3 cars.

@@ -32,7 +32,13 @@ from scipy.optimize import least_squares
 from .tire_bins import _CELL_FIELDS, Cell, LapBins, cell_arrays
 
 ALL_FACTORS = ("load", "temp", "pressure", "wear", "camber")
-ENABLED_FACTORS: tuple = ALL_FACTORS
+# WHY only load (Ruling 10, PM gate after the Hypercar held-out experiment, DevNotes
+# 10/19): on Valkyrie and Cadillac, load added +0.16..+0.42 held-out R2. Pressure never
+# helped, temperature was mixed and often pinned at a bound, wear is confounded with lap
+# number (tyres wear as the stint goes on, so it just fits "later laps"), camber ~0. A
+# factor that does not generalise to unseen data is noise the bootstrap would have to
+# carry, so the rest stay implemented and testable (pass factors=...) but off by default.
+ENABLED_FACTORS: tuple = ("load",)
 
 BOUNDS = {
     "D0": (0.1, 5.0), "B0": (0.05, 3.0), "C": (1.0, 2.0), "E": (-3.0, 1.0),

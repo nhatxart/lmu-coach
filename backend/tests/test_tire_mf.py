@@ -28,9 +28,12 @@ def _merged(**kw):
     return tb.LapBins.merge(make_bins(**kw))
 
 
+LTP = ("load", "temp", "pressure")  # ENABLED_FACTORS is load-only; these tests need more
+
+
 def test_recovers_known_params():
     t0 = time.perf_counter()
-    fit = mf.fit_mf(_merged())
+    fit = mf.fit_mf(_merged(), factors=LTP)
     wall = time.perf_counter() - t0
     assert fit is not None
     print("\nwall %.2fs" % wall)
@@ -45,14 +48,14 @@ def test_recovers_known_params():
     assert fit.factors_status["load"] == "fitted"
     assert fit.factors_status["temp"] == "fitted"
     assert fit.factors_status["pressure"] == "fitted"
-    assert fit.factors_status["wear"] == "not_identifiable"
-    assert fit.factors_status["camber"] == "not_identifiable"
+    assert fit.factors_status["wear"] == "disabled"
+    assert fit.factors_status["camber"] == "disabled"
     assert fit.peak_observed is True
     assert fit.rmse < 0.06
 
 
 def test_recovers_wear_and_camber_factors():
-    fit = mf.fit_mf(_merged(factors=mf.ALL_FACTORS))
+    fit = mf.fit_mf(_merged(factors=mf.ALL_FACTORS), factors=mf.ALL_FACTORS)
     assert all(s == "fitted" for s in fit.factors_status.values())
     assert fit.params["kDW"] == pytest.approx(TRUE_PARAMS["kDW"], abs=0.15)
     assert fit.params["kDC"] == pytest.approx(TRUE_PARAMS["kDC"], abs=0.01)
@@ -61,7 +64,7 @@ def test_recovers_wear_and_camber_factors():
 
 def test_unidentifiable_factor_fixed_neutral():
     bins = tb.LapBins.merge(make_bins(factors=("load",), td_range=(-32.0, -28.0)))
-    fit = mf.fit_mf(bins)  # all factors enabled
+    fit = mf.fit_mf(bins, factors=mf.ALL_FACTORS)
     assert fit.factors_status["temp"] == "not_identifiable"
     assert fit.factors_status["load"] == "fitted"
     # Temperature unfitted -> pressure slope must be 0, or temp would leak in through dp.
@@ -120,6 +123,13 @@ def test_new_fields_round_trip_and_old_dicts_load():
         d.pop(k)
     old = mf.MFFit.from_dict(d)
     assert old.target == "mu" and old.at_bound == [] and old.notes == []
+
+
+def test_default_factors_are_load_only():
+    fit = mf.fit_mf(_merged())
+    assert mf.ENABLED_FACTORS == ("load",)
+    assert fit.factors_status == {"load": "fitted", "temp": "disabled", "pressure": "disabled",
+                                  "wear": "disabled", "camber": "disabled"}
 
 
 def test_disabled_factor_status():
@@ -208,7 +218,7 @@ def test_round_trip():
 
 
 def test_predict_uses_raw_pressure_and_temp():
-    fit = mf.fit_mf(_merged())
+    fit = mf.fit_mf(_merged(), factors=LTP)
     slip = np.array([3.0])
     hi = mf.predict(fit, slip, {"pressure_kpa": 175.0})
     lo = mf.predict(fit, slip, {"pressure_kpa": 140.0})
@@ -231,7 +241,7 @@ def test_warm_start_matches_cold_fit():
 
 def test_ci_contains_truth():
     laps = make_bins(n_laps=8, seed=11)
-    out = mf.bootstrap_fit(laps, n_boot=30)
+    out = mf.bootstrap_fit(laps, n_boot=30, factors=LTP)
     tslip, tmu = _true_peak({})
     lo, hi = out["peak_slip_ci90"]
     mlo, mhi = out["peak_mu_ci90"]
