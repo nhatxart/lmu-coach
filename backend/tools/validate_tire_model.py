@@ -1,4 +1,4 @@
-﻿"""
+"""
 Read-only accuracy check of one car's tyre model (writes nothing).
 
     python -I backend/tools/validate_tire_model.py "WRT"            # car-name substring
@@ -61,8 +61,10 @@ CORNER_MIN_SLIP_DEG = 1.5
 
 
 def _pk(m) -> str:
-    """'>=' prefix = peak never observed (lower bound); '*' = raw fit sits at the PEAK_GRID edge."""
-    s = f"{m['peak']}" if m.get("peak_observed") else f">={m['peak']}"
+    """'>=' prefix = still rising at the data's edge (lower bound); '~' = fitted inside the
+    data but no fall-off seen (plateau); '*' = raw fit sits at the PEAK_GRID edge."""
+    status = m.get("peak_status") or ("observed" if m.get("peak_observed") else "rising_at_edge")
+    s = {"observed": "", "plateau_unconfirmed": "~", "rising_at_edge": ">="}[status] + f"{m['peak']}"
     return s + ("*" if m.get("peak_at_grid_bound") else "")
 
 
@@ -121,7 +123,7 @@ def main() -> int:
 
     full = {ax: _model(per_lap, list(per_lap), ax) for ax in ("front", "rear")}
     for ax, m in full.items():
-        print(f"model {ax}: peak {m['peak']} deg observed={m['peak_observed']} range {m['efficient_range']} "
+        print(f"model {ax}: peak {m['peak']} deg status={m['peak_status']} range {m['efficient_range']} "
               f"avail {m['available_grip']} {m['grip_measure']} confidence {m['confidence']} "
               f"tyre temp vs optimal {m['tyre_temperature'].get('median_delta_c')} C")
     row = {}
@@ -293,7 +295,7 @@ def _v3_section(prof) -> list:
                       f"R2 MF {res['mf'][0]:.3f} vs v2 binned {res['v2'][0]:.3f} "
                       f"(RMSE {res['mf'][1]:.3f} vs {res['v2'][1]:.3f}, {res['mf'][2]} cells)")
         print(f"  {axle} model: {m['model']} peak {_pk(m)} deg, CI90 {m['peak_slip_ci90']}, "
-              f"observed={m['peak_observed']}, confidence {m['confidence']}, prior {m['prior_used']}, "
+              f"status={m['peak_status']}, confidence {m['confidence']}, prior {m['prior_used']}, "
               f"{m['n_fit_laps']} laps / {m['sample_count']} samples ({m['grip_measure']})")
         ci = m["peak_slip_ci90"]
         cell = lambda r: "n/a" if r is None else f"{r['mf'][0]:.2f} / {r['v2'][0]:.2f}"
@@ -390,4 +392,3 @@ def _heldout(per_lap, groups, ax, measure):
 
 if __name__ == "__main__":
     sys.exit(main())
-

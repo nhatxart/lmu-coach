@@ -160,15 +160,15 @@ Held-out R2 (MF / v2 slip-binned), cornering cells; leave-one-file-out (Ferrari,
 
 | Car | axle | R2 proxy mu | R2 true mu | peak slip deg [CI90] | confidence | prior |
 |---|---|---|---|---|---|---|
-| BMW M4 (Fuji, 37 laps) | F | 0.87 / 0.45 | no forces | >=5.34 [4.9, 6.0] (CI = extrapolated peak), not observed | 0.47 | none |
+| BMW M4 (Fuji, 37 laps) | F | 0.87 / 0.45 | no forces | ~5.34 [4.9, 6.0] plateau_unconfirmed (driven to 7.4, no fall-off) | 0.47 | none |
 | BMW M4 | R | 0.13 / -0.20 | no forces | 2.28 [2.2, 2.3], observed | 0.93 | none |
 | Cadillac #12 (14 laps) | F | 0.63 / 0.16 | 0.74 / 0.32 | 3.56 [3.2, 4.1], observed | 0.62 | none |
-| Cadillac #12 | R | 0.47 / -0.03 | 0.50 / 0.27 | >=6.2 (raw fit 15.0 at PEAK_GRID bound, not quoted) [4.8, 15.0], NOT observed | 0.16 | none |
+| Cadillac #12 | R | 0.47 / -0.03 | 0.50 / 0.27 | >=6.2 (raw fit 15.0 at PEAK_GRID bound, not quoted) [4.8, 15.0], rising_at_edge | 0.16 | none |
 | Valkyrie #007 (14 laps) | F | 0.51 / 0.11 | 0.59 / 0.24 | 3.79 [3.5, 6.7], observed | 0.11 | none |
 | Valkyrie #007 | R | 0.20 / 0.00 | 0.23 / 0.07 | 2.79 [2.5, 3.6], observed | 0.49 | none |
-| Ferrari 499P (7 laps) | F | 0.42 / -0.24 | 0.61 / -0.54 | >=3.98 [3.6, 4.5], not observed | 0.27 | none |
-| Ferrari 499P | R | 0.19 / -0.34 | -0.23 / -0.35 | >=3.80 [3.8, 10.4], not observed | 0.00 | none |
-| Genesis GMR-001 (3 laps) | F | 0.80 / -0.41 | 0.85 / -0.14 | >=3.20 [3.1, 3.3], not observed | 0.18 | none |
+| Ferrari 499P (7 laps) | F | 0.42 / -0.24 | 0.61 / -0.54 | ~3.98 [3.6, 4.5] plateau_unconfirmed (driven to 5.0) | 0.27 | none |
+| Ferrari 499P | R | 0.19 / -0.34 | -0.23 / -0.35 | >=3.80 [3.8, 10.4] rising_at_edge | 0.00 | none |
+| Genesis GMR-001 (3 laps) | F | 0.80 / -0.41 | 0.85 / -0.14 | ~3.20 [3.1, 3.3] plateau_unconfirmed (driven to 3.8) | 0.18 | none |
 | Genesis GMR-001 | R | n/a | n/a | >=2.6, binned fallback, no CI | 0.30 | none |
 | Porsche 911 GT3 R (31 laps in the fit set) | F | 0.28 / 0.10 | no forces | 4.00 [3.9, 4.4], observed | 0.87 | none |
 | Porsche 911 GT3 R | R | -0.51 / -1.85 | no forces | 3.91 [3.8, 4.3], observed | 0.86 | none |
@@ -179,3 +179,5 @@ Held-out R2 (MF / v2 slip-binned), cornering cells; leave-one-file-out (Ferrari,
 - `docker compose build`: see the Task 11 report.
 
 - v3 fix round 1 (10/19): an unobserved peak is now reported as the largest slip angle driven (a LOWER bound, marked >= in the tools; */note when the raw fit sits at the PEAK_GRID edge). The raw extrapolation is kept in peak_slip_extrapolated / peak_grip_extrapolated; the CI90s describe that extrapolation. GU = p95/peak is therefore an upper bound again, matching *_utilization_is_upper_bound. Cadillac rear peak 15.0 -> >=6.2; Ferrari rear 5.03 -> >=3.80. Profiles needed no re-ingest (peak is derived, not stored).
+- FINAL REVIEW FIXES (tyre model v3): an unobserved peak is not always a lower bound. New `peak_status` per axle: `observed` (curve fell off), `plateau_unconfirmed` (fitted peak INSIDE the driven range, no fall-off seen: the curve is flat around the peak and the exact angle is uncertain; peak = the fit, GU is NOT flagged an upper bound) and `rising_at_edge` (fitted peak at/after the largest slip driven: peak = largest slip driven, a lower bound, GU flagged). Tools print `~` for plateau and `>=` only for rising_at_edge. On the real profiles: plateau_unconfirmed = BMW F 5.34 (driven 7.4), Ferrari F 3.98 (5.0), Genesis F 3.20 (3.8), Ford F 4.02 (6.2), Lexus F 3.98 (7.4), Mercedes R 2.98; rising_at_edge = Cadillac R (6.2, raw 15.0), Ferrari R (3.8), Genesis R (2.6, binned fallback).
+- Also: the state-aware CE ceiling is capped at the largest slip driven (like available_grip); bootstrap confidence is capped at 0.3 when the peak or the CI upper end sits on the PEAK_GRID bound; ingest_sessions rolls a failed file back and prints priors computed from the in-memory batch (so prior_used matches the app after --save). CE is now lap p90 mu / state-aware peak mu, not comparable with v2-era CE values.

@@ -493,6 +493,52 @@ def test_unobserved_peak_is_the_lower_bound_inside_the_data():
     assert gu["front_grip_utilization"] == round(min(gu["front_peak_slip_angle_deg"] / out["peak"], 1.5), 3)
 
 
+def test_peak_status_rising_at_edge_vs_plateau_vs_observed():
+    laps = _mf_laps()
+    cached = _cached(laps)
+    fit = tm.MFFit.from_dict(cached["fit"])
+    lap = _lap()
+    cal = tm.fit_deflection_calibration(lap)
+    ref = tm.file_load_reference([lap], cal)
+    # fitted peak beyond the data, not observed -> lower bound, GU is an upper bound
+    cached["fit"] = {**cached["fit"], "max_observed_slip_deg": round(fit.peak_slip_deg * 0.6, 2),
+                     "peak_observed": False}
+    rising = tm.build_axle_tire_model(cached, laps)
+    assert rising["peak_status"] == "rising_at_edge"
+    gu = tm.compute_grip_utilization_for_lap(lap, rising, rising, cal, ref)
+    assert gu["front_utilization_is_upper_bound"] is True
+    # fitted peak INSIDE the data but no fall-off seen -> plateau: peak stays the fit, not a bound
+    cached["fit"] = {**cached["fit"], "max_observed_slip_deg": round(fit.peak_slip_deg * 1.4, 2),
+                     "peak_observed": False}
+    plateau = tm.build_axle_tire_model(cached, laps)
+    assert plateau["peak_status"] == "plateau_unconfirmed"
+    assert plateau["peak"] == round(fit.peak_slip_deg, 2)
+    assert plateau["peak_observed"] is False
+    gu = tm.compute_grip_utilization_for_lap(lap, plateau, plateau, cal, ref)
+    assert gu["front_utilization_is_upper_bound"] is False
+    assert gu["rear_utilization_is_upper_bound"] is False
+    if plateau["efficient_range_note"]:
+        assert "still rising" not in plateau["efficient_range_note"]
+    cached["fit"] = {**cached["fit"], "peak_observed": True}
+    assert tm.build_axle_tire_model(cached, laps)["peak_status"] == "observed"
+
+
+def test_state_aware_ceiling_is_capped_at_max_observed_slip():
+    laps = _mf_laps()
+    cached = _cached(laps)
+    fit = tm.MFFit.from_dict(cached["fit"])
+    lap = _lap()
+    cal = tm.fit_deflection_calibration(lap)
+    ref = tm.file_load_reference([lap], cal)
+    samples = tm._lap_axle_samples(lap, cal, ref)["front"]
+    full = tm._state_aware_ceiling(fit, samples, samples["mask"])
+    # PREVIOUSLY the ceiling scanned the whole 15 deg grid, so an extrapolated peak inflated it
+    capped_fit = tm.MFFit.from_dict({**cached["fit"], "max_observed_slip_deg": fit.peak_slip_deg * 0.5,
+                                     "peak_observed": False})
+    capped = tm._state_aware_ceiling(capped_fit, samples, samples["mask"])
+    assert full is not None and capped is not None and capped < full
+
+
 def test_observed_peak_keeps_the_raw_fit():
     laps = _mf_laps()
     cached = _cached(laps)

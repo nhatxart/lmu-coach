@@ -115,6 +115,21 @@ def test_peak_not_observed_when_slip_stops_short():
     assert fit.max_observed_slip_deg < 3.1
 
 
+def test_bootstrap_confidence_capped_when_peak_at_grid_bound(monkeypatch):
+    laps = make_bins()
+    real = mf.fit_mf
+
+    def at_bound(*a, **k):
+        f = real(*a, **k)
+        if f is not None:
+            f.peak_slip_deg = float(mf.PEAK_GRID[-1])
+        return f
+
+    monkeypatch.setattr(mf, "fit_mf", at_bound)
+    out = mf.bootstrap_fit(laps, n_boot=6, seed=1)
+    assert out["fit"] is not None and out["confidence"] <= 0.3
+
+
 def test_new_fields_round_trip_and_old_dicts_load():
     fit = mf.fit_mf(_merged(true_scale=0.9), target="true")
     assert mf.MFFit.from_dict(json.loads(json.dumps(fit.to_dict()))) == fit

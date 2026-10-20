@@ -589,7 +589,7 @@ def build_axle_tire_model(cached: dict | None, lap_bins: list) -> dict:
         "peak": None, "efficient_range": None, "efficient_range_note": None,
         "peak_slip_extrapolated": None, "peak_grip_extrapolated": None,
         "peak_at_grid_bound": False,
-        "peak_observed": False,
+        "peak_observed": False, "peak_status": None,
         "peak_grip": None, "available_grip": None, "max_observed_slip_deg": None,
         "confidence": 0.0, "sample_count": n_samples,
         "grip_measure": bins.measure if bins is not None else cached.get("measure"),
@@ -607,6 +607,9 @@ def build_axle_tire_model(cached: dict | None, lap_bins: list) -> dict:
         curve = _binned_v2_fallback(bins) if bins is not None else None
         if curve:
             out.update(curve)
+            # v2 histogram: observed, or a lower bound at the edge of the data
+            if curve.get("peak") is not None:
+                out["peak_status"] = "observed" if curve.get("peak_observed") else "rising_at_edge"
             out["confidence"] = min(_confidence_from_sample_count(n_samples),
                                     FALLBACK_MAX_CONFIDENCE)
         return out
@@ -634,17 +637,26 @@ def build_axle_tire_model(cached: dict | None, lap_bins: list) -> dict:
     lo_deg = max(float(PEAK_GRID[lo]), sampled[0] if sampled else 0.0)
     hi_deg = min(float(PEAK_GRID[hi]), max_obs)
     lo_deg = min(lo_deg, hi_deg)
+    # peak_status: "observed" (curve fell off past the peak), "plateau_unconfirmed" (fitted
+    # peak is INSIDE the data but no fall-off was seen: BMW M4 front fitted 5.34 deg, driven
+    # to 7.4), "rising_at_edge" (fitted peak at/after the largest slip driven).
+    if fit.peak_observed:
+        peak_status = "observed"
+    elif fit.peak_slip_deg < max_obs:
+        peak_status = "plateau_unconfirmed"
+    else:
+        peak_status = "rising_at_edge"
     range_note = None
     if float(PEAK_GRID[hi]) > max_obs:
         # PREVIOUSLY the note always said "still rising", also when the peak WAS observed and
-        # the curve merely plateaus past the data. Fix: the two cases read differently.
-        if fit.peak_observed:
+        # the curve merely plateaus past the data. Fix: only rising_at_edge says "rising".
+        if peak_status == "rising_at_edge":
+            range_note = (f"upper end is the largest slip angle driven ({max_obs:.2f} deg), not a "
+                          "measured edge: the curve is still rising there")
+        else:
             range_note = (f"upper end is the largest slip angle driven ({max_obs:.2f} deg), not a "
                           "measured edge: the curve is flat (within 5 % of the peak) there and "
                           "may stay flat beyond it")
-        else:
-            range_note = (f"upper end is the largest slip angle driven ({max_obs:.2f} deg), not a "
-                          "measured edge: the curve is still rising there")
     state = _available_state(fit, a)
     avail_slip = min(fit.peak_slip_deg, max_obs)
     # PREVIOUSLY `peak` / `peak_grip` were the raw fit even when the peak was never observed
@@ -653,8 +665,11 @@ def build_axle_tire_model(cached: dict | None, lap_bins: list) -> dict:
     # angle driven, a LOWER bound inside the data, with the mu the curve predicts there; the
     # raw extrapolation moves to *_extrapolated. GU = p95 / peak is then an upper bound on
     # the true utilisation, which is what *_utilization_is_upper_bound says.
+    # PREVIOUSLY this also applied to a peak fitted INSIDE the data without a fall-off
+    # (plateau_unconfirmed), replacing a sensible fit with max_observed. Fix: only
+    # rising_at_edge is a lower bound; a plateau keeps the fitted peak.
     at_bound = bool(fit.peak_slip_deg >= float(PEAK_GRID[-1]) - 1e-6)
-    if fit.peak_observed:
+    if peak_status != "rising_at_edge":
         peak_deg, peak_mu = fit.peak_slip_deg, fit.peak_mu
     else:
         peak_deg = min(fit.peak_slip_deg, max_obs)
@@ -668,6 +683,7 @@ def build_axle_tire_model(cached: dict | None, lap_bins: list) -> dict:
         "efficient_range": [round(lo_deg, 2), round(hi_deg, 2)],
         "efficient_range_note": range_note,
         "peak_observed": fit.peak_observed,
+        "peak_status": peak_status,
         "peak_grip": round(peak_mu, 3),
         # mu at the p90 load / temperature state of the data, at a slip the driver reached
         "available_grip": round(float(predict(fit, np.array([avail_slip]), state)[0]), 3),
@@ -971,8 +987,25 @@ def _state_aware_ceiling(fit: MFFit, s: dict, mask: np.ndarray) -> float | None:
     if len(cols) < 20:
         return None
     uniq, counts = np.unique(cols, axis=0, return_counts=True)
-    peaks = np.array([peak_at(fit, dict(zip(keys, row)))[1] for row in uniq])
+    # PREVIOUSLY peak_at scanned the whole PEAK_GRID, so an extrapolated peak beyond the
+    # data (rising curve) inflated the divisor and CE read low. Fix: same cap as
+    # available_grip, the largest slip angle the driver reached.
+    grid = PEAK_GRID[PEAK_GRID <= float(fit.max_observed_slip_deg)]
+    if len(grid) == 0:
+        return None
+    peaks = np.array([float(np.max(predict(fit, grid, dict(zip(keys, row))))) for row in uniq])
     return float(np.average(peaks, weights=counts))
+
+
+def _is_lower_bound_peak(model: dict) -> bool:
+    """True when the model's peak is only a lower bound (curve still rising at the data's
+    edge), so GU = p95 / peak is an upper bound. A plateau_unconfirmed peak is a fit inside
+    the data and is not flagged. Models without peak_status (v2 dicts) fall back to
+    peak_observed."""
+    status = model.get("peak_status")
+    if status is not None:
+        return status == "rising_at_edge"
+    return not model.get("peak_observed", False)
 
 
 def compute_grip_utilization_for_lap(
@@ -1039,8 +1072,8 @@ def compute_grip_utilization_for_lap(
     return {
         "front_grip_utilization": front_gu,
         "rear_grip_utilization": rear_gu,
-        "front_utilization_is_upper_bound": not front_model.get("peak_observed", False),
-        "rear_utilization_is_upper_bound": not rear_model.get("peak_observed", False),
+        "front_utilization_is_upper_bound": _is_lower_bound_peak(front_model),
+        "rear_utilization_is_upper_bound": _is_lower_bound_peak(rear_model),
         "front_peak_slip_angle_deg": round(front_p95, 2) if front_p95 is not None else None,
         "rear_peak_slip_angle_deg": round(rear_p95, 2) if rear_p95 is not None else None,
         "lap_grip_p90": round(lap_grip, 3) if lap_grip is not None else None,

@@ -511,5 +511,10 @@ def bootstrap_fit(lap_bins: list, n_boot: int = 50, seed: int = 0, **fit_kw) -> 
         conf *= BOOT_AT_BOUND
     if n_laps == 1:
         conf = min(conf, BOOT_SINGLE_LAP_CAP)
+    # A peak (or its CI upper end) sitting on the PEAK_GRID edge is the search bound, not a
+    # measurement; every resample then agrees on 15 deg and the CI looks falsely tight.
+    grid_hi = float(PEAK_GRID[-1]) - 1e-6
+    if fit.peak_slip_deg >= grid_hi or hi >= grid_hi:
+        conf = min(conf, BOOT_SINGLE_LAP_CAP)
     out["confidence"] = round(min(conf, BOOT_CONF_CAP), 3)
     return out

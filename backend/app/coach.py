@@ -77,7 +77,7 @@ not a spec sheet) — near 1.0 means the driver used the tire close to its own o
 well above 1.0 means they pushed past the point where more slip angle stops producing more \
 grip (into the tire's declining region, which costs time and adds instability, not more \
 cornering force); well below 1.0 means grip was left unused. When front/rear_utilization_is_upper_bound is \
-true, the model has never seen that axle's grip fall off, so its "optimal" slip angle is only \
+true, the curve was still rising at the largest slip angle driven, so its "optimal" slip angle is only \
 a lower bound and the utilization may overstate how hard the tire was used — never call that \
 "past the limit". All of these use steady-state cornering samples only (not braking or \
 throttle-on phases). cornering_efficiency is this lap's typical-high (p90) grip divided by \
@@ -88,6 +88,8 @@ high grip_utilization with low cornering_efficiency means the driver is asking a
 tire but converting it poorly into actual cornering force (excess/wasted sliding, likely a \
 smoothness or line issue); low grip_utilization with low cornering_efficiency means capability \
 is being left on the table (a confidence/commitment issue, not a technique-precision issue). \
+cornering_efficiency is now the lap p90 mu divided by the state-aware peak mu (not comparable with \
+cornering_efficiency values from earlier model versions). \
 These two numbers together are far more actionable than either alone — always read them as a pair.
 
 On front_tire_model / rear_tire_model (when present in the driver's baselines): a Magic \
@@ -101,13 +103,16 @@ lateral_g, with "peak_grip_ci90". \
 "confidence" (0-1) reflects how much data supports it; below 0.5 treat it as tentative and \
 say so. When "model" is "binned_v2_fallback" no Magic Formula could be fitted and there is no \
 interval: use it as a rough histogram estimate only. prior_used says what the fit leaned on \
-when this car has few laps ("class" = other cars of its class, "older_version" = the previous \
-game version, "none"); name it when it is not "none", because the number then partly belongs \
-to the prior. version_note, when present, says the game version changed or laps are mixed \
-across versions. peak_observed false means the curve was still rising at the largest slip \
-angle used: "peak" is then that largest slip angle, a lower bound on the true peak, and the \
-driver has room to lean on the tire more; peak_slip_ci90 and peak_grip_ci90 then describe the \
-extrapolated peak (peak_slip_extrapolated), not "peak", and peak_at_grid_bound true means that \
+when this car has few laps ("class" = other cars of its class, "none"); name it when it is \
+not "none", because the number then partly belongs to the prior. version_note, when present, says the game version changed or laps are mixed \
+across versions. peak_status says how firm "peak" is: "observed" = the curve fell off past \
+it; "plateau_unconfirmed" = the fitted peak lies inside the slip range driven but no fall-off \
+was seen, so the curve is flat around the peak and the exact peak angle is uncertain (do NOT \
+say the driver has room to lean on the tire more on that basis); "rising_at_edge" = the curve \
+was still rising at the largest slip angle used, "peak" is then that largest slip angle, a \
+lower bound, and only then may you say there is room to lean on the tire more. \
+peak_slip_ci90 and peak_grip_ci90 describe the fit's own peak (the extrapolated one, \
+peak_slip_extrapolated, when rising_at_edge), and peak_at_grid_bound true means that \
 extrapolation ran off the end of the curve, so do not quote it as a number. \
 factor_effects gives the fitted peak mu at the p10 / median / p90 of this driver's own load \
 (only load is fitted): a model estimate of how much grip load is worth inside the range \

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Bulk-fold recorded sessions into the per-car grip profiles, without the LLM.
 
 The same profile updates /analyze makes, for many files at once:
@@ -37,11 +37,13 @@ falling back to the livery table.
 from __future__ import annotations
 
 import argparse
+import copy
 import fnmatch
 import json
 import re
 import shutil
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -63,8 +65,10 @@ _BASELINE_LISTS = ("abs_lockup_durations_s", "tc_active_fractions", "peak_combin
 
 
 def _peak_str(m) -> str:
-    """Peak with a marker: '>=' = never observed (lower bound); notes a fit at the grid edge."""
-    s = f"{m['peak']}" if m.get("peak_observed") else f">={m['peak']}"
+    """Peak with a marker: '>=' = still rising at the data's edge (lower bound), '~' = fitted
+    inside the data but no fall-off seen (plateau); notes a fit at the grid edge."""
+    status = m.get("peak_status") or ("observed" if m.get("peak_observed") else "rising_at_edge")
+    s = {"observed": "", "plateau_unconfirmed": "~", "rising_at_edge": ">="}[status] + f"{m['peak']}"
     if m.get("peak_at_grid_bound"):
         s += f" (raw fit at grid bound {m.get('peak_slip_extrapolated')}, not quoted)"
     return s
@@ -212,10 +216,16 @@ def main() -> int:
                 ledger.add(path.name)
 
         n0 = prof.tire_sample_count()
+        # Transactional like /analyze: a failed ingest must not leave half-ingested laps in
+        # the profile that is saved at the end. Restore the tyre state and carry on.
+        snapshot = (copy.deepcopy(prof.tire_files), copy.deepcopy(prof.tire_fit_cache),
+                    copy.deepcopy(prof.deflection_calibration), prof.car_class)
         try:
             added = prof.ingest_tire_laps(laps, file_key=path.name)
         except Exception as e:
-            print(f"  tyre model FAILED: {e}")
+            print(f"  tyre model FAILED (rolled back): {e}")
+            (prof.tire_files, prof.tire_fit_cache,
+             prof.deflection_calibration, prof.car_class) = snapshot
             added = []
         print(f"  tyre model: +laps {added or 'none'} +samples/axle {prof.tire_sample_count() - n0}")
 
@@ -234,6 +244,20 @@ def main() -> int:
         if not moved:
             print("  no livery-named profiles to migrate")
 
+    # PREVIOUSLY the summary's class priors came from the profiles on disk, so the printed
+    # prior_used / peaks differed from what the app shows once these profiles are saved.
+    # Fix: compute the summary against a scratch copy of the profile directory that holds the
+    # in-memory batch profiles (and not the livery files --migrate moves away).
+    real_dir = gp.PROFILES_DIR
+    scratch = tempfile.TemporaryDirectory()
+    moved_names = {p.name for p in moved}
+    for p in real_dir.glob("*.json"):
+        if not p.name.startswith(".") and p.name not in moved_names:
+            shutil.copy2(p, Path(scratch.name) / p.name)
+    gp.PROFILES_DIR = Path(scratch.name)
+    for prof in profiles.values():
+        gp.save_profile(prof)
+    gp.clear_class_prior_cache()
     print("\n== profiles")
     for car, prof in profiles.items():
         t0 = time.perf_counter()
@@ -249,6 +273,9 @@ def main() -> int:
               f"samples/axle {f['sample_count']}, fit+summary {dt:.2f} s\n"
               f"    F {show(f)}\n    R {show(r)}")
 
+    gp.PROFILES_DIR = real_dir
+    gp.clear_class_prior_cache()
+    scratch.cleanup()
     if not args.save:
         print("\nDRY RUN - nothing saved (add --save)")
         return 0
@@ -271,4 +298,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

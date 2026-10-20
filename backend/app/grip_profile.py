@@ -356,6 +356,10 @@ class GripProfile:
         """(prior MFFit | None, kind, weight) for one axle."""
         if len(plan["fit"]) >= tire_class.PRIOR_MAX_LAPS or not plan["fit"]:
             return None, "class", 0.0
+        # DORMANT BY DESIGN (Ruling 11b): PRIOR_MAX_LAPS == MIN_VERSION_LAPS, so the guard
+        # above returns first whenever the fit set has >= MIN_VERSION_LAPS laps, and a
+        # fit set smaller than that cannot coexist with a newest eligible version. The
+        # branch stays so the older-version prior comes back if the constants diverge.
         # older versions of this car first: same tyres, previous physics
         if len(plan["older"]) >= MIN_VERSION_LAPS:
             older = LapBins.merge([LapBins.from_dict(b) for _, b in plan["older"]])
