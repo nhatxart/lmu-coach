@@ -110,12 +110,15 @@ Analyze flow: UI "Analyze" → (if auto_start) host agent `/llm/ensure` → poll
 - Lap selection: auto-picks the fastest complete lap if `lap_number` omitted. Laps are cut by `Lap` event timestamps against `GPS Time`. Partial last lap shows (e.g. lap 4, 16 s).
 
 ### 4.4 Tyre model / grip math (`tire_model.py`, `grip_profile.py`)
-- Observations per axle: (|slip angle| deg of FL/FR or RL/RR mean, |lat G|) for speed > 40 km/h (`MIN_SPEED_KMH_FOR_MODEL`). Histogram bins 0.4° (`SLIP_ANGLE_BIN_DEG`); need ≥300 samples (`MIN_SAMPLES_FOR_MODEL`) before reporting a peak; raw sample store capped at 20 000/axle.
-- Output per axle: `slip_angle: {peak, efficient_range, confidence, sample_count}`; plus temperature/pressure/load (susp deflection) relationships.
-- Empirical curve on a real lap: lat G rises steeply 0–3°, peaks ≈3.0–3.5° (~1.5 g), plateaus/declines >4°.
-- **GU** = p95(|slip|)/learned peak (≈1.5 cap). **CE** (front) = peak lat G in corner ÷ model-predicted lat G at the learned peak. Returns `None` until a peak exists — intentionally no hard-coded fallback peak.
+**Tyre model v3 (2026-10-19; replaces the v2 histogram model described in older notes).**
+- Data: each lap is reduced to per-axle binned statistics (`tire_bins.LapBins`: slip, load ratio, temperature, pressure, wear, camber cells; proxy mu = lat G / load ratio, plus the game's true mu where the car records tyre forces). Files are loaded at `tire_model.TIRE_GRID_HZ` = 50 Hz for the tyre steps; the coaching report stays at 20 Hz.
+- Profile (`grip_profile.py`, `TIRE_MODEL_VERSION = 3`): keyed by car **model** (`car_identity.identify_car`, e.g. `BMW M4 LMGT3.json`), not livery. `tire_files["<file>"]` holds game version and track once per file and the per-lap `LapBins`; `tire_fit_cache` caches the fit (sha1 fingerprint of lap keys, measure, prior). v1/v2 profiles lose their tyre data on load (baselines kept) and are rebuilt by `backend/tools/ingest_sessions.py`.
+- Fit (`tire_mf.py`, `tire_class.py`): factorised Magic Formula, only the load factor enabled (`ENABLED_FACTORS`; the others did not generalise on held-out data); bootstrap over laps gives `peak_slip_ci90` and a confidence based on the interval, not the sample count. Newest game version with ≥ 3 laps is the fit set. A class prior (`CLASS_PRIOR_WEIGHT` 0.3) is used only for cars with < 3 laps. No fit → `binned_v2_fallback` (confidence ≤ 0.3, no interval).
+- Output per axle (`build_axle_tire_model`): all v2 keys (`peak`, `efficient_range`, `peak_observed`, `peak_grip`, `available_grip`, `max_observed_slip_deg`, `confidence`, `sample_count`, `grip_measure`, `tyre_temperature`) plus `model`, `peak_slip_ci90`, `peak_grip_ci90`, `factors`, `factor_effects`, `prior_used`, `version_note`, `coverage`. `efficient_range` is clipped to the slip angles the driver reached.
+- **GU** = p95(|slip|)/fitted peak (≈1.5 cap). **CE** (front) = the lap's p90 mu ÷ the fitted peak mu at each sample's own load (`ce_method` "state_aware_mf", else "v2_envelope"). Both are `None` until a fit exists.
+- Scorecard (DevNotes 10/19/2026): held-out R2 of the Magic Formula beats the slip-binned curve on every axle that could be scored; weak spots are Porsche rear, Ferrari rear (true mu) and Cadillac rear (peak at the 15° bound, never reached). Largest refit 4.4 s (Porsche, 2.3 MB profile).
 - Traction circle in the UI plots `G Force Lat` vs `Long` with a moving dot and gradient tail.
-- Assumptions to keep in mind: lat G is a proxy for tyre force; slip angle comes from ground-velocity ratio (noisy at low speed); the model is per car (profile file name = car name, e.g. `Akkodis ASP Team 2026 _78_WEC.json`).
+- Assumptions to keep in mind: lat G / load ratio is a proxy for tyre mu (reads ~5-15 % high against the game's mu on Hypercars); GT3 cars have no Tire Load and use Susp Force; slip angle comes from ground-velocity ratio (noisy at low speed).
 
 ### 4.5 Body slip β (new this session; `vehicle_dynamics.compute_body_slip_deg`)
 - β = ψ − course, ψ = ∫ yaw rate (trapezoid, real dt), course = unwrapped velocity heading from position.
@@ -137,6 +140,11 @@ Known zeroed/unpopulated: Tire Load, Tire Lateral Force, Tire Longitudinal Force
 - Recorder v4 → full-session DuckDB; readable by backend and the external viewer; saving works after the CSV/COPY + stop-file fix (**user: "IT WORKS NOW!"**, after remembering to `docker compose down` between versions).
 - Lap selector chips with lap times; trackmap orientation fixed; persistent chevron when paused; 8 Hz filter; dynamic ranges; Ground Speed and ABS/TC graphs; balance fix; HUD/fonts/floating dockable telemetry panel; zoom bar; grip utilization + traction circle + tyre model; Settings bubble with JSON import/export + LLM auto-start; full UI redesign (user: "This works!").
 - Body slip + degree conversion + new chevron (backend verified through the real `/trackmap` endpoint on laps 0–4 and a native file; page renders with zero JS errors; screenshots viewed for ×5 and true scale).
+
+### Tyre model v3 (branch `tyre-model-v3`, 2026-10-19)
+- Implemented, covered by the backend suite and re-ingested into `data/grip_profiles` of the worktree (models: Valkyrie, Cadillac, Ferrari, Genesis, BMW, Porsche, Mustang, Lexus, Mercedes; old livery files moved to `data/grip_profiles/backups/`). Real `/analyze` smoke test on the Fuji WRT file with a stub LLM; **not tried in the browser or with the real local LLM**.
+- To use it: merge, copy the re-ingested profiles over `data/grip_profiles`, `docker compose down; docker compose up -d --build`.
+- Open: Cadillac rear / Ferrari rear / Porsche rear peaks and held-out R2 are weak (see DevNotes scorecard); the coach prompt for the new fields has not been judged against a real model answer.
 
 ### Half-done / not verified
 - **Not user-tested yet:** `lmu-coach-bodyslip-v1` (β chevron, `slip_delta_deg`, `slip-gain` select). User must rebuild: `docker compose down; docker compose up -d --build`.

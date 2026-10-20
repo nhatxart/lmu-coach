@@ -150,4 +150,31 @@ Findings:
 - Task 10, `/analyze`: profile = `load_profile_for_lap` (car MODEL, not livery). The coaching report keeps the 20 Hz load; the tyre steps (GU/CE scoring, ingest) load the file a second time at `TIRE_GRID_HZ` = 50. Real Fuji WRT file: 0.44 s at 20 Hz vs 0.45 s at 50 Hz, so the extra load costs ~0.45 s per `/analyze` (whole call 2.3 s cold, 1.0 s second time). Any tyre-model exception is logged and degrades to the empty fallback model with a note and `grip_utilization` null; the endpoint still answers. `version_note` also says when the newest game version has < 3 laps and is not used yet.
 - Task 10 smoke, Fuji WRT (8 laps, temp dir for profiles): front MF peak 5.8 deg, 90% interval 4.9-7.5, peak not observed, confidence 0.21, load factor peak mu 1.45 / 1.37 / 1.27 at load ratio 0.93 / 1.16 / 1.45; coverage 15 of 40 cells under 50 samples. First `/analyze` has no model to score against (GU null), the second scores lap against the cached fit: front GU 0.775 (upper bound), rear 0.81, CE 0.98 (state_aware_mf). Tyres are 32 C under optimal, so this is a cold-tyre curve.
 - Task 10 tools: `ingest_sessions.py` loads files at `TIRE_GRID_HZ`. `validate_tire_model.py` still loads at 20 Hz (so the scorecard stays comparable) and validates the v2 model. Not changed: `ingest_sessions.py` keys profiles by `lap.car_name`, while `/analyze` keys by car model, so the two can write separate files for one car.
+- Task 11, tools and re-ingest. `ingest_sessions.py` now keys by car MODEL through `load_profile_for_lap` (same helper as `/analyze`), so the gap above is closed. New `--migrate`: concatenates (newest 200) the ABS/TC/slip baselines of livery-named profiles into their model profile, sums `lap_count`, and with `--save` moves the livery files into the backup dir (never deletes). Re-ingested the worktree's `data/grip_profiles` from `data/sessions` (October with `--tyre-only --migrate`, then September with `--tyre-only`; backups under `data/grip_profiles/backups/`, git-ignored): 10 livery files -> 9 model profiles. One September file (`Autodromo Enzo e Dino Ferrari-The Bend Manthey ...2026-09-29T02_39_43Z`) has no `metadata` table (recorder v1 era) and cannot be loaded; skipped as before.
+- Task 11, validator. `validate_tire_model.py` gained section (e): held-out R2 of the Magic Formula vs the v2 slip-binned curve (via the `mf_experiment` helpers; leave-one-file-out, leave-one-lap-out for a single-file car; cells slip >= 1.5 deg, >= 3 samples; pooled over folds both could score) on the proxy mu and, where the car has game forces, the true mu, plus the peak's 90 % interval, confidence and prior. (a)-(d) stay on the 20 Hz grid so the old rows compare; (e) uses the 50 Hz bins stored in the profile.
+- Task 11, small fixes: `efficient_range_note` says "still rising" only when the peak was NOT observed; with the peak observed and a plateau past the data it says the curve is flat there and may stay flat. The real-Fuji test also asserts `efficient_range[1] <= max_observed_slip_deg` (skipped without the recording).
+- Refit time (first `/analyze` after a lap is added: bootstrap fit of both axles + summary, this PC, cache cleared): Porsche 911 GT3 R (largest profile, 2.3 MB, 38 laps) 4.4 s; BMW M4 3.5 s; Cadillac 2.2 s; Valkyrie 2.0 s; Ferrari 1.5 s; Genesis 0.5 s. Budget 10 s. Cached calls cost nothing.
+
+#### Tyre model scorecard (10/19/2026, model v3, 50 Hz grid)
+Held-out R2 (MF / v2 slip-binned), cornering cells; leave-one-file-out (Ferrari, Genesis: leave-one-lap-out, 35-42 and 20 cells, indicative). v2 rows above (10/18, 20 Hz) are a different grid and lap set, so compare the direction, not the digits. Rear of Genesis has 3 laps and no fold where both fit, so it stays on the binned fallback.
+
+| Car | axle | R2 proxy mu | R2 true mu | peak slip deg [CI90] | confidence | prior |
+|---|---|---|---|---|---|---|
+| BMW M4 (Fuji, 37 laps) | F | 0.87 / 0.45 | no forces | 5.34 [4.9, 6.0], not observed | 0.47 | none |
+| BMW M4 | R | 0.13 / -0.20 | no forces | 2.28 [2.2, 2.3], observed | 0.93 | none |
+| Cadillac #12 (14 laps) | F | 0.63 / 0.16 | 0.74 / 0.32 | 3.56 [3.2, 4.1], observed | 0.62 | none |
+| Cadillac #12 | R | 0.47 / -0.03 | 0.50 / 0.27 | 15.0 [4.8, 15.0], NOT observed (at bound) | 0.16 | none |
+| Valkyrie #007 (14 laps) | F | 0.51 / 0.11 | 0.59 / 0.24 | 3.79 [3.5, 6.7], observed | 0.11 | none |
+| Valkyrie #007 | R | 0.20 / 0.00 | 0.23 / 0.07 | 2.79 [2.5, 3.6], observed | 0.49 | none |
+| Ferrari 499P (7 laps) | F | 0.42 / -0.24 | 0.61 / -0.54 | 3.98 [3.6, 4.5], not observed | 0.27 | none |
+| Ferrari 499P | R | 0.19 / -0.34 | -0.23 / -0.35 | 5.03 [3.8, 10.4], not observed | 0.00 | none |
+| Genesis GMR-001 (3 laps) | F | 0.80 / -0.41 | 0.85 / -0.14 | 3.20 [3.1, 3.3], not observed | 0.18 | none |
+| Genesis GMR-001 | R | n/a | n/a | 2.6, binned fallback, no CI | 0.30 | none |
+| Porsche 911 GT3 R (31 laps in the fit set) | F | 0.28 / 0.10 | no forces | 4.00 [3.9, 4.4], observed | 0.87 | none |
+| Porsche 911 GT3 R | R | -0.51 / -1.85 | no forces | 3.91 [3.8, 4.3], observed | 0.86 | none |
+
+- The Magic Formula beats the slip-binned curve on every axle that could be scored (proxy and true mu), by +0.12 to +1.34 R2 (smallest Valkyrie rear / Porsche front, largest where the binned curve scores below zero: Genesis, Ferrari, Porsche rear); the load factor (see the 10/19 experiment) does most of the work.
+- Not good yet: Porsche rear (-0.51) and Ferrari rear true mu (-0.23) still predict new data worse than the held-out mean; Porsche is scored across tracks (Sebring, Road Atlanta, Fuji, Barcelona) with one file each. Cadillac rear's peak sits at the 15 deg bound with a 4.8-15 deg interval: the rear never reached its peak, so treat it as unknown (the binned v2 curve said 3.8). Confidence follows the interval (Valkyrie front 0.11 for [3.5, 6.7]) rather than the sample count, as intended after the 10/18 finding that the old confidence was overstated (WRT 0.98).
+- The class prior was applied to no car (all have >= 3 laps, Ruling 11b), so `prior_used` is "none" everywhere. Genesis rear (3 laps) is on the binned fallback because the Magic Formula fit refused its data.
+- `docker compose build`: see the Task 11 report.
 

@@ -22,13 +22,25 @@ re-extracted from data/sessions the same way ingest_tire_laps does.
 (d) CE vs LAP TIME: each real lap's cornering efficiency, scored against a
     model WITHOUT that lap, Spearman-correlated with lap time per file.
 
-Ends with a markdown row for the scorecard in DevNotes.md.
+(e) V3 MODEL (tyre model v3, built from the profile's stored per-lap bins at the
+    50 Hz tyre grid, no session files needed): held-out R2 of the Magic Formula
+    fit vs the v2-style slip-binned curve, leave-one-FILE-out (leave-one-lap-out
+    for a single-file car), per axle, on the proxy mu and - where the car has the
+    game's tyre forces - on the true mu. Scored with the mf_experiment helpers
+    (same cells: slip >= 1.5 deg, >= 3 samples; count-weighted, pooled over the folds
+    both models could score). Also prints each axle's peak CI90, confidence, prior.
+
+(a)-(d) are the v2 scorecard and keep their 20 Hz grid so the old rows stay
+comparable; (e) is on the 50 Hz grid. The rows are labelled with the grid.
+
+Ends with markdown rows for the scorecard in DevNotes.md.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -37,8 +49,13 @@ from scipy.stats import spearmanr
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "backend"))
+# python -I does not put the script's directory on sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from app import grip_profile as gp, telemetry, tire_model as tm  # noqa: E402
+from app.tire_bins import LapBins  # noqa: E402
+from app import tire_mf  # noqa: E402
+import mf_experiment as mfx  # noqa: E402
 
 CORNER_MIN_SLIP_DEG = 1.5
 
@@ -65,6 +82,9 @@ def main() -> int:
     keys = set(prof.tire_model_laps)
     files = sorted({k.rsplit("#", 1)[0] for k in keys})
     print(f"# {prof.car_name}: {len(keys)} model laps in {len(files)} files\n")
+
+    # (e) first: it needs only the profile, so it runs even when the sessions are gone
+    v3_rows = _v3_section(prof)
 
     per_lap, info, ref_time, file_ref = {}, {}, {}, {}
     for f in files:
@@ -190,10 +210,96 @@ def main() -> int:
     print("  negative rho = higher value, faster lap")
     row["d"] = "; ".join(d_cells) or "too few laps per file"
 
-    print("\nScorecard row (DevNotes.md):")
+    print("\nScorecard row, v2 model on the 20 Hz grid (DevNotes.md):")
     print(f"| {prof.car_name} | {len(per_lap)} / {len(_concat(per_lap, ks, 'front')['slip_angle_deg'])} "
           f"| {row['a']} | {row['b_front']}, {row['b_rear']} | {row['c']} | {row['d']} |")
+    print("\nScorecard rows, v3 model on the 50 Hz grid (DevNotes.md):")
+    for r in v3_rows:
+        print(r)
     return 0
+
+
+# ── v3 ───────────────────────────────────────────────────────────────────────
+
+def _pooled_r2(per_fold: list) -> tuple:
+    """(R2, RMSE, cells) pooled over fold results from mfx.heldout_r2 (sums, not means)."""
+    sw = sum(r["sw"] for r in per_fold); sse = sum(r["sse"] for r in per_fold)
+    sst = sum(r["sst"] for r in per_fold)
+    return (1.0 - sse / sst if sst > 0 else float("nan"),
+            float(np.sqrt(sse / sw)) if sw > 0 else float("nan"),
+            sum(r["n_cells"] for r in per_fold))
+
+
+def v3_heldout(units: list, target: str) -> dict | None:
+    """MF vs v2 slip-binned, leave-one-fold-out over units [(fold id, LapBins)].
+
+    target "mu" scores the proxy mu, "true" the game's own tyre mu (the MF and the binned
+    curve are both trained on that same target). Pooled over the folds where BOTH models
+    could be fitted and scored, so the two R2 are on identical held-out cells.
+    """
+    fold_ids = sorted({f for f, _ in units})
+    mf_rows, v2_rows = [], []
+    for held in fold_ids:
+        test = LapBins.merge([b for f, b in units if f == held])
+        train_laps = [b for f, b in units if f != held]
+        if not train_laps or not mfx._heldout_cells(test, target)[1].any():
+            continue
+        train = LapBins.merge(train_laps)
+        pred = mfx.binned_predictor(train, target)
+        fit = tire_mf.fit_mf(train, target=target)
+        if pred is None or fit is None:
+            continue
+        a = mfx.heldout_r2(fit, test, target=target)
+        b = mfx.heldout_r2(None, test, pred, target=target)
+        if a and b:
+            mf_rows.append(a); v2_rows.append(b)
+    if not mf_rows:
+        return None
+    r_mf, r_v2 = _pooled_r2(mf_rows), _pooled_r2(v2_rows)
+    return {"mf": r_mf, "v2": r_v2, "folds": len(mf_rows), "of": len(fold_ids)}
+
+
+def _v3_section(prof) -> list:
+    """Prints section (e) and returns the scorecard rows (one per axle)."""
+    print("(e) V3 MODEL on the 50 Hz tyre grid, from the profile's stored per-lap bins")
+    t0 = time.perf_counter()
+    prof.tire_fit_cache = {}   # force a real refit so the time is the refit time
+    base = prof.compute_baselines()
+    print(f"  refit (2 axles, bootstrap, class prior) + summary: {time.perf_counter() - t0:.2f} s")
+    rows = []
+    for axle in ("front", "rear"):
+        plan = prof._plan_axle(axle)
+        m = base[f"{axle}_tire_model"]
+        items = plan["fit"]
+        files = sorted({k.rsplit("#", 1)[0] for k, _ in items})
+        by_file = len(files) > 1
+        units = [((k.rsplit("#", 1)[0] if by_file else k), LapBins.from_dict(b)) for k, b in items]
+        fmt = "leave-one-file-out" if by_file else "leave-one-lap-out"
+        has_true = any(c.n_true for _, b in units for c in b.cells.values())
+        proxy = v3_heldout(units, "mu") if len(units) > 1 else None
+        true = v3_heldout(units, "true") if has_true and len(units) > 1 else None
+        for label, res in (("proxy mu", proxy), ("true mu", true)):
+            if res is None:
+                print(f"  {axle} {label}: not testable"
+                      f"{'' if label == 'proxy mu' or has_true else ' (no game tyre forces)'}")
+            else:
+                print(f"  {axle} {label} ({fmt}, {res['folds']}/{res['of']} folds): "
+                      f"R2 MF {res['mf'][0]:.3f} vs v2 binned {res['v2'][0]:.3f} "
+                      f"(RMSE {res['mf'][1]:.3f} vs {res['v2'][1]:.3f}, {res['mf'][2]} cells)")
+        print(f"  {axle} model: {m['model']} peak {m['peak']} deg, CI90 {m['peak_slip_ci90']}, "
+              f"observed={m['peak_observed']}, confidence {m['confidence']}, prior {m['prior_used']}, "
+              f"{m['n_fit_laps']} laps / {m['sample_count']} samples ({m['grip_measure']})")
+        ci = m["peak_slip_ci90"]
+        cell = lambda r: "n/a" if r is None else f"{r['mf'][0]:.2f} / {r['v2'][0]:.2f}"
+        rows.append(f"| {prof.car_name} | 50 Hz | {axle} | {cell(proxy)} | "
+                    f"{cell(true) if has_true else 'no forces'} | "
+                    f"{m['peak']} [{ci[0]:.1f}, {ci[1]:.1f}] | {m['confidence']:.2f} | "
+                    f"{m['prior_used']} |" if ci else
+                    f"| {prof.car_name} | 50 Hz | {axle} | {cell(proxy)} | "
+                    f"{cell(true) if has_true else 'no forces'} | {m['peak']} (no CI, "
+                    f"{m['model']}) | {m['confidence']:.2f} | {m['prior_used']} |")
+    print()
+    return rows
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

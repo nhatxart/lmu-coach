@@ -634,8 +634,15 @@ def build_axle_tire_model(cached: dict | None, lap_bins: list) -> dict:
     lo_deg = min(lo_deg, hi_deg)
     range_note = None
     if float(PEAK_GRID[hi]) > max_obs:
-        range_note = (f"upper end is the largest slip angle driven ({max_obs:.2f} deg), not a "
-                      "measured edge: the curve is still rising there")
+        # PREVIOUSLY the note always said "still rising", also when the peak WAS observed and
+        # the curve merely plateaus past the data. Fix: the two cases read differently.
+        if fit.peak_observed:
+            range_note = (f"upper end is the largest slip angle driven ({max_obs:.2f} deg), not a "
+                          "measured edge: the curve is flat (within 5 % of the peak) there and "
+                          "may stay flat beyond it")
+        else:
+            range_note = (f"upper end is the largest slip angle driven ({max_obs:.2f} deg), not a "
+                          "measured edge: the curve is still rising there")
     state = _available_state(fit, a)
     avail_slip = min(fit.peak_slip_deg, max_obs)
     out.update({

@@ -182,6 +182,9 @@ def test_real_fuji_file():
         best, front, base["rear_tire_model"], p.deflection_calibration,
         tm.file_load_reference(laps, p.deflection_calibration))
     assert 0.7 < gu["cornering_efficiency"] < 1.2
+    # the efficient range stays inside what the driver actually reached
+    if front.get("efficient_range") and front.get("max_observed_slip_deg") is not None:
+        assert front["efficient_range"][1] <= front["max_observed_slip_deg"]
 
 
 def test_flying_lap_uses_file_reference():
@@ -447,12 +450,17 @@ def test_still_rising_curve_stays_inside_the_observed_span():
     cached = _cached(laps)
     peak = tm.MFFit.from_dict(cached["fit"]).peak_slip_deg
     max_obs = round(peak * 0.6, 2)          # the driver never reached the peak
-    cached["fit"] = {**cached["fit"], "max_observed_slip_deg": max_obs}
+    cached["fit"] = {**cached["fit"], "max_observed_slip_deg": max_obs, "peak_observed": False}
     out = tm.build_axle_tire_model(cached, laps)
     assert out["max_observed_slip_deg"] == max_obs < out["peak"]
     lo, hi = out["efficient_range"]
     assert hi <= max_obs and lo <= hi
     assert out["efficient_range_note"] and "still rising" in out["efficient_range_note"]
+    # the same span with the peak observed is a plateau, not "still rising"
+    cached["fit"] = {**cached["fit"], "peak_observed": True}
+    plateau = tm.build_axle_tire_model(cached, laps)["efficient_range_note"]
+    assert plateau and "still rising" not in plateau and "flat" in plateau
+    cached["fit"] = {**cached["fit"], "peak_observed": False}
     fit = tm.MFFit.from_dict(cached["fit"])
     bins = tm._merge_usable(laps, fit.measure)
     state = tm._available_state(fit, tm.cell_arrays(bins))

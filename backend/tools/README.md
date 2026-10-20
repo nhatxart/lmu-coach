@@ -34,15 +34,18 @@ cd backend\tools
 .\INGEST_SESSIONS.ps1 --since 2026-10-14 --until 2026-10-18 --save
 .\INGEST_SESSIONS.ps1 --files "Fuji*" --save                # glob on the file name
 .\INGEST_SESSIONS.ps1 --files "Fuji*" --tyre-only --save    # tyre model only, ledger untouched
-.\INGEST_SESSIONS.ps1 --month 2026-10 --label-only --save   # only record where each lap's load came from; adds no samples
+.\INGEST_SESSIONS.ps1 --month 2026-10 --tyre-only --migrate --save   # also fold old livery-named profiles into the model profile
 ```
 
 - It's a **dry run unless you pass `--save`**. Check the output first.
 - **Backups:** `--save` first copies every profile and the ledger to `data/grip_profiles/backups/<timestamp>/`. To undo a run, copy that folder's files back.
 - **Stop the backend first** (`docker compose down`). It reads and writes the same profile files. Restart it afterwards (`docker compose up -d --build`).
-- **New cars:** a car without a profile gets a new one, named after the car, just as `/analyze` would name it.
-- **Load source labels:** each tyre-model lap is tagged with where its load came from (`Tire Load`, `Susp Force`, `Susp Pos (calibrated...)` or `none`). It is shown in the baselines the LLM sees as `load_normalization`. `--label-only` fills the tag in for laps ingested before it existed.
-- **Old profiles:** a profile from tyre model v1 (no `tire_model_version`) loses its v1 tyre samples when loaded. This is by design. Its baselines are kept.
+- **Profile key (tyre model v3):** profiles are named after the car **model** (`BMW M4 LMGT3.json`), found the same way `/analyze` finds it, so every livery of a model shares one file. A car without a profile gets a new one.
+- **Tyre grid:** the tyre bins are built from files loaded at 50 Hz (`tire_model.TIRE_GRID_HZ`), exactly like `/analyze`. The ABS/TC baselines keep the 20 Hz coaching load.
+- **`--migrate`:** folds the old livery-named profiles (`Team WRT 2026 _69_LP.json`) into their model profile. The ABS/TC/slip lists are concatenated (newest 200 kept) and `lap_count` is summed. Which model a livery belongs to comes from the metadata of the files in `--sessions-dir`. With `--save` the livery files are **moved** into the backup folder, never deleted. Run it once after upgrading to v3, together with `--tyre-only` if you do not want to touch the ledger.
+- **`--label-only`:** does nothing since v3. The load source of each lap (`Tire Load`, `Susp Force`, `Susp Pos (calibrated...)` or `none`) is stored at ingest and shown to the LLM as `load_normalization`.
+- **Old profiles:** a profile from tyre model v1 or v2 loses its tyre samples when loaded, because v3 stores per-lap bins instead of raw samples. This is by design. Its baselines are kept. Re-ingest the recordings to rebuild the tyre model.
+- The profile summary at the end prints, per axle, the model used, peak slip, its 90 % interval, confidence and prior, and how long the fit took.
 
 Typical output per file:
 
@@ -71,6 +74,8 @@ cd backend\tools
 .\VALIDATE_TIRE_MODEL.ps1 WRT                 # any unique part of the profile file name
 .\VALIDATE_TIRE_MODEL.ps1 007_WEC --boot 100  # fewer bootstrap resamples = faster (default 200)
 ```
+
+**(e) v3 model (50 Hz grid):** since tyre model v3 the validator also prints, from the profile's stored bins alone (no session files needed), the held-out R2 of the Magic Formula against the old slip-binned curve, per axle, on the proxy mu and, for cars that record tyre forces, on the game's true mu. It also prints the peak's 90 % interval, the confidence and the prior used, and the time of a full refit. Tests (a) to (d) keep the old 20 Hz grid so their rows stay comparable with earlier scorecards; the final output has one v2 row (20 Hz) and two v3 rows (50 Hz, front and rear). Profiles are named after the car model now, so use e.g. `BMW`, `Cadillac`, `Valkyrie`, `Ferrari`, `Genesis` or `Porsche`.
 
 If the name matches several profiles (e.g. `Manthey`), the tool lists them. Use a longer piece, e.g. `_92_WEC`.
 The last line is a markdown row. Paste it into the **Tyre model scorecard** table in `DevNotes.md` under a new dated heading, so accuracy can be compared over time. Run it after each ingest batch, or after any change to `tire_model.py`.
