@@ -93,3 +93,38 @@ def test_analyze_survives_a_failing_tyre_fit(client, monkeypatch, caplog):
         assert "RuntimeError" in m["note"]
     assert "fit exploded" in caplog.text            # the failure is logged, not swallowed
     assert body["analysis"] == "coach text"
+
+
+def test_pre_update_scoring_uses_a_fit_without_this_files_laps(client, monkeypatch):
+    seen = []
+    real = main.compute_grip_utilization_for_lap
+
+    def spy(lap, front, rear, **kw):
+        seen.append((kw.get("front_fit"), front["sample_count"]))
+        return real(lap, front, rear, **kw)
+
+    monkeypatch.setattr(main, "compute_grip_utilization_for_lap", spy)
+    assert _post(client).status_code == 200
+    # first analyze: the profile is empty when the lap is scored, so no fit, no samples
+    assert seen == [(None, 0)]
+
+
+def test_failed_refit_after_ingest_rolls_the_tyre_data_back(client, monkeypatch):
+    real = gp.GripProfile.refit_tyre_model
+    calls = []
+
+    def flaky(self, *a, **k):
+        calls.append(1)
+        if len(calls) > 1:                  # the pre-update refit works, the post-ingest one fails
+            raise RuntimeError("late failure")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(gp.GripProfile, "refit_tyre_model", flaky)
+    r = _post(client)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    for axle in ("front", "rear"):
+        assert "RuntimeError" in body["grip_baselines"][f"{axle}_tire_model"]["note"]
+    saved = gp.load_profile("Test Model")
+    assert saved.tire_model_laps == [] and saved.tire_files == {}
+    assert saved.lap_count == 1             # the ABS/TC baseline update is still saved

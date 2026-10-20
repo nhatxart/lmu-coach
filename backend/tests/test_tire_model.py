@@ -440,3 +440,21 @@ def test_ce_state_aware_used_with_fit():
     # lap mu is 1.0 at load ratio 1.5; the fit's ceiling there (D0 1.8, kDL -0.4) is ~1.6
     assert 0.5 < v3["cornering_efficiency"] < 0.8
     assert v3["cornering_efficiency"] != v2["cornering_efficiency"]
+
+
+def test_still_rising_curve_stays_inside_the_observed_span():
+    laps = _mf_laps()
+    cached = _cached(laps)
+    peak = tm.MFFit.from_dict(cached["fit"]).peak_slip_deg
+    max_obs = round(peak * 0.6, 2)          # the driver never reached the peak
+    cached["fit"] = {**cached["fit"], "max_observed_slip_deg": max_obs}
+    out = tm.build_axle_tire_model(cached, laps)
+    assert out["max_observed_slip_deg"] == max_obs < out["peak"]
+    lo, hi = out["efficient_range"]
+    assert hi <= max_obs and lo <= hi
+    assert out["efficient_range_note"] and "still rising" in out["efficient_range_note"]
+    fit = tm.MFFit.from_dict(cached["fit"])
+    bins = tm._merge_usable(laps, fit.measure)
+    state = tm._available_state(fit, tm.cell_arrays(bins))
+    want = float(tm.predict(fit, np.array([max_obs]), state)[0])
+    assert out["available_grip"] == round(want, 3)

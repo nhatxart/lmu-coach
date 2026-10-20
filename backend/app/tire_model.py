@@ -586,7 +586,8 @@ def build_axle_tire_model(cached: dict | None, lap_bins: list) -> dict:
     n_samples = bins.n_samples() if bins is not None else 0
     out = {
         "model": MODEL_FALLBACK,
-        "peak": None, "efficient_range": None, "peak_observed": False,
+        "peak": None, "efficient_range": None, "efficient_range_note": None,
+        "peak_observed": False,
         "peak_grip": None, "available_grip": None, "max_observed_slip_deg": None,
         "confidence": 0.0, "sample_count": n_samples,
         "grip_measure": bins.measure if bins is not None else cached.get("measure"),
@@ -618,15 +619,34 @@ def build_axle_tire_model(cached: dict | None, lap_bins: list) -> dict:
     while hi < len(mu) - 1 and mu[hi + 1] >= 0.95 * mu[ip]:
         hi += 1
     a = cell_arrays(bins)
+    # PREVIOUSLY the range and available_grip came straight off the fitted curve, so a
+    # curve still rising at the data's edge gave an efficient_range out to 15 deg and an
+    # available_grip at a slip the driver never reached (Fuji front: [2.79, 15.0]). Fix:
+    # like v2, keep both inside the observed span [lowest well-sampled slip, max observed].
+    max_obs = float(fit.max_observed_slip_deg)
+    per_slip: dict = {}
+    for s_, n_ in zip(a["slip"], a["n"]):
+        if np.isfinite(s_):
+            per_slip[round(float(s_), 3)] = per_slip.get(round(float(s_), 3), 0) + int(n_)
+    sampled = [s_ for s_, n_ in sorted(per_slip.items()) if n_ >= MIN_BIN_SAMPLES]
+    lo_deg = max(float(PEAK_GRID[lo]), sampled[0] if sampled else 0.0)
+    hi_deg = min(float(PEAK_GRID[hi]), max_obs)
+    lo_deg = min(lo_deg, hi_deg)
+    range_note = None
+    if float(PEAK_GRID[hi]) > max_obs:
+        range_note = (f"upper end is the largest slip angle driven ({max_obs:.2f} deg), not a "
+                      "measured edge: the curve is still rising there")
+    state = _available_state(fit, a)
+    avail_slip = min(fit.peak_slip_deg, max_obs)
     out.update({
         "model": MODEL_MF,
         "peak": round(fit.peak_slip_deg, 2),
-        "efficient_range": [round(float(PEAK_GRID[lo]), 2), round(float(PEAK_GRID[hi]), 2)],
+        "efficient_range": [round(lo_deg, 2), round(hi_deg, 2)],
+        "efficient_range_note": range_note,
         "peak_observed": fit.peak_observed,
         "peak_grip": round(fit.peak_mu, 3),
-        # peak mu at the p90 load / temperature state of the data: what the tyre can give
-        # when it is loaded as hard as this driver loads it
-        "available_grip": round(peak_at(fit, _available_state(fit, a))[1], 3),
+        # mu at the p90 load / temperature state of the data, at a slip the driver reached
+        "available_grip": round(float(predict(fit, np.array([avail_slip]), state)[0]), 3),
         "max_observed_slip_deg": round(fit.max_observed_slip_deg, 2),
         "grip_measure": fit.measure,
         "confidence": cached.get("confidence", 0.0),

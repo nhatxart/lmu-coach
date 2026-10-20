@@ -295,7 +295,7 @@ def test_temp_pressure_load_key_carries_factor_effects(boot_calls):
     b = _profile({"f": ("1.0", _bins(3))}).compute_baselines()
     tpl = b["front_temp_pressure_load"]
     assert tpl["available"] is True and "load" in tpl["factor_effects"]
-    assert "setup target" in tpl["note"]
+    assert "never present them as a setup target" in tpl["note"]
     assert tpl["factor_effects"] == b["front_tire_model"]["factor_effects"]
     empty = gp.GripProfile(car_name="E").compute_baselines()
     assert empty["front_temp_pressure_load"]["available"] is False

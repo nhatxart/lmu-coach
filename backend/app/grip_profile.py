@@ -442,7 +442,8 @@ class GripProfile:
         return {
             "available": True, "factor_effects": fx,
             "note": ("Peak mu at the p10 / median / p90 of this driver's own data for each "
-                     "fitted factor; use it to judge a setup target, never outside that range."),
+                     "fitted factor. These are model estimates inside the driven range: never "
+                     "present them as a setup target, and never outside that range."),
         }
 
     def compute_baselines(self, tire_unavailable: str | None = None) -> dict:

@@ -14,6 +14,7 @@ tool, not a multi-tenant service, so there's no need for a real DB here yet.
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import uuid
@@ -329,13 +330,24 @@ async def analyze(ref: LapRef):
     # only the analyzed lap. Caveat: analyzing a second lap of an already
     # ingested file scores it against a model that already contains it.
     profile.update_from_grip_report(grip_report)
+    # PREVIOUSLY a refit failure after a successful ingest was unguarded (HTTP 500) and a
+    # failed ingest could leave half-ingested laps in the profile that was then saved.
+    # Fix: the tyre ingest + refit is transactional. The tyre state is copied first and
+    # put back if either step fails; the ABS/TC baselines above are kept and saved.
+    grip_baselines = None
     if tire_error is None:
+        snapshot = (copy.deepcopy(profile.tire_files), copy.deepcopy(profile.tire_fit_cache),
+                    copy.deepcopy(profile.deflection_calibration), profile.car_class)
         try:
             profile.ingest_tire_laps(tire_laps, file_key=path.name)
+            grip_baselines = profile.compute_baselines()
         except Exception as e:
-            log.exception("tyre ingest failed on %s", path.name)
+            log.exception("tyre ingest/refit failed on %s", path.name)
             tire_error = f"{type(e).__name__}: {e}"
-    grip_baselines = profile.compute_baselines(tire_unavailable=tire_error)
+            (profile.tire_files, profile.tire_fit_cache,
+             profile.deflection_calibration, profile.car_class) = snapshot
+    if grip_baselines is None:
+        grip_baselines = profile.compute_baselines(tire_unavailable=tire_error)
 
     try:
         analysis_text = await get_coaching_analysis(

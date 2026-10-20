@@ -94,7 +94,10 @@ On front_tire_model / rear_tire_model (when present in the driver's baselines): 
 Formula tyre curve fitted to this driver's own accumulated laps on this car. "peak" is the \
 learned optimal slip angle in degrees and "peak_slip_ci90" its 90% interval (quote the \
 interval, not just the point, and call a wide one unsettled); "efficient_range" is the window \
-within 5% of the peak mu; "peak_grip" / "available_grip" are mu with "peak_grip_ci90". \
+within 5% of the peak mu, kept inside the slip range the driver has actually used (an \
+efficient_range_note says when the upper end is that limit, not a measured edge); "peak_grip" \
+and "available_grip" are mu when grip_measure is mu_load_normalized and lateral g when it is \
+lateral_g, with "peak_grip_ci90". \
 "confidence" (0-1) reflects how much data supports it; below 0.5 treat it as tentative and \
 say so. When "model" is "binned_v2_fallback" no Magic Formula could be fitted and there is no \
 interval: use it as a rough histogram estimate only. prior_used says what the fit leaned on \
@@ -104,13 +107,11 @@ to the prior. version_note, when present, says the game version changed or laps 
 across versions. peak_observed false means the curve was still rising at the largest slip \
 angle used: the true peak is higher and the driver has room to lean on the tire more. \
 factor_effects gives the fitted peak mu at the p10 / median / p90 of this driver's own load \
-(and any other fitted factor): it says how much grip a factor is worth inside the range \
-actually driven, never beyond it. Use it as a setup target, e.g. the direction a pressure or \
-load change should move grip, never a number to hit; the temperature and pressure \
-differences in the data are confounded with cornering itself, so do not present them as cause \
-and effect. A factor that is not listed was not identifiable from the data. coverage says \
-which load/slip regions have too few samples to trust; mention it with one sentence at most, \
-under Confidence. tyre_temperature compares tyre temps with the car's optimal temperature; \
+(only load is fitted): a model estimate of how much grip load is worth inside the range \
+actually driven, never beyond it. Never present it as a setup target or a number to hit, and \
+do not read it as cause and effect. A factor that is not listed was not fitted. coverage \
+lists load_ratio / temp_delta_c cells with too few samples to trust; mention it with one \
+sentence at most, under Confidence. tyre_temperature compares tyre temps with the car's optimal temperature; \
 if it carries a warning (e.g. a cold-tyre curve), say the model and the lap reflect tyres \
 outside their window, which is itself a root cause worth naming. The baselines' \
 load_normalization.laps_by_load_source says which load the grip numbers (mu) rest on: \
