@@ -59,7 +59,7 @@ Checked against 7 laps of the 10/14 Fuji BMW M4 LMGT3 file:
    best bin. On the Fuji data the load-normalized front curve is still
    rising at 5.5° — the driver has not been past the tire's peak — and the
    model now says that instead of inventing one.
-4. TYRE TEMPERATURE vs OPTIMAL. recorder_hf writes TyreOptimalTempC; every
+4. TYRE TEMPERATURE vs OPTIMAL. the recorder writes TyreOptimalTempC; every
    sample stores its temp minus optimal. The Fuji fronts ran 59-73 °C vs
    92 °C optimal, so that whole curve is a cold-tyre curve. When enough
    in-window samples exist the fit uses only those.

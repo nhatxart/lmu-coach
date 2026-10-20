@@ -58,7 +58,7 @@ Analyze flow: UI "Analyze" → (if auto_start) host agent `/llm/ensure` → poll
 | **Write to `.<name>.duckdb.tmp`, atomic rename; plus `.spool` pickle safety copy; recover both at startup** | Ctrl+C / crash must not lose a session. Spool is deleted after a successful write. |
 | **Keep recorder output schema-compatible with LMU native DuckDB** (tables `Lap`, `eventsList`, `channelsList`, `GPS Time`, …) | The community viewer https://lamerman.github.io/telemetry-visualizer-for-lmu/ failed with `Catalog Error: Table with name Lap does not exist!` / `eventsList does not exist`. Also lets backend treat native and recorder files uniformly. |
 | **GPS Time = `telem.mElapsedTime`, not `scoringInfo.mCurrentET`** | `mCurrentET` refreshes ~5 Hz → lap times quantised to ~0.1 s. `mElapsedTime` is 100 Hz and is the same clock LMU's native export uses. |
-| **Original `recorder.py`/`START_RECORDER.ps1` flow was kept** (user: "the original worked just fine") | Don't rewrite what works; only add session-end detection, truncation fixes, saving. Standalone use still works; the web Record tab is optional. |
+| **One recorder (2026-10-19): the HF1 recorder took over `recorder.py`, `START_RECORDER.ps1` and `.stop_requested`** (user: "TEST_HF achieves most of what I want") | The v4 recorder and the experimental `recorder_hf.py` were two versions of one program. HF1 already did everything v4 did plus per-session auto-start/stop, so v4 was retired. The launch points and the stop-file protocol the host agent uses were kept. Standalone use still works; the web Record tab is optional. |
 | **llama.cpp (llama-server) instead of Ollama** | User decision; runs natively on Windows on the 7900 XTX. Qwen3.6-27B UD-Q4_K_XL, moving to Qwen3.8-27B. Backend speaks plain OpenAI `/v1/chat/completions`. |
 | **One self-contained `index.html`, vanilla JS + canvas, no framework/build** | Served from the FastAPI static dir, zero toolchain, easy to ship as a zip. Fonts are bundled (offline). |
 | **Slip-angle-relative grip proxy, not Fx/Fy/F_available** | LMU exposes no tyre forces/loads/grip fraction (zero in recorder, absent in native). GU = lap's 95th-percentile \|slip angle\| ÷ learned peak slip angle (cap ≈1.5). 95th percentile because raw max was dominated by single-tick outliers (13 of 1680 samples >10° → everything pinned at the cap). |
@@ -159,7 +159,7 @@ Known zeroed/unpopulated: Tire Load, Tire Lateral Force, Tire Longitudinal Force
 2. Body slip is `[]` for native LMU files, partial laps and laps whose straights/yaw don't calibrate — UI intentionally falls back to heading-only chevron (no white velocity line, no β label).
 3. Config default port mismatch: `lmu-coach.config*.json` use `http://127.0.0.1:8001/health` / `…:8001/v1` but the user's compose points at `:8000`. Not a code bug; see §6.
 4. Historical errors already fixed (don't regress): `NameError: os` after the atomic-write change; `IndexError` in `_slip_ratio_col` (3924 vs 39239); 12 KB `.tmp` with a `DeprecationWarning` flood after "Stop recording"; `"No complete laps in this file"` before lap handling was fixed.
-5. No automated tests existed at handoff. Since 2026-10-12: `recorder/test_recorder_hf.py` (unittest) and `backend/tests/` (pytest; run with the `uv run --no-project --with ...` command in `test_slip_angle.py`'s docstring). Everything older is still untested.
+5. No automated tests existed at handoff. Since 2026-10-12: `recorder/test_recorder.py` (unittest) and `backend/tests/` (pytest; run with the `uv run --no-project --with ...` command in `test_slip_angle.py`'s docstring). Everything older is still untested.
 
 ---
 
@@ -227,12 +227,11 @@ Backend (`backend/`)
 - `requirements.txt`, `Dockerfile` — python:3.12-slim, uvicorn on 8000.
 
 Recorder (`recorder/`)
-- `recorder.py` — v4 recorder: full-session DuckDB, mElapsedTime clock, CSV+COPY writes, .tmp/.spool recovery, stop-file, selftest.
+- `recorder.py` — THE recorder (HF1 format; merged from the old v4 `recorder.py` and `recorder_hf.py` on 2026-10-19). Records every session it finds by itself, saves on garage/quit/freeze and picks up the next one. 1000 Hz polling with one sample per game tick, extra tyre-model channels, official lap times, full-session DuckDB via CSV+COPY, .tmp/.spool recovery (a leftover `.spool_hf` is still recovered), stop file `.stop_requested`, `--probe`, `--selftest`, `--recover`.
 - `recorder_control.py` — host agent (port 8420): recorder subprocess, SSE logs, config, path checks, LLM health/auto-start, GuardMiddleware.
-- `START_RECORDER.ps1` — `uv sync; uv run recorder.py` (original standalone launch).
+- `START_RECORDER.ps1` — `uv sync; uv run recorder.py` (standalone launch; passes arguments through, e.g. `--poll-hz 200`, `--probe 10`).
 - `START_RECORDER_CONTROL.ps1` — launches the host agent.
-- `recorder_hf.py` — (added 2026-10-12 in Claude Code) experimental clone of `recorder.py`: 1000 Hz polling, one sample per game tick, `--probe`, extra tyre-model channels, official lap times. Not wired into the host agent. Not yet run in-game.
-- `START_RECORDER_HF.ps1`, `test_recorder_hf.py` — its launcher and tests (`uv run python -m unittest test_recorder_hf`).
+- `test_recorder.py` - the recorder's tests (`cd recorder; uv run python -m unittest test_recorder`).
 - `pyproject.toml`, `uv.lock`, `pyLMUSharedMemory/*` — deps and vendored shared-memory bindings (base upload; not edited by us).
 
 Root

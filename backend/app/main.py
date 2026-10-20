@@ -853,7 +853,7 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
         handling = hb
 
     # Body slip β (deg): chassis orientation vs direction of travel.
-    # Measured from Local Vel X/Z when the file has them (recorder_hf.py),
+    # Measured from Local Vel X/Z when the file has them (HF1 recorder),
     # otherwise reconstructed from the yaw-rate integral.
     body_slip = []
     lv_x = _col("Local Vel X") if "Local Vel X" in tables else []

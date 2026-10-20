@@ -1,6 +1,6 @@
 """Lap times: LMU's official (1 ms) value wins over the 10 ms clock difference.
 
-recorder_hf.py swaps a lap's Lap Time row to LMU's mLastLapTime when it
+recorder.py swaps a lap's Lap Time row to LMU's mLastLapTime when it
 agrees with the clock difference; the backend used to ignore that table for
 the lap time it shows, so every lap read as a multiple of 10 ms.
 """
@@ -32,7 +32,7 @@ def test_official_lap_time_far_from_clock_difference_is_ignored(tmp_path):
 
 
 def test_recorder_py_placeholder_row_is_keyed_to_the_lap_that_ended(tmp_path, capsys):
-    # recorder.py writes (first crossing, 0.0) and then one row per crossing
+    # the v4 recorder writes (first crossing, 0.0) and then one row per crossing
     # holding the duration of the lap that just ENDED at that crossing.
     path = write_session(tmp_path / "a.duckdb", recorded_by="lmu-coach-recorder v4",
                          lap_times=((10.0, 0.0), (50.0, 39.9937), (90.0, 40.0)))

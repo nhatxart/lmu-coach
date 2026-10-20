@@ -1,7 +1,7 @@
-"""Tests for recorder_hf.py. No LMU needed.
+"""Tests for recorder.py. No LMU needed.
 
 Run from the recorder\\ directory:
-    uv run python -m unittest test_recorder_hf -v
+    uv run python -m unittest test_recorder -v
 """
 
 import contextlib
@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import duckdb
 
-import recorder_hf as hf
+import recorder as hf
 
 
 class PacerTest(unittest.TestCase):
@@ -315,25 +315,13 @@ class WriteSessionTest(unittest.TestCase):
             restored = hf.load_spool(hf.spool_session(buf, Path(d)))
         self.assertEqual(restored.meta["TyreRadiusCm"], "34,34,34,34")
 
-    def test_safety_copy_cannot_be_mistaken_for_recorder_py_one(self):
-        # recorder.py --recover globs ".*.spool" and would rewrite an HF
-        # session at the wrong frequency without its extra channels.
+    def test_safety_copy_uses_the_plain_spool_suffix(self):
         buf = self._recorded_buffer(n=20)
         with tempfile.TemporaryDirectory() as d:
             sp = hf.spool_session(buf, Path(d))
-            self.assertTrue(sp.name.endswith(".spool_hf"), sp.name)
-            self.assertEqual(list(Path(d).glob(".*.spool")), [])
+            self.assertTrue(sp.name.endswith(".spool"), sp.name)
 
-    def test_recover_leaves_recorder_py_safety_copies_alone(self):
-        with tempfile.TemporaryDirectory() as d:
-            other = Path(d) / ".2026-10-12T00_00_00Z.spool"
-            other.write_bytes(b"not ours")
-            with contextlib.redirect_stdout(io.StringIO()):
-                hf.recover_spools(Path(d))
-            self.assertEqual(other.read_bytes(), b"not ours")
-            self.assertEqual(list(Path(d).glob("*.duckdb")), [])
-
-    def test_recover_converts_hf_safety_copy(self):
+    def test_recover_converts_a_safety_copy(self):
         buf = self._recorded_buffer(n=300)
         with tempfile.TemporaryDirectory() as d:
             sp = hf.spool_session(buf, Path(d))
@@ -341,6 +329,29 @@ class WriteSessionTest(unittest.TestCase):
                 hf.recover_spools(Path(d))
             self.assertFalse(sp.exists())
             self.assertEqual(len(list(Path(d).glob("*.duckdb"))), 1)
+
+    def test_recover_still_converts_a_pre_rename_spool_hf_copy(self):
+        # Until 10/19/2026 this recorder wrote ".spool_hf"; a copy left behind
+        # by a crash before the rename must not be orphaned.
+        buf = self._recorded_buffer(n=300)
+        with tempfile.TemporaryDirectory() as d:
+            sp = hf.spool_session(buf, Path(d))
+            legacy = sp.with_name(sp.name + "_hf")  # ".<time>.spool" -> ".<time>.spool_hf"
+            sp.rename(legacy)
+            self.assertEqual(hf._spool_files(Path(d)), [legacy])
+            with contextlib.redirect_stdout(io.StringIO()):
+                hf.recover_spools(Path(d))
+            self.assertFalse(legacy.exists())
+            self.assertEqual(len(list(Path(d).glob("*.duckdb"))), 1)
+
+    def test_stop_file_matches_the_host_agent(self):
+        # recorder_control.py asks this recorder to save and exit by creating
+        # this exact file; the two names drifting apart would make the Record
+        # tab's Stop button silently do nothing until the 300 s force-kill.
+        agent = (Path(__file__).parent / "recorder_control.py").read_text(encoding="utf-8")
+        self.assertEqual(hf.STOP_FILE.name, ".stop_requested")
+        self.assertIn('STOP_FILE = RECORDER_DIR / ".stop_requested"', agent)
+        self.assertIn('RECORDER_SCRIPT = RECORDER_DIR / "recorder.py"', agent)
 
 
 class FakeMMap:

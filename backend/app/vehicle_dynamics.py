@@ -351,7 +351,7 @@ def _wrap(a):
 
 def body_slip_from_local_vel_deg(local_vel_x, local_vel_z, native_x_lap, speed_kmh,
                                  min_speed_kmh: float = 25.0) -> list:
-    """Body slip β in DEGREES from the car's own velocity (recorder_hf.py
+    """Body slip β in DEGREES from the car's own velocity (recorder.py
     files record Local Vel X/Z every tick). Same convention as
     compute_body_slip_deg: positive = body rotated clockwise on screen
     relative to the velocity vector.

@@ -43,7 +43,7 @@ CONTINUOUS_CHANNELS = [
     "Lap Dist",
     "Path Lateral",
     "Gear",  # not in channelsList but present as a plain table; handled defensively
-    "Yaw Accel",  # rad/s^2, recorder_hf only - tire model's steady-state filter
+    "Yaw Accel",  # rad/s^2, HF1 files only - tire model's steady-state filter
 ]
 
 # Per-wheel channels: value1..value4 map to FL, FR, RL, RR in LMU's convention.
@@ -70,11 +70,11 @@ WHEEL_CHANNELS = [
     "TyresRubberTemp",   # mean surface temp per wheel, Celsius
     # Vertical load for the tire model, best first (tire_model._axle_load).
     # Tire Load is mTireLoad (N), populated for some cars only; Susp Force is
-    # mSuspForce, pushrod load in N (recorder_hf). Both are dropped by
+    # mSuspForce, pushrod load in N (HF1 recorder). Both are dropped by
     # _read_channel_frequencies when the recorder marked them unpopulated.
     "Tire Load",
     "Susp Force",
-    # recorder_hf only; absent tables are skipped like any missing channel.
+    # HF1 files only; absent tables are skipped like any missing channel.
     "Camber",             # rad per wheel
     "TyresWear",          # fraction per wheel
     "TyresCarcassTemp",   # Celsius per wheel
@@ -109,7 +109,7 @@ class LapTelemetry:
     time_s: np.ndarray  # common time grid, seconds from lap start
     channels: dict[str, np.ndarray] = field(default_factory=dict)
     # File metadata (key -> value strings), e.g. TyreOptimalTempC and
-    # TyreCompoundFront from recorder_hf. Shared by every lap of a file.
+    # TyreCompoundFront from the HF1 recorder. Shared by every lap of a file.
     meta: dict[str, str] = field(default_factory=dict)
     # False for the file's last lap: it has no closing Lap event, so it ends
     # wherever the recording stopped (a 1.4 s "lap" was seen). Callers that
@@ -154,12 +154,12 @@ def _read_unpopulated_channels(con: duckdb.DuckDBPyConnection) -> set[str]:
 # there were sliced outside the data entirely.
 # Fix: 100 Hz rows take their time from GPS Time (one value per row), 10 Hz
 # rows from replaying the recorder's own 10 Hz gate over GPS Time.
-SLOW_PERIOD_S = 0.1   # recorder_hf.py's SLOW_PERIOD_S
+SLOW_PERIOD_S = 0.1   # recorder.py's SLOW_PERIOD_S
 SLOW_ROW_TABLES = ("GPS Latitude", "Lap Dist", "Path Lateral")
 
 
 def _replay_slow_gate(t_fast: np.ndarray) -> np.ndarray:
-    """Indices into t_fast where recorder_hf.py wrote a 10 Hz row: the first
+    """Indices into t_fast where recorder.py wrote a 10 Hz row: the first
     tick at or after each due time, re-anchored after a clock jump."""
     nxt, idx = float(t_fast[0]), []
     for i, et in enumerate(t_fast.tolist()):
@@ -183,8 +183,8 @@ def session_time_axes(
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
     """(t_fast, t_slow): game time (s) of each 100 Hz row and each 10 Hz row.
 
-    t_fast is GPS Time itself. t_slow replays the recorder_hf.py gate; if
-    that does not reproduce the file's 10 Hz row count (recorder.py decimated
+    t_fast is GPS Time itself. t_slow replays the recorder.py gate; if
+    that does not reproduce the file's 10 Hz row count (the v4 recorder decimated
     by tick count, native LMU is evenly spaced), the 10 Hz rows are spread
     evenly over the 100 Hz rows by index, which is exact for those formats.
     Either is None when the file lacks the tables to build it.
@@ -202,10 +202,10 @@ def session_time_axes(
     idx = _replay_slow_gate(t_fast)
     if len(idx) == n_slow:
         return t_fast, t_fast[idx]
-    # For recorder_hf.py files the replay must match; the index fallback
-    # below is only exact for recorder.py/native files. A mismatch means the
+    # For recorder.py files the replay must match; the index fallback
+    # below is only exact for v4/native files. A mismatch means the
     # recorder's gate changed (keep SLOW_PERIOD_S and _replay_slow_gate in
-    # step with recorder_hf.py) or the file is damaged, and the map will
+    # step with recorder.py) or the file is damaged, and the map will
     # drift against the telemetry wherever ticks were skipped - say so
     # rather than drift silently.
     try:
@@ -338,9 +338,9 @@ def _read_lap_time_events(con: duckdb.DuckDBPyConnection) -> dict[int, float]:
     if not rows:
         return {}
     # BUG FIX: this used to match by position (i-th Lap Time row = i-th Lap
-    # row). recorder.py writes a (first crossing, 0.0) placeholder first, so
+    # row). the v4 recorder writes a (first crossing, 0.0) placeholder first, so
     # every lap got the previous lap's time (the "lap 0 duration mismatch …
-    # event=0.000s" warnings); recorder_hf.py has no placeholder and only
+    # event=0.000s" warnings); recorder.py has no placeholder and only
     # lined up by luck. Both recorders stamp a Lap Time row with the ts of
     # the crossing that ENDED the lap, which is the next lap's Lap row, so
     # match on that instead. Rows at the first crossing have no lap to
