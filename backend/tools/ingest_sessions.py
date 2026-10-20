@@ -1,4 +1,4 @@
-"""
+﻿"""
 Bulk-fold recorded sessions into the per-car grip profiles, without the LLM.
 
 The same profile updates /analyze makes, for many files at once:
@@ -62,12 +62,21 @@ _BASELINE_LISTS = ("abs_lockup_durations_s", "tc_active_fractions", "peak_combin
                    "max_wheel_slip_ratio_values")
 
 
+def _peak_str(m) -> str:
+    """Peak with a marker: '>=' = never observed (lower bound); notes a fit at the grid edge."""
+    s = f"{m['peak']}" if m.get("peak_observed") else f">={m['peak']}"
+    if m.get("peak_at_grid_bound"):
+        s += f" (raw fit at grid bound {m.get('peak_slip_extrapolated')}, not quoted)"
+    return s
+
+
 def merge_baselines(dst: gp.GripProfile, srcs: list) -> None:
     """Fold the ABS/TC/slip baselines of livery profiles into the model profile `dst`.
 
     WHY: the baselines were learned per livery name; a model's liveries drive the same
     car, so the history belongs together. Lists are concatenated (dst first, then each
-    src in the order given) and capped to the newest MAX_SAMPLES; lap_count is summed.
+    src in the order given; so livery lists follow the model list and the order is not
+    chronological) and capped to the newest MAX_SAMPLES; lap_count is summed.
     Tyre data is not touched (v2 livery profiles carry none after loading).
     """
     for src in srcs:
@@ -233,7 +242,7 @@ def main() -> int:
         f, r = b["front_tire_model"], b["rear_tire_model"]
 
         def show(m):
-            return (f"{m['model']} peak {m['peak']} CI90 {m['peak_slip_ci90']} "
+            return (f"{m['model']} peak {_peak_str(m)} CI90 {m['peak_slip_ci90']} "
                     f"conf {m['confidence']} prior {m['prior_used']} ({m['grip_measure']})")
 
         print(f"  {car}: baseline laps {prof.lap_count}, tyre laps {len(prof.tire_model_laps)}, "
@@ -262,3 +271,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

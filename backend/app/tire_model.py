@@ -587,6 +587,8 @@ def build_axle_tire_model(cached: dict | None, lap_bins: list) -> dict:
     out = {
         "model": MODEL_FALLBACK,
         "peak": None, "efficient_range": None, "efficient_range_note": None,
+        "peak_slip_extrapolated": None, "peak_grip_extrapolated": None,
+        "peak_at_grid_bound": False,
         "peak_observed": False,
         "peak_grip": None, "available_grip": None, "max_observed_slip_deg": None,
         "confidence": 0.0, "sample_count": n_samples,
@@ -645,13 +647,28 @@ def build_axle_tire_model(cached: dict | None, lap_bins: list) -> dict:
                           "measured edge: the curve is still rising there")
     state = _available_state(fit, a)
     avail_slip = min(fit.peak_slip_deg, max_obs)
+    # PREVIOUSLY `peak` / `peak_grip` were the raw fit even when the peak was never observed
+    # (Cadillac rear: 15.0 deg = the PEAK_GRID edge, data only to 6.2), so GU = p95 / peak
+    # was meaningless. Fix (v2 meaning): an unobserved peak is reported as the largest slip
+    # angle driven, a LOWER bound inside the data, with the mu the curve predicts there; the
+    # raw extrapolation moves to *_extrapolated. GU = p95 / peak is then an upper bound on
+    # the true utilisation, which is what *_utilization_is_upper_bound says.
+    at_bound = bool(fit.peak_slip_deg >= float(PEAK_GRID[-1]) - 1e-6)
+    if fit.peak_observed:
+        peak_deg, peak_mu = fit.peak_slip_deg, fit.peak_mu
+    else:
+        peak_deg = min(fit.peak_slip_deg, max_obs)
+        peak_mu = float(predict(fit, np.array([peak_deg]))[0])
     out.update({
         "model": MODEL_MF,
-        "peak": round(fit.peak_slip_deg, 2),
+        "peak": round(peak_deg, 2),
+        "peak_slip_extrapolated": round(fit.peak_slip_deg, 2),
+        "peak_grip_extrapolated": round(fit.peak_mu, 3),
+        "peak_at_grid_bound": at_bound,
         "efficient_range": [round(lo_deg, 2), round(hi_deg, 2)],
         "efficient_range_note": range_note,
         "peak_observed": fit.peak_observed,
-        "peak_grip": round(fit.peak_mu, 3),
+        "peak_grip": round(peak_mu, 3),
         # mu at the p90 load / temperature state of the data, at a slip the driver reached
         "available_grip": round(float(predict(fit, np.array([avail_slip]), state)[0]), 3),
         "max_observed_slip_deg": round(fit.max_observed_slip_deg, 2),

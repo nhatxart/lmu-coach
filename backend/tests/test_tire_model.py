@@ -452,7 +452,8 @@ def test_still_rising_curve_stays_inside_the_observed_span():
     max_obs = round(peak * 0.6, 2)          # the driver never reached the peak
     cached["fit"] = {**cached["fit"], "max_observed_slip_deg": max_obs, "peak_observed": False}
     out = tm.build_axle_tire_model(cached, laps)
-    assert out["max_observed_slip_deg"] == max_obs < out["peak"]
+    # PREVIOUSLY peak was the raw fit (> max_obs); an unobserved peak is now the lower bound
+    assert out["max_observed_slip_deg"] == max_obs == out["peak"] < out["peak_slip_extrapolated"]
     lo, hi = out["efficient_range"]
     assert hi <= max_obs and lo <= hi
     assert out["efficient_range_note"] and "still rising" in out["efficient_range_note"]
@@ -466,3 +467,37 @@ def test_still_rising_curve_stays_inside_the_observed_span():
     state = tm._available_state(fit, tm.cell_arrays(bins))
     want = float(tm.predict(fit, np.array([max_obs]), state)[0])
     assert out["available_grip"] == round(want, 3)
+
+
+def test_unobserved_peak_is_the_lower_bound_inside_the_data():
+    laps = _mf_laps()
+    cached = _cached(laps)
+    raw = tm.MFFit.from_dict(cached["fit"])
+    max_obs = round(raw.peak_slip_deg * 0.6, 2)
+    cached["fit"] = {**cached["fit"], "max_observed_slip_deg": max_obs, "peak_observed": False,
+                     "peak_slip_deg": 15.0}
+    out = tm.build_axle_tire_model(cached, laps)
+    assert out["peak"] <= out["max_observed_slip_deg"] == max_obs
+    assert out["peak_slip_extrapolated"] == 15.0 > out["peak"]
+    assert out["peak_at_grid_bound"] is True
+    fit = tm.MFFit.from_dict(cached["fit"])
+    assert out["peak_grip"] == round(float(tm.predict(fit, np.array([out["peak"]]))[0]), 3)
+    assert out["peak_grip_extrapolated"] == round(fit.peak_mu, 3)
+    assert out["peak_slip_ci90"] == cached["peak_slip_ci90"]       # still the extrapolation's
+    lap = _lap()
+    cal = tm.fit_deflection_calibration(lap)
+    ref = tm.file_load_reference([lap], cal)
+    gu = tm.compute_grip_utilization_for_lap(lap, out, out, cal, ref)
+    assert gu["front_utilization_is_upper_bound"] is True
+    # GU is against the in-data lower bound, not the 15 deg extrapolation
+    assert gu["front_grip_utilization"] == round(min(gu["front_peak_slip_angle_deg"] / out["peak"], 1.5), 3)
+
+
+def test_observed_peak_keeps_the_raw_fit():
+    laps = _mf_laps()
+    cached = _cached(laps)
+    fit = tm.MFFit.from_dict(cached["fit"])
+    cached["fit"] = {**cached["fit"], "peak_observed": True}
+    out = tm.build_axle_tire_model(cached, laps)
+    assert out["peak"] == out["peak_slip_extrapolated"] == round(fit.peak_slip_deg, 2)
+    assert out["peak_at_grid_bound"] is False

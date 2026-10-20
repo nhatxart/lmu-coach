@@ -105,7 +105,10 @@ when this car has few laps ("class" = other cars of its class, "older_version" =
 game version, "none"); name it when it is not "none", because the number then partly belongs \
 to the prior. version_note, when present, says the game version changed or laps are mixed \
 across versions. peak_observed false means the curve was still rising at the largest slip \
-angle used: the true peak is higher and the driver has room to lean on the tire more. \
+angle used: "peak" is then that largest slip angle, a lower bound on the true peak, and the \
+driver has room to lean on the tire more; peak_slip_ci90 and peak_grip_ci90 then describe the \
+extrapolated peak (peak_slip_extrapolated), not "peak", and peak_at_grid_bound true means that \
+extrapolation ran off the end of the curve, so do not quote it as a number. \
 factor_effects gives the fitted peak mu at the p10 / median / p90 of this driver's own load \
 (only load is fitted): a model estimate of how much grip load is worth inside the range \
 actually driven, never beyond it. Never present it as a setup target or a number to hit, and \

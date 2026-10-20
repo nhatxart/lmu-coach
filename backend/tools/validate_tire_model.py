@@ -1,4 +1,4 @@
-"""
+﻿"""
 Read-only accuracy check of one car's tyre model (writes nothing).
 
     python -I backend/tools/validate_tire_model.py "WRT"            # car-name substring
@@ -58,6 +58,12 @@ from app import tire_mf  # noqa: E402
 import mf_experiment as mfx  # noqa: E402
 
 CORNER_MIN_SLIP_DEG = 1.5
+
+
+def _pk(m) -> str:
+    """'>=' prefix = peak never observed (lower bound); '*' = raw fit sits at the PEAK_GRID edge."""
+    s = f"{m['peak']}" if m.get("peak_observed") else f">={m['peak']}"
+    return s + ("*" if m.get("peak_at_grid_bound") else "")
 
 
 def main() -> int:
@@ -120,7 +126,7 @@ def main() -> int:
               f"tyre temp vs optimal {m['tyre_temperature'].get('median_delta_c')} C")
     row = {}
 
-    # ── (a) ──
+    # â”€â”€ (a) â”€â”€
     print("\n(a) GROUND TRUTH vs the game's tyre forces")
     a_cells = []
     for ax in ("front", "rear"):
@@ -147,7 +153,7 @@ def main() -> int:
         a_cells.append(f"{ax[0].upper()} {r:.2f}, {shape:.3f}, {pt} vs {pp} (proxy/game {ratio:.2f})")
     row["a"] = "; ".join(a_cells)
 
-    # ── (b) ──
+    # â”€â”€ (b) â”€â”€
     print(f"\n(b) HELD-OUT PREDICTION, cornering samples (slip > {CORNER_MIN_SLIP_DEG} deg)")
     splits = [("leave-one-lap-out", [[k] for k in per_lap])]
     if len(files) > 1:
@@ -159,7 +165,7 @@ def main() -> int:
             if name == "leave-one-lap-out":
                 row[f"b_{ax}"] = f"{r2:.2f} / {rmse:.2f}"
 
-    # ── (c) ──
+    # â”€â”€ (c) â”€â”€
     print(f"\n(c) BOOTSTRAP over laps ({args.boot} resamples)")
     rng = np.random.default_rng(0)
     ks = list(per_lap)
@@ -182,7 +188,7 @@ def main() -> int:
         c_cells.append(f"{ax[0].upper()} {lo:.1f}-{hi:.1f} (obs {np.mean(observed):.0%})")
     row["c"] = ", ".join(c_cells)
 
-    # ── (d) ──
+    # â”€â”€ (d) â”€â”€
     print("\n(d) CORNERING EFFICIENCY vs LAP TIME (each lap vs a model without it)")
     d_cells = []
     for f in files:
@@ -219,7 +225,7 @@ def main() -> int:
     return 0
 
 
-# ── v3 ───────────────────────────────────────────────────────────────────────
+# â”€â”€ v3 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _pooled_r2(per_fold: list) -> tuple:
     """(R2, RMSE, cells) pooled over fold results from mfx.heldout_r2 (sums, not means)."""
@@ -286,23 +292,23 @@ def _v3_section(prof) -> list:
                 print(f"  {axle} {label} ({fmt}, {res['folds']}/{res['of']} folds): "
                       f"R2 MF {res['mf'][0]:.3f} vs v2 binned {res['v2'][0]:.3f} "
                       f"(RMSE {res['mf'][1]:.3f} vs {res['v2'][1]:.3f}, {res['mf'][2]} cells)")
-        print(f"  {axle} model: {m['model']} peak {m['peak']} deg, CI90 {m['peak_slip_ci90']}, "
+        print(f"  {axle} model: {m['model']} peak {_pk(m)} deg, CI90 {m['peak_slip_ci90']}, "
               f"observed={m['peak_observed']}, confidence {m['confidence']}, prior {m['prior_used']}, "
               f"{m['n_fit_laps']} laps / {m['sample_count']} samples ({m['grip_measure']})")
         ci = m["peak_slip_ci90"]
         cell = lambda r: "n/a" if r is None else f"{r['mf'][0]:.2f} / {r['v2'][0]:.2f}"
         rows.append(f"| {prof.car_name} | 50 Hz | {axle} | {cell(proxy)} | "
                     f"{cell(true) if has_true else 'no forces'} | "
-                    f"{m['peak']} [{ci[0]:.1f}, {ci[1]:.1f}] | {m['confidence']:.2f} | "
+                    f"{_pk(m)} [{ci[0]:.1f}, {ci[1]:.1f}] | {m['confidence']:.2f} | "
                     f"{m['prior_used']} |" if ci else
                     f"| {prof.car_name} | 50 Hz | {axle} | {cell(proxy)} | "
-                    f"{cell(true) if has_true else 'no forces'} | {m['peak']} (no CI, "
+                    f"{cell(true) if has_true else 'no forces'} | {_pk(m)} (no CI, "
                     f"{m['model']}) | {m['confidence']:.2f} | {m['prior_used']} |")
     print()
     return rows
 
 
-# ── helpers ──────────────────────────────────────────────────────────────────
+# â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _axle_arrays(lap, s: dict, wheels) -> dict:
     m = s["mask"]
@@ -384,3 +390,4 @@ def _heldout(per_lap, groups, ax, measure):
 
 if __name__ == "__main__":
     sys.exit(main())
+
