@@ -479,5 +479,376 @@ class RecorderLoopTest(unittest.TestCase):
         self.assertNotIn(0.5, slept)
 
 
+# ── Tick-synced polling (replaces fixed-rate spinning as the default) ────────
+#
+# LMU publishes telemetry about every 10 ms. Polling 1000x a second with a
+# busy-wait costs a CPU core and copies the whole shared-memory block each
+# time; the tick-synced loop sleeps to just before the next update, looks at
+# the player's clock in the live memory (no copy), and copies only when it
+# has moved. Every stored row still carries the game's own timestamp.
+
+class FakeTime:
+    """Deterministic clock: a sleep takes the requested time plus 0.4 ms."""
+
+    def __init__(self):
+        self.t = 0.0
+        self.sleeps = []
+
+    def clock(self):
+        return self.t
+
+    def sleep(self, s):
+        self.sleeps.append(s)
+        self.t += max(s, 0.0) + 0.0004
+
+
+class TickSyncTest(unittest.TestCase):
+    def _world_peek(self, ft, period=0.01, looks=None):
+        """Game clock that moves every `period` of fake time."""
+        def peek():
+            if looks is not None:
+                looks.append(ft.t)
+            return 1.0 + int(ft.t / period + 1e-9) * 0.01
+        return peek
+
+    def test_sleeps_most_of_the_period_then_catches_the_tick(self):
+        ft = FakeTime()
+        sync = hf.TickSync(clock=ft.clock, sleep=ft.sleep)
+        looks = []
+        peek = self._world_peek(ft, looks=looks)
+        self.assertTrue(sync.wait(peek, last_et=peek()))
+        self.assertGreater(ft.sleeps[0], 0.006)          # one long sleep, not a spin
+        self.assertLessEqual(len(looks) - 1, 4)          # then only a few looks
+        self.assertLess(ft.t, 0.0100 + 0.0035)           # caught within ms of arrival
+
+    def test_a_hundred_ticks_cost_a_handful_of_looks_each(self):
+        ft = FakeTime()
+        sync = hf.TickSync(clock=ft.clock, sleep=ft.sleep)
+        looks = []
+        peek = self._world_peek(ft, looks=looks)
+        last = peek()
+        caught = 0
+        for _ in range(100):
+            if sync.wait(peek, last_et=last):
+                caught += 1
+            last = peek()
+        self.assertEqual(caught, 100)                    # no tick missed
+        self.assertLess(len(looks), 100 * 6)             # vs ~10 per tick when spinning
+        self.assertAlmostEqual(ft.t, 1.0, delta=0.03)    # and still locked to the game
+
+    def test_a_late_wake_up_returns_at_once_without_sleeping_first(self):
+        ft = FakeTime()
+        sync = hf.TickSync(clock=ft.clock, sleep=ft.sleep)
+        peek = self._world_peek(ft)
+        last = peek()
+        sync.wait(peek, last_et=last)
+        last = peek()
+        ft.t += 0.030                                    # a stall: three ticks went by
+        ft.sleeps.clear()
+        self.assertTrue(sync.wait(peek, last_et=last))
+        self.assertEqual(ft.sleeps, [])
+
+    def test_gives_up_so_a_frozen_game_is_still_looked_at(self):
+        ft = FakeTime()
+        sync = hf.TickSync(clock=ft.clock, sleep=ft.sleep)
+        self.assertFalse(sync.wait(lambda: 5.0, last_et=5.0))
+        self.assertGreaterEqual(ft.t, hf.TickSync.GIVE_UP_S)
+        self.assertLess(ft.t, hf.TickSync.GIVE_UP_S + 0.01)
+        self.assertEqual(sync.gave_up, 1)
+
+    def test_without_a_live_peek_it_falls_back_to_timed_polling(self):
+        # peek -> None means the live clock cannot be read (library internals
+        # changed). The caller then polls once per expected tick instead of
+        # waiting out the give-up time every time.
+        ft = FakeTime()
+        sync = hf.TickSync(clock=ft.clock, sleep=ft.sleep)
+        self.assertFalse(sync.wait(lambda: None, last_et=5.0))
+        self.assertLess(ft.t, 0.0105)
+
+    def test_a_skipped_copy_is_retried_at_once_and_teaches_nothing(self):
+        # mmap_ctrl.update() copies only when LMU's update flag is set. When it
+        # does not, the recorder is handed the SAME tick again and asks to wait
+        # for it a second time while the live clock has already moved on. That
+        # must be a quick retry, not a full period sleep, and the short gap
+        # must not be learned as the game's tick period.
+        ft = FakeTime()
+        sync = hf.TickSync(clock=ft.clock, sleep=ft.sleep)
+        peek = self._world_peek(ft)
+        last = peek()
+        self.assertTrue(sync.wait(peek, last_et=last))        # tick seen; the copy "fails"
+        period, t_before, sleeps_before = sync.period, ft.t, len(ft.sleeps)
+        self.assertTrue(sync.wait(peek, last_et=last))        # same tick asked for again
+        self.assertEqual(len(ft.sleeps) - sleeps_before, 1)   # one short sleep...
+        self.assertLess(ft.t - t_before, 0.003)               # ...not a 8.5 ms one
+        self.assertEqual(sync.period, period)
+
+    def test_asking_again_while_the_game_is_paused_does_not_go_hot(self):
+        ft = FakeTime()
+        sync = hf.TickSync(clock=ft.clock, sleep=ft.sleep)
+        self.assertFalse(sync.wait(lambda: 5.0, last_et=5.0))   # gives up after 50 ms
+        t0 = ft.t
+        self.assertFalse(sync.wait(lambda: 5.0, last_et=5.0))   # the same tick again: still paused
+        self.assertGreaterEqual(ft.t - t0, hf.TickSync.NOMINAL_S - hf.TickSync.EARLY_S)
+
+    def test_one_skipped_game_tick_does_not_bend_the_learned_period(self):
+        ft = FakeTime()
+        sync = hf.TickSync(clock=ft.clock, sleep=ft.sleep)
+        peek = self._world_peek(ft)
+        last = peek()
+        for _ in range(20):
+            sync.wait(peek, last_et=last)
+            last = peek()
+        settled = sync.period
+        ft.t += 0.018                       # one update never arrives (~19 ms gap)
+        sync.wait(peek, last_et=last)
+        self.assertAlmostEqual(sync.period, settled, delta=0.0002)
+
+    def test_learns_a_game_that_ticks_slower_than_100_hz(self):
+        ft = FakeTime()
+        sync = hf.TickSync(clock=ft.clock, sleep=ft.sleep)
+        peek = self._world_peek(ft, period=0.0104)
+        last = peek()
+        for _ in range(80):
+            sync.wait(peek, last_et=last)
+            last = peek()
+        self.assertAlmostEqual(sync.period, 0.0104, delta=0.0004)
+
+
+class PeekElapsedTimeTest(unittest.TestCase):
+    def test_reads_the_player_clock_from_live_memory(self):
+        live = SimpleNamespace(telemetry=SimpleNamespace(
+            telemInfo=[fake_telem(et=1.0), fake_telem(et=123.45)]))
+        self.assertEqual(hf.peek_elapsed_time(SimpleNamespace(_realtime=live), 1), 123.45)
+
+    def test_none_when_the_live_view_is_not_available(self):
+        self.assertIsNone(hf.peek_elapsed_time(SimpleNamespace(_realtime=None), 0))
+        self.assertIsNone(hf.peek_elapsed_time(SimpleNamespace(), 0))           # no such attribute
+        live = SimpleNamespace(telemetry=SimpleNamespace(telemInfo=[fake_telem()]))
+        self.assertIsNone(hf.peek_elapsed_time(SimpleNamespace(_realtime=live), 7))   # slot gone
+        self.assertIsNone(hf.peek_elapsed_time(SimpleNamespace(_realtime=live), hf.INVALID_INDEX))
+
+
+class PollModeTest(unittest.TestCase):
+    def test_default_is_tick_synced_and_a_poll_rate_forces_fixed_polling(self):
+        self.assertEqual(hf.resolve_poll_mode(None, False), ("tick", 100.0))
+        self.assertEqual(hf.resolve_poll_mode(200.0, False), ("fixed", 200.0))
+
+    def test_every_poll_needs_fixed_polling(self):
+        self.assertEqual(hf.resolve_poll_mode(None, True), ("fixed", hf.DEFAULT_POLL_HZ))
+        self.assertEqual(hf.resolve_poll_mode(500.0, True), ("fixed", 500.0))
+
+    def test_command_line(self):
+        parser = hf.build_parser()
+        args = parser.parse_args([])
+        self.assertIsNone(args.poll_hz)
+        self.assertFalse(args.normal_priority)
+        args = parser.parse_args(["--poll-hz", "200", "--normal-priority"])
+        self.assertEqual(args.poll_hz, 200.0)
+        self.assertTrue(args.normal_priority)
+
+
+class PriorityTest(unittest.TestCase):
+    def test_sets_below_normal_priority_class(self):
+        calls = []
+        k32 = SimpleNamespace(
+            GetCurrentProcess=lambda: -1,
+            SetPriorityClass=lambda handle, cls: (calls.append((handle, cls)), 1)[1])
+        self.assertTrue(hf.lower_priority(k32))
+        self.assertEqual(calls, [(-1, 0x00004000)])      # BELOW_NORMAL_PRIORITY_CLASS
+
+    def test_a_failure_is_not_fatal(self):
+        def boom(*_a):
+            raise OSError("access denied")
+        k32 = SimpleNamespace(GetCurrentProcess=lambda: -1, SetPriorityClass=boom)
+        self.assertFalse(hf.lower_priority(k32))
+
+
+class SkippedTicksTest(unittest.TestCase):
+    def test_a_30_ms_clock_step_is_two_skipped_updates(self):
+        stats = hf.PollStats()
+        for et in (1.00, 1.01, 1.02, 1.05, 1.06):
+            stats.record(et, False)
+        self.assertEqual(stats.skipped_ticks, 2)
+        self.assertIn("skipped", "\n".join(stats.summary(1.0)))
+
+    def test_ordinary_jitter_is_not_a_skip(self):
+        stats = hf.PollStats()
+        for et in (1.000, 1.010, 1.021, 1.030, 1.041):    # 10-11 ms steps
+            stats.record(et, False)
+        self.assertEqual(stats.skipped_ticks, 0)
+
+
+class LiveWorld:
+    """Game memory whose clock moves one tick every `peeks_per_tick` looks at
+    the live clock. Deterministic stand-in for real time: it counts how often
+    the recorder looks (cheap) versus copies the whole block (expensive)."""
+
+    def __init__(self, ticks, peeks_per_tick=4):
+        self.ticks, self.ppt = ticks, peeks_per_tick
+        self.peeks = 0
+        self.updates = 0
+        self.stale_once = set()     # ticks whose first update() does not copy
+
+    def et(self):
+        return 100.0 + min(self.peeks // self.ppt, self.ticks) * 0.01
+
+
+class FakeLiveMMap:
+    world: LiveWorld = None
+
+    def __init__(self, *_a, **_k):
+        w = FakeLiveMMap.world
+
+        class _Telem:
+            def __getitem__(self_inner, i):
+                w.peeks += 1
+                return SimpleNamespace(mElapsedTime=w.et())
+
+        self._realtime = SimpleNamespace(telemetry=SimpleNamespace(telemInfo=_Telem()))
+        self.data = None
+        self.update = self._update
+
+    def create(self, access_mode=0):
+        pass
+
+    def close(self):
+        pass
+
+    def _update(self):
+        w = FakeLiveMMap.world
+        w.updates += 1
+        k = min(w.peeks // w.ppt, w.ticks)
+        if k >= w.ticks:
+            raise KeyboardInterrupt        # end of the scripted session
+        if k in w.stale_once and self.data is not None:
+            w.stale_once.discard(k)        # LMU's update flag was not set: no copy,
+            return                         # .data is still the previous tick
+        telem = fake_telem(et=w.et(), pos_x=float(k))
+        self.data = SimpleNamespace(
+            generic=SimpleNamespace(gameVersion=1234),
+            scoring=SimpleNamespace(
+                scoringInfo=SimpleNamespace(mNumVehicles=1, mTrackTemp=31.5, mAmbientTemp=22.0),
+                vehScoringInfo=[fake_scor()]),
+            telemetry=SimpleNamespace(telemInfo=[telem]))
+
+
+class TickModeLoopTest(unittest.TestCase):
+    def setUp(self):
+        self._saved = {n: getattr(hf.TickSync, n) for n in
+                       ("NOMINAL_S", "EARLY_S", "STEP_S", "PERIOD_MIN_S")}
+        hf.TickSync.NOMINAL_S, hf.TickSync.EARLY_S = 0.001, 0.0004   # keep the test fast
+        hf.TickSync.STEP_S, hf.TickSync.PERIOD_MIN_S = 0.0004, 0.0005
+        self._mmap = hf.MMapControl
+
+    def tearDown(self):
+        for n, v in self._saved.items():
+            setattr(hf.TickSync, n, v)
+        hf.MMapControl = self._mmap
+
+    def _record(self, mmap_cls, **kw):
+        hf.MMapControl = mmap_cls
+        with tempfile.TemporaryDirectory() as d:
+            with contextlib.redirect_stdout(io.StringIO()) as log:
+                hf.run_recorder(Path(d), None, **kw)
+            files = list(Path(d).glob("*.duckdb"))
+            self.assertEqual(len(files), 1, log.getvalue())
+            con = duckdb.connect(str(files[0]), read_only=True)
+            try:
+                n = con.execute('select count(*) from "GPS Time"').fetchone()[0]
+                meta = dict(con.execute("select key, value from metadata").fetchall())
+            finally:
+                con.close()
+        return n, meta
+
+    def test_copies_the_block_once_per_tick_and_only_looks_in_between(self):
+        # 250 ticks: a session under MIN_SAMPLES (200) is discarded by design.
+        FakeLiveMMap.world = LiveWorld(ticks=250, peeks_per_tick=3)
+        n, meta = self._record(FakeLiveMMap)
+        w = FakeLiveMMap.world
+        self.assertEqual(n, 250)                          # one stored row per game tick
+        self.assertEqual(w.updates, 251)                  # 250 ticks + the one that ends the script
+        self.assertGreaterEqual(w.peeks, 2 * 250)         # the waiting was done by looking...
+        self.assertEqual(meta["UniqueTicks"], "250")
+        self.assertEqual(meta["PollMode"], "tick-sync")
+        self.assertEqual(meta["PollHz"], "100")
+
+    def test_a_copy_that_lags_the_live_clock_costs_a_retry_not_a_tick(self):
+        FakeLiveMMap.world = LiveWorld(ticks=250, peeks_per_tick=3)
+        FakeLiveMMap.world.stale_once = set(range(10, 250, 10))   # 24 ticks arrive "uncopied"
+        n, meta = self._record(FakeLiveMMap)
+        w = FakeLiveMMap.world
+        self.assertEqual(n, 250)                          # every tick still stored
+        self.assertEqual(w.updates, 251 + 24)             # one extra copy attempt per lag
+        self.assertEqual(meta["UniqueTicks"], "250")
+
+    def test_still_records_when_the_live_clock_cannot_be_read(self):
+        # The scripted FakeMMap has no _realtime: every wait falls back to
+        # one poll per expected tick, and duplicates are still stored once.
+        FakeMMap.script = [(fake_telem(et=100.0 + (i // 2) * 0.01, pos_x=float(i // 2)),
+                            fake_scor()) for i in range(500)]   # 250 distinct ticks
+        n, meta = self._record(FakeMMap)
+        self.assertEqual(n, 250)
+        self.assertEqual(meta["PollMode"], "tick-sync")
+
+    def test_fixed_rate_mode_is_unchanged(self):
+        FakeMMap.script = [(fake_telem(et=100.0 + (i // 3) * 0.01, pos_x=float(i // 3)),
+                            fake_scor()) for i in range(900)]
+        hf.MMapControl = FakeMMap
+        with tempfile.TemporaryDirectory() as d:
+            with contextlib.redirect_stdout(io.StringIO()):
+                hf.run_recorder(Path(d), 2000.0)
+            con = duckdb.connect(str(next(Path(d).glob("*.duckdb"))), read_only=True)
+            meta = dict(con.execute("select key, value from metadata").fetchall())
+            con.close()
+        self.assertEqual(meta["PollMode"], "fixed")
+        self.assertEqual(meta["PollHz"], "2000")
+
+
+class ProbeCpuTest(unittest.TestCase):
+    def test_probe_reports_cpu_use_so_the_two_modes_can_be_compared(self):
+        class TimeWorld(FakeLiveMMap):
+            """100 Hz game clock driven by real time."""
+            t0 = None
+
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                TimeWorld.t0 = time.perf_counter()
+                w = SimpleNamespace(peeks=0, updates=0)
+                TimeWorld.w = w
+
+                class _Telem:
+                    def __getitem__(s, i):
+                        w.peeks += 1
+                        return SimpleNamespace(mElapsedTime=TimeWorld.now())
+
+                self._realtime = SimpleNamespace(telemetry=SimpleNamespace(telemInfo=_Telem()))
+
+            @staticmethod
+            def now():
+                return 100.0 + int((time.perf_counter() - TimeWorld.t0) / 0.01) * 0.01
+
+            def _update(self):
+                TimeWorld.w.updates += 1
+                self.data = SimpleNamespace(
+                    generic=SimpleNamespace(gameVersion=1234),
+                    scoring=SimpleNamespace(
+                        scoringInfo=SimpleNamespace(mNumVehicles=1, mTrackTemp=31.5, mAmbientTemp=22.0),
+                        vehScoringInfo=[fake_scor()]),
+                    telemetry=SimpleNamespace(telemInfo=[fake_telem(et=TimeWorld.now())]))
+
+        real = hf.MMapControl
+        hf.MMapControl = TimeWorld
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                hf.run_probe(0.4, None)
+        finally:
+            hf.MMapControl = real
+        text = out.getvalue()
+        self.assertIn("CPU", text)
+        self.assertIn("tick-synced", text)
+        # about 40 ticks in 0.4 s; copying the block once per tick, not per look
+        self.assertLess(TimeWorld.w.updates, 80)
+
+
 if __name__ == "__main__":
     unittest.main()

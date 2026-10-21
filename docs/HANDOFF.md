@@ -86,6 +86,7 @@ Analyze flow: UI "Analyze" → (if auto_start) host agent `/llm/ensure` → poll
 - Freeze watchdog (`ConnectionState`): `mElapsedTime` stops for >2 s (`FREEZE_TIMEOUT_S`), garage entry, vehicle-slot change, or elapsed time going backwards → flush current session and start a new buffer. Sessions < 200 samples are discarded.
 - Rates: 100 Hz position/speed/inputs/G/yaw/wheel/slip/susp/RPM; 10 Hz `Path Lateral`, `Track Edge`, `Lap Dist`, tyre thermals; event tables (`Gear`, `ABS`, `TC`, `In Pits`, `Lap`, `Lap Time`) on change/crossing.
 - `recorder.py` default output: `<repo>/data/sessions` anchored to `__file__` (a relative path once wrote files somewhere unexpected).
+- **Polling (2026-10-21):** by default the recorder follows the game's updates (`TickSync`): it sleeps to just before the next ~10 ms update, watches the player's `mElapsedTime` in the live shared memory (no copy) and copies the 317 KiB block once per update. Every row is still stamped with `mElapsedTime`, lap times still come from `mLastLapTime`. The previous fixed 1000 Hz busy-wait (still available as `--poll-hz 1000`) kept a core 99 % busy and copied the block 1000x a second (~22 us each = 2 % of a core, 325 MB/s of memory traffic) and stuttered LMU. It runs at below-normal priority (`--normal-priority` turns that off). `--probe N` prints the recorder's CPU use and skipped updates for either mode.
 
 ### 4.2 Channel meanings and units
 | Channel (table) | Unit / meaning |
@@ -227,7 +228,7 @@ Backend (`backend/`)
 - `requirements.txt`, `Dockerfile` — python:3.12-slim, uvicorn on 8000.
 
 Recorder (`recorder/`)
-- `recorder.py` — THE recorder (HF1 format; merged from the old v4 `recorder.py` and `recorder_hf.py` on 2026-10-19). Records every session it finds by itself, saves on garage/quit/freeze and picks up the next one. 1000 Hz polling with one sample per game tick, extra tyre-model channels, official lap times, full-session DuckDB via CSV+COPY, .tmp/.spool recovery (a leftover `.spool_hf` is still recovered), stop file `.stop_requested`, `--probe`, `--selftest`, `--recover`.
+- `recorder.py` — THE recorder (HF1 format; merged from the old v4 `recorder.py` and `recorder_hf.py` on 2026-10-19). Records every session it finds by itself, saves on garage/quit/freeze and picks up the next one. follows the game's updates (tick-synced, ~100 Hz; `--poll-hz N` polls at a fixed rate instead) with one sample per game tick, extra tyre-model channels, official lap times, full-session DuckDB via CSV+COPY, .tmp/.spool recovery (a leftover `.spool_hf` is still recovered), stop file `.stop_requested`, `--probe`, `--selftest`, `--recover`.
 - `recorder_control.py` — host agent (port 8420): recorder subprocess, SSE logs, config, path checks, LLM health/auto-start, GuardMiddleware.
 - `START_RECORDER.ps1` — `uv sync; uv run recorder.py` (standalone launch; passes arguments through, e.g. `--poll-hz 200`, `--probe 10`).
 - `START_RECORDER_CONTROL.ps1` — launches the host agent.

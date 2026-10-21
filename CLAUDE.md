@@ -11,7 +11,7 @@ Telemetry coaching for Le Mans Ultimate (LMU). A recorder captures sim telemetry
 
 ## Run
 - Backend: `docker compose up --build` -> http://localhost:8080
-- Recorder: `recorder\START_RECORDER.ps1` (does `uv sync; uv run recorder.py`; extra args pass through, e.g. `--poll-hz 200`). Or `recorder\START_RECORDER_CONTROL.ps1` for the host agent. Run one of them, not both.
+- Recorder: `recorder\START_RECORDER.ps1` (does `uv sync; uv run recorder.py`; follows the game's updates by default, extra args pass through, e.g. `--probe 10` to compare CPU use and skipped updates). Or `recorder\START_RECORDER_CONTROL.ps1` for the host agent. Run one of them, not both.
 - Local LLM is expected at `http://127.0.0.1:8001/v1` (OpenAI-compatible); the UI Settings send URL/model per request.
 
 ## Conventions

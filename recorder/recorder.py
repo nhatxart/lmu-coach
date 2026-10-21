@@ -11,11 +11,17 @@ History: this file used to be the experimental "recorder_hf.py" next to the
 original v4 recorder.py. The two were merged on 10/19/2026 - the v4 recorder was
 retired, this one took its name, launcher and stop file. Files written by
 either still read in the backend. What this recorder does that v4 did not:
-  - Polls at --poll-hz (default 1000) with a sleep+spin pacer, but stores
-    ONE sample per game tick (when telem.mElapsedTime advances), so a 100 Hz
-    game clock yields a clean 100 Hz file instead of ~16% duplicated and
-    ~20% skipped ticks (measured on a v4 file). --every-poll stores
-    every poll instead, for raw inspection.
+  - Stores ONE sample per game tick (when telem.mElapsedTime advances), so a
+    100 Hz game clock yields a clean 100 Hz file instead of ~16% duplicated
+    and ~20% skipped ticks (measured on a v4 file). Every row is stamped with
+    the game's own clock; lap times come from the game's own mLastLapTime.
+  - Follows the game's updates instead of polling at a fixed rate (TickSync,
+    the default since 10/21/2026): sleep to just before the next ~10 ms
+    update, watch the player's clock in the live memory, copy the block once.
+    The old fixed 1000 Hz busy-wait kept a core 99% busy and copied 317 KiB
+    1000x a second (measured ~22 us per copy = 2% of a core, but 325 MB/s of
+    memory traffic) and stuttered LMU. --poll-hz N brings fixed-rate polling back; --every-poll
+    stores every poll, for raw inspection (fixed polling only).
   - Measures what the game actually publishes: polls, unique ticks, the
     histogram of clock steps, and polls where car data changed without the
     clock moving. --probe SECONDS does only that and records nothing.
@@ -250,6 +256,143 @@ class Pacer:
         self._next += self.interval
 
 
+class TickSync:
+    """Waits for the game's next telemetry update without spinning or copying.
+
+    WHY (10/21/2026): the fixed-rate Pacer at 1000 Hz keeps a CPU core 99%
+    busy and copies the WHOLE shared-memory block (every car's data) on every
+    poll, to catch updates that arrive every ~10 ms. That showed up as stutter
+    in LMU even on an undervolted 9800X3D with SMT off. The game's own clock
+    (mElapsedTime) is what stamps every row and decides whether a sample is
+    new, so all this needs is to look at that one number cheaply:
+
+      1. sleep until just before the next update is expected (a real sleep,
+         no spinning),
+      2. look at the player's clock in the LIVE memory every STEP_S - a single
+         double, no copy - until it changes,
+      3. return so the caller copies the block once and stores the row.
+
+    The expected period is learned from the arrivals (the game does not tick
+    at exactly 100 Hz). If the clock does not move for GIVE_UP_S (paused game,
+    menu, loading screen, or a stale player slot) it returns False and the
+    caller polls normally, so the freeze/garage detection keeps running. If
+    the live clock cannot be read at all (peek returns None) it degrades to
+    one poll per expected tick.
+
+    clock/sleep are injectable so the logic can be tested without real time.
+    """
+    NOMINAL_S = 0.010
+    EARLY_S = 0.0015      # wake this long before the expected update
+    STEP_S = 0.001        # time.sleep(0.001) really takes ~1.5 ms on this PC
+    GIVE_UP_S = 0.050
+    PERIOD_MIN_S = 0.004
+    PERIOD_MAX_S = 0.020
+
+    def __init__(self, clock=None, sleep=None):
+        self._clock = clock or time.perf_counter
+        self._sleep = sleep or time.sleep
+        self.period = self.NOMINAL_S
+        self.gave_up = 0
+        self._t_seen: float | None = None
+        self._last_wait_et: float | None = None
+
+    def wait(self, peek, last_et: float) -> bool:
+        """Block until peek() differs from last_et. True: a new update was
+        seen. False: gave up (or no live clock) - poll anyway."""
+        clock, sleep = self._clock, self._sleep
+        # Asked about the SAME tick twice in a row while the live clock has
+        # already moved on: the copy did not follow. MMapControl.update()
+        # copies only when LMU's update flag is set (and the car counts agree),
+        # otherwise the loop is handed the previous tick again. Retry after one
+        # short sleep. A full period sleep would cost the next tick, and the
+        # short gap must not be learned as the game's period (that collapsed
+        # the period toward PERIOD_MIN_S in review). A paused game also asks
+        # twice, but its live clock has NOT moved, so it takes the normal path.
+        repeat = last_et == self._last_wait_et
+        self._last_wait_et = last_et
+        if repeat:
+            live = peek()
+            if live is not None and live != last_et:
+                sleep(self.STEP_S)
+                self._t_seen = clock()
+                return True
+        start = self._t_seen if self._t_seen is not None else clock()
+        now = clock()
+        target = start + self.period - self.EARLY_S
+        if target > now:
+            sleep(target - now)
+        while True:
+            et = peek()
+            now = clock()
+            if et is None:
+                self._t_seen = now
+                return False
+            if et != last_et:
+                self._learn(now)
+                return True
+            if now - start >= self.GIVE_UP_S:
+                self.gave_up += 1
+                self._t_seen = now
+                return False
+            sleep(self.STEP_S)
+
+    def _learn(self, now: float) -> None:
+        if self._t_seen is not None:
+            dt = now - self._t_seen
+            # Only an ordinary tick-to-tick interval teaches the period. A gap
+            # of two or more updates (the game skipped one, or we woke late)
+            # is not a slower game; 1.5x leaves room for the wake-up jitter.
+            if 0.5 * self.period <= dt <= 1.5 * self.period:
+                self.period = min(self.PERIOD_MAX_S,
+                                  max(self.PERIOD_MIN_S, 0.9 * self.period + 0.1 * dt))
+        self._t_seen = now
+
+
+def peek_elapsed_time(mmap_ctrl, ti: int) -> float | None:
+    """The player's mElapsedTime read straight from the live shared memory,
+    without the full copy mmap_ctrl.update() makes. None if it cannot be read.
+
+    Uses MMapControl._realtime (the live view the copy is made from; set in
+    the copy access mode this recorder uses). It is a private attribute of the
+    vendored library, so every failure maps to None and the caller falls back
+    to timed polling instead of crashing."""
+    live = getattr(mmap_ctrl, "_realtime", None)
+    if live is None or ti is None or ti < 0:    # -1 would index the LAST car
+        return None
+    try:
+        return float(live.telemetry.telemInfo[ti].mElapsedTime)
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return None
+
+
+TICK_NOMINAL_HZ = 100.0
+BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+
+
+def resolve_poll_mode(poll_hz: float | None, every_poll: bool) -> tuple[str, float]:
+    """("tick", nominal Hz) = follow the game's updates; ("fixed", Hz) = poll
+    at a fixed rate. A given --poll-hz, or --every-poll (which stores every
+    poll and so needs a poll clock of its own), selects fixed polling."""
+    if poll_hz is None and not every_poll:
+        return "tick", TICK_NOMINAL_HZ
+    return "fixed", poll_hz if poll_hz is not None else DEFAULT_POLL_HZ
+
+
+def lower_priority(kernel32=None) -> bool:
+    """Run below normal priority so the recorder yields to the game. Windows
+    only; any failure is not fatal. kernel32 is injectable for tests."""
+    if kernel32 is None:
+        if sys.platform != "win32":
+            return False
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+    try:
+        return bool(kernel32.SetPriorityClass(kernel32.GetCurrentProcess(),
+                                              BELOW_NORMAL_PRIORITY_CLASS))
+    except Exception:  # noqa: BLE001 - never let a tuning nicety stop a recording
+        return False
+
+
 class PollStats:
     """Counts what the game actually publishes versus how often we look."""
 
@@ -257,14 +400,26 @@ class PollStats:
         self.polls = 0
         self.ticks = 0                       # polls where mElapsedTime was new
         self.data_changed_without_tick = 0   # car data moved, clock did not
+        # Game updates that never reached the file: a clock step of 15 ms or
+        # more means at least one 10 ms update in between was not seen. It
+        # cannot say WHO missed it - the game skips ticks by itself (18 s of
+        # them in one Fuji lap), and a recorder that wakes up late misses
+        # them too - so compare the two polling modes on the same drive.
+        self.skipped_ticks = 0
         self._steps: Counter = Counter()     # clock step in 0.1 ms units
         self._last_et: float | None = None
+
+    TICK_UNITS = 100            # one game update, in 0.1 ms units
+    SKIP_THRESHOLD_UNITS = 150  # 15 ms
 
     def record(self, et: float, data_changed: bool) -> None:
         self.polls += 1
         if self._last_et is None or et != self._last_et:
             if self._last_et is not None and et > self._last_et:
-                self._steps[round((et - self._last_et) * 1e4)] += 1
+                step = round((et - self._last_et) * 1e4)
+                self._steps[step] += 1
+                if step >= self.SKIP_THRESHOLD_UNITS:
+                    self.skipped_ticks += round(step / self.TICK_UNITS) - 1
             self.ticks += 1
             self._last_et = et
         elif data_changed:
@@ -281,6 +436,7 @@ class PollStats:
             f"polls: {self.polls:,} in {wall_s:.1f}s = {self.polls / wall_s:.0f} Hz achieved",
             f"unique game ticks: {self.ticks:,} = {self.ticks / wall_s:.0f} Hz published",
             f"clock steps: {steps or 'none'}",
+            f"skipped game updates (clock steps >= 15 ms): {self.skipped_ticks:,}",
             f"car data changed without a clock tick: {self.data_changed_without_tick:,} polls",
         ]
 
@@ -904,13 +1060,19 @@ def write_session(buf: SessionBuffer, output_dir: Path) -> Path:
 
 # ── Main loop ────────────────────────────────────────────────────────────────
 
-def run_probe(seconds: float, poll_hz: float) -> None:
+def run_probe(seconds: float, poll_hz: float | None) -> None:
     """Measure how fast LMU really publishes telemetry. Records nothing.
 
     Must be run while driving (not in the garage or a menu): the game clock
     only advances on track.
+
+    poll_hz None = tick-synced (what the recorder does by default); a number =
+    fixed-rate polling. Run it once each in the same session to compare the
+    CPU cost and the skipped updates of the two modes.
     """
-    print(f"lmu-coach HF probe  |  polling at {poll_hz:.0f}Hz for {seconds:g}s")
+    tick = poll_hz is None
+    how = "tick-synced" if tick else f"fixed {poll_hz:.0f}Hz"
+    print(f"lmu-coach probe  |  {how} polling for {seconds:g}s")
     print("Waiting for LMU (drive the car, then leave this running)...", flush=True)
     mmap_ctrl = None
     while mmap_ctrl is None:
@@ -923,11 +1085,13 @@ def run_probe(seconds: float, poll_hz: float) -> None:
             time.sleep(2.0)
 
     stats = PollStats()
-    pacer = Pacer(1.0 / poll_hz)
+    pacer = Pacer(1.0 / poll_hz) if not tick else None
+    sync = TickSync() if tick else None
     si = ti = INVALID_INDEX
     last_sig = None
     first_et = None
     t0 = None
+    cpu0 = 0.0
     dt_min, dt_max = math.inf, 0.0
     try:
         while True:
@@ -948,7 +1112,9 @@ def run_probe(seconds: float, poll_hz: float) -> None:
                     time.sleep(0.01)
                     continue
                 t0 = time.perf_counter()
-                pacer = Pacer(1.0 / poll_hz)
+                cpu0 = time.process_time()
+                if not tick:
+                    pacer = Pacer(1.0 / poll_hz)
                 print("Clock is running - measuring...", flush=True)
             sig = (telem.mPos.x, telem.mPos.z, telem.mLocalVel.z)
             stats.record(et, sig != last_sig)
@@ -958,7 +1124,10 @@ def run_probe(seconds: float, poll_hz: float) -> None:
                 dt_min, dt_max = min(dt_min, dt), max(dt_max, dt)
             if time.perf_counter() - t0 >= seconds:
                 break
-            pacer.wait()
+            if tick:
+                sync.wait(lambda: peek_elapsed_time(mmap_ctrl, ti), et)
+            else:
+                pacer.wait()
     except KeyboardInterrupt:
         print("\nStopped early.")
     finally:
@@ -968,13 +1137,19 @@ def run_probe(seconds: float, poll_hz: float) -> None:
         print("No clock movement seen - was the car on track?")
         return
     wall = time.perf_counter() - t0
+    cpu = (time.process_time() - cpu0) / max(wall, 1e-9) * 100.0
     for line in stats.summary(wall):
         print("  " + line)
+    print(f"  CPU: {cpu:.0f}% of one core while {how}")
     if dt_max > 0:
         print(f"  mDeltaTime reported by the game: {dt_min * 1000:.2f}-{dt_max * 1000:.2f} ms")
     published = stats.ticks / wall
     achieved = stats.polls / wall
-    if achieved < published * 1.5:
+    if tick:
+        print(f"  RESULT: caught {published:.0f} updates/s; {stats.skipped_ticks:,} skipped "
+              f"(game or recorder). Run once more with --poll-hz 1000 in the same session "
+              f"and compare CPU and skipped.")
+    elif achieved < published * 1.5:
         print(f"  INCONCLUSIVE: only polled {achieved:.0f} Hz, too close to the "
               f"{published:.0f} Hz seen. Re-run with a higher --poll-hz.")
     elif stats.data_changed_without_tick > 0.05 * stats.polls:
@@ -985,8 +1160,11 @@ def run_probe(seconds: float, poll_hz: float) -> None:
               f"that adds no new data.")
 
 
-def run_recorder(output_dir: Path, poll_hz: float, every_poll: bool = False) -> None:
+def run_recorder(output_dir: Path, poll_hz: float | None, every_poll: bool = False) -> None:
+    """poll_hz None (the default) = follow the game's updates (TickSync);
+    a number = poll at that fixed rate (Pacer), as this recorder always did."""
     output_dir.mkdir(parents=True, exist_ok=True)
+    mode, poll_hz = resolve_poll_mode(poll_hz, every_poll)
     interval = 1.0 / poll_hz
     STOP_FILE.unlink(missing_ok=True)  # a leftover request must not stop a fresh run
 
@@ -1020,12 +1198,14 @@ def run_recorder(output_dir: Path, poll_hz: float, every_poll: bool = False) -> 
         print(f"Found an unconverted session safety copy: {_sp.name}\n"
               f"  Convert it with:  uv run recorder.py --recover", flush=True)
 
-    print(f"lmu-coach recorder (HF1)  |  polling {poll_hz:.0f}Hz  |  "
+    polling = ("tick-synced (copies the game's memory once per update)" if mode == "tick"
+               else f"fixed {poll_hz:.0f}Hz")
+    print(f"lmu-coach recorder (HF1)  |  {polling}  |  "
           f"{'every poll stored' if every_poll else 'one sample per game tick'}  |  "
           f"10Hz geometry  |  out={output_dir}")
-    if interval <= Pacer.SPIN_S:
-        print(f"NOTE: polling at {poll_hz:.0f}Hz keeps one CPU core fully busy while "
-              f"driving. Use --poll-hz 200 if the game stutters.")
+    if mode == "fixed" and interval <= Pacer.SPIN_S:
+        print(f"NOTE: fixed polling at {poll_hz:.0f}Hz keeps one CPU core fully busy while "
+              f"driving. Leave out --poll-hz to follow the game's updates instead.")
     print("Waiting for LMU...\n")
 
     mmap_ctrl: MMapControl | None = None
@@ -1033,7 +1213,11 @@ def run_recorder(output_dir: Path, poll_hz: float, every_poll: bool = False) -> 
     buf: SessionBuffer | None     = None
     last_lap: int | None          = None
 
+    # In tick mode the pacer only serves the short retry waits (a car joining
+    # leaves scoring and telemetry disagreeing for one poll); TickSync does the
+    # real waiting at the bottom of the loop.
     pacer                          = Pacer(interval)
+    tick_sync                      = TickSync() if mode == "tick" else None
     stats                          = PollStats()
     stats_t0                       = time.perf_counter()
     si = ti                        = INVALID_INDEX
@@ -1085,6 +1269,8 @@ def run_recorder(output_dir: Path, poll_hz: float, every_poll: bool = False) -> 
                 "Polls":                  str(stats.polls),
                 "UniqueTicks":            str(stats.ticks),
                 "DataChangedWithoutTick": str(stats.data_changed_without_tick),
+                "SkippedTicks":           str(stats.skipped_ticks),
+                "PollMode":               "tick-sync" if mode == "tick" else "fixed",
                 "ClockStepHistogram":     ", ".join(
                     f"{k} x{n}" for k, n in stats.histogram().items()),
             })
@@ -1304,7 +1490,10 @@ def run_recorder(output_dir: Path, poll_hz: float, every_poll: bool = False) -> 
                 time.sleep(2.0)
                 continue
 
-            pacer.wait()
+            if tick_sync is not None and ti != INVALID_INDEX:
+                tick_sync.wait(lambda: peek_elapsed_time(mmap_ctrl, ti), current_et)
+            else:
+                pacer.wait()
 
     except KeyboardInterrupt:
         print("\nStopping.", flush=True)
@@ -1442,10 +1631,16 @@ def selftest(minutes: float) -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-if __name__ == "__main__":
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--poll-hz",    type=float, default=DEFAULT_POLL_HZ)
+    parser.add_argument("--poll-hz",    type=float, default=None,
+                        help="poll at this FIXED rate (Hz). Leave it out to follow the game's "
+                             "updates (default): about 100 Hz of samples at a small fraction "
+                             "of the CPU. Fixed rates of 500 Hz and up keep one core busy.")
+    parser.add_argument("--normal-priority", action="store_true",
+                        help="do not lower the recorder to below-normal priority "
+                             "(the default, so the game wins any CPU contention)")
     parser.add_argument("--recover", action="store_true",
                         help="convert any unconverted safety copies to .duckdb files, then exit")
     parser.add_argument("--selftest", action="store_true",
@@ -1456,12 +1651,26 @@ if __name__ == "__main__":
                              "while you drive, record nothing, then exit")
     parser.add_argument("--every-poll", action="store_true",
                         help="store every poll, not one sample per game tick")
-    args = parser.parse_args()
+    return parser
+
+
+def main(argv=None) -> None:
+    args = build_parser().parse_args(argv)
     if args.selftest:
         selftest(args.selftest_minutes)
     elif args.recover:
         recover_spools(args.output_dir)
-    elif args.probe is not None:
-        run_probe(args.probe, args.poll_hz)
     else:
-        run_recorder(args.output_dir, args.poll_hz, args.every_poll)
+        # Only the two modes that sit next to the running game: leave the
+        # self-test and recovery at normal priority so they finish quickly.
+        if not args.normal_priority and lower_priority():
+            print("Recorder runs at below-normal priority so the game wins any CPU "
+                  "contention (--normal-priority turns that off).", flush=True)
+        if args.probe is not None:
+            run_probe(args.probe, args.poll_hz)
+        else:
+            run_recorder(args.output_dir, args.poll_hz, args.every_poll)
+
+
+if __name__ == "__main__":
+    main()
