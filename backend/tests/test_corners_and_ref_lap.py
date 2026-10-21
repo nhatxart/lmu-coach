@@ -1,4 +1,4 @@
-"""Corner names for the coach (track_db.annotate_report_with_corners) and the
+﻿"""Corner names for the coach (track_db.annotate_report_with_corners) and the
 fastest-real-lap reference (telemetry.reference_lap_time) - 10/18/2026."""
 
 import numpy as np
@@ -65,8 +65,13 @@ def test_ingest_cutoff_uses_real_fastest(monkeypatch):
     laps = [_lap(1, 73.1), _lap(2, 79.9), _lap(3, 73.0), _lap(4, 90.2), _lap(5, 14.1, complete=False)]
     monkeypatch.setattr(grip_profile, "fit_deflection_calibration", lambda lap: {})
     monkeypatch.setattr(grip_profile, "file_load_reference", lambda laps, cal: {})
-    monkeypatch.setattr(grip_profile, "extract_axle_observations_from_lap",
-                        lambda lap, cal, ref: {"front": grip_profile.AxleSlipObservations(),
-                                               "rear": grip_profile.AxleSlipObservations()})
+    # PREVIOUSLY this patched extract_axle_observations_from_lap; v3 bins each lap's
+    # per-axle samples (tire_model._lap_axle_samples), which is what is stubbed now.
+    def samples(lap, cal, ref):
+        s = {"slip_angle_deg": np.linspace(0.0, 5.0, 50), "lateral_g": np.ones(50),
+             "load_ratio": None, "load_source": None, "mask": np.ones(50, bool)}
+        return {"front": s, "rear": s}
+
+    monkeypatch.setattr(grip_profile, "_lap_axle_samples", samples)
     added = grip_profile.GripProfile(car_name="x").ingest_tire_laps(laps, file_key="f")
     assert added == [1, 2, 3, 5]  # 90.2 s > 73.0 * 1.15; partial lap 5 still in

@@ -77,8 +77,8 @@ not a spec sheet) â€” near 1.0 means the driver used the tire close to its 
 well above 1.0 means they pushed past the point where more slip angle stops producing more \
 grip (into the tire's declining region, which costs time and adds instability, not more \
 cornering force); well below 1.0 means grip was left unused. When front/rear_utilization_is_upper_bound is \
-true, the model has never seen that axle's grip fall off, so its "optimal" slip angle is only \
-a lower bound and the utilization may overstate how hard the tire was used â€” never call that \
+true, the curve was still rising at the largest slip angle driven, so its "optimal" slip angle is only \
+a lower bound and the utilization may overstate how hard the tire was used — never call that \
 "past the limit". All of these use steady-state cornering samples only (not braking or \
 throttle-on phases). cornering_efficiency is this lap's typical-high (p90) grip divided by \
 the p90 grip the model has observed near the tire's optimal slip angle, in grip_measure units \
@@ -88,24 +88,40 @@ high grip_utilization with low cornering_efficiency means the driver is asking a
 tire but converting it poorly into actual cornering force (excess/wasted sliding, likely a \
 smoothness or line issue); low grip_utilization with low cornering_efficiency means capability \
 is being left on the table (a confidence/commitment issue, not a technique-precision issue). \
-These two numbers together are far more actionable than either alone â€” always read them as a pair.
+cornering_efficiency is now the lap p90 mu divided by the state-aware peak mu (not comparable with \
+cornering_efficiency values from earlier model versions). \
+These two numbers together are far more actionable than either alone — always read them as a pair.
 
-On front_tire_model / rear_tire_model (when present in the driver's baselines): this is a \
-PROBABILISTIC model built from this driver's own accumulated laps on this car, not a fixed \
-constant â€” "peak" is the learned optimal slip angle in degrees, "efficient_range" is the \
-slip-angle window where the tire is within 5% of that peak, "confidence" (0-1) reflects how \
-much accumulated data supports it (treat anything below ~0.5 as a tentative early estimate, \
-not a settled fact â€” say so if you lean on a low-confidence number), and "sample_count" is \
-how many data points it's built from. peak_observed false means the curve was still rising \
-at the largest slip angle the driver used: the true peak is higher and the driver has room to \
-lean on the tire more. tyre_temperature compares tyre temps with the car's optimal \
-temperature; if it carries a warning (e.g. a cold-tyre curve), say that the model and the \
-lap reflect tyres outside their window, which is itself a root cause worth naming. When \
-front_temp_pressure_load / rear_temp_pressure_load are present, they bucket the learned \
-optimal slip angle by temperature/pressure/load â€” temperature and pressure there are \
-confounded with cornering itself (hard cornering heats tyres and raises pressure), so never \
-present them as cause and effect or as pressure/temperature targets; they are observed \
-patterns in this driver's data, not manufacturer specifications. The baselines' \
+On front_tire_model / rear_tire_model (when present in the driver's baselines): a Magic \
+Formula tyre curve fitted to this driver's own accumulated laps on this car. "peak" is the \
+learned optimal slip angle in degrees and "peak_slip_ci90" its 90% interval (quote the \
+interval, not just the point, and call a wide one unsettled); "efficient_range" is the window \
+within 5% of the peak mu, kept inside the slip range the driver has actually used (an \
+efficient_range_note says when the upper end is that limit, not a measured edge); "peak_grip" \
+and "available_grip" are mu when grip_measure is mu_load_normalized and lateral g when it is \
+lateral_g, with "peak_grip_ci90". \
+"confidence" (0-1) reflects how much data supports it; below 0.5 treat it as tentative and \
+say so. When "model" is "binned_v2_fallback" no Magic Formula could be fitted and there is no \
+interval: use it as a rough histogram estimate only. prior_used says what the fit leaned on \
+when this car has few laps ("class" = other cars of its class, "none"); name it when it is \
+not "none", because the number then partly belongs to the prior. version_note, when present, says the game version changed or laps are mixed \
+across versions. peak_status says how firm "peak" is: "observed" = the curve fell off past \
+it; "plateau_unconfirmed" = the fitted peak lies inside the slip range driven but no fall-off \
+was seen, so the curve is flat around the peak and the exact peak angle is uncertain (do NOT \
+say the driver has room to lean on the tire more on that basis); "rising_at_edge" = the curve \
+was still rising at the largest slip angle used, "peak" is then that largest slip angle, a \
+lower bound, and only then may you say there is room to lean on the tire more. \
+peak_slip_ci90 and peak_grip_ci90 describe the fit's own peak (the extrapolated one, \
+peak_slip_extrapolated, when rising_at_edge), and peak_at_grid_bound true means that \
+extrapolation ran off the end of the curve, so do not quote it as a number. \
+factor_effects gives the fitted peak mu at the p10 / median / p90 of this driver's own load \
+(only load is fitted): a model estimate of how much grip load is worth inside the range \
+actually driven, never beyond it. Never present it as a setup target or a number to hit, and \
+do not read it as cause and effect. A factor that is not listed was not fitted. coverage \
+lists load_ratio / temp_delta_c cells with too few samples to trust; mention it with one \
+sentence at most, under Confidence. tyre_temperature compares tyre temps with the car's optimal temperature; \
+if it carries a warning (e.g. a cold-tyre curve), say the model and the lap reflect tyres \
+outside their window, which is itself a root cause worth naming. The baselines' \
 load_normalization.laps_by_load_source says which load the grip numbers (mu) rest on: \
 "Tire Load" is the game's real tyre load; "Susp Force" is a stand-in used for classes where \
 the game provides no tyre load (all GT3 cars so far) and is a somewhat noisier measure of the \

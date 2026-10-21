@@ -1,7 +1,7 @@
-"""Tests for recorder_hf.py. No LMU needed.
+"""Tests for recorder.py. No LMU needed.
 
 Run from the recorder\\ directory:
-    uv run python -m unittest test_recorder_hf -v
+    uv run python -m unittest test_recorder -v
 """
 
 import contextlib
@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import duckdb
 
-import recorder_hf as hf
+import recorder as hf
 
 
 class PacerTest(unittest.TestCase):
@@ -122,7 +122,7 @@ def fake_telem(et=100.0, lap=0, pos_x=0.0, **over):
 def fake_scor(**over):
     s = dict(mID=3, mIsPlayer=True, mDriverName=b"Tester", mInPits=False,
              mInGarageStall=False, mPathLateral=0.5, mTrackEdge=6.0,
-             mLapDist=1234.0, mLastLapTime=-1.0)
+             mLapDist=1234.0, mLastLapTime=-1.0, mVehicleClass=b"LMGT3")
     s.update(over)
     return SimpleNamespace(**s)
 
@@ -315,25 +315,13 @@ class WriteSessionTest(unittest.TestCase):
             restored = hf.load_spool(hf.spool_session(buf, Path(d)))
         self.assertEqual(restored.meta["TyreRadiusCm"], "34,34,34,34")
 
-    def test_safety_copy_cannot_be_mistaken_for_recorder_py_one(self):
-        # recorder.py --recover globs ".*.spool" and would rewrite an HF
-        # session at the wrong frequency without its extra channels.
+    def test_safety_copy_uses_the_plain_spool_suffix(self):
         buf = self._recorded_buffer(n=20)
         with tempfile.TemporaryDirectory() as d:
             sp = hf.spool_session(buf, Path(d))
-            self.assertTrue(sp.name.endswith(".spool_hf"), sp.name)
-            self.assertEqual(list(Path(d).glob(".*.spool")), [])
+            self.assertTrue(sp.name.endswith(".spool"), sp.name)
 
-    def test_recover_leaves_recorder_py_safety_copies_alone(self):
-        with tempfile.TemporaryDirectory() as d:
-            other = Path(d) / ".2026-10-12T00_00_00Z.spool"
-            other.write_bytes(b"not ours")
-            with contextlib.redirect_stdout(io.StringIO()):
-                hf.recover_spools(Path(d))
-            self.assertEqual(other.read_bytes(), b"not ours")
-            self.assertEqual(list(Path(d).glob("*.duckdb")), [])
-
-    def test_recover_converts_hf_safety_copy(self):
+    def test_recover_converts_a_safety_copy(self):
         buf = self._recorded_buffer(n=300)
         with tempfile.TemporaryDirectory() as d:
             sp = hf.spool_session(buf, Path(d))
@@ -341,6 +329,29 @@ class WriteSessionTest(unittest.TestCase):
                 hf.recover_spools(Path(d))
             self.assertFalse(sp.exists())
             self.assertEqual(len(list(Path(d).glob("*.duckdb"))), 1)
+
+    def test_recover_still_converts_a_pre_rename_spool_hf_copy(self):
+        # Until 10/19/2026 this recorder wrote ".spool_hf"; a copy left behind
+        # by a crash before the rename must not be orphaned.
+        buf = self._recorded_buffer(n=300)
+        with tempfile.TemporaryDirectory() as d:
+            sp = hf.spool_session(buf, Path(d))
+            legacy = sp.with_name(sp.name + "_hf")  # ".<time>.spool" -> ".<time>.spool_hf"
+            sp.rename(legacy)
+            self.assertEqual(hf._spool_files(Path(d)), [legacy])
+            with contextlib.redirect_stdout(io.StringIO()):
+                hf.recover_spools(Path(d))
+            self.assertFalse(legacy.exists())
+            self.assertEqual(len(list(Path(d).glob("*.duckdb"))), 1)
+
+    def test_stop_file_matches_the_host_agent(self):
+        # recorder_control.py asks this recorder to save and exit by creating
+        # this exact file; the two names drifting apart would make the Record
+        # tab's Stop button silently do nothing until the 300 s force-kill.
+        agent = (Path(__file__).parent / "recorder_control.py").read_text(encoding="utf-8")
+        self.assertEqual(hf.STOP_FILE.name, ".stop_requested")
+        self.assertIn('STOP_FILE = RECORDER_DIR / ".stop_requested"', agent)
+        self.assertIn('RECORDER_SCRIPT = RECORDER_DIR / "recorder.py"', agent)
 
 
 class FakeMMap:
@@ -364,8 +375,11 @@ class FakeMMap:
             raise KeyboardInterrupt   # same path as Ctrl+C: flush and exit
         telem, scor = FakeMMap.script[self._i]
         self.data = SimpleNamespace(
-            scoring=SimpleNamespace(scoringInfo=SimpleNamespace(mNumVehicles=1),
-                                    vehScoringInfo=[scor]),
+            generic=SimpleNamespace(gameVersion=1234),
+            scoring=SimpleNamespace(
+                scoringInfo=SimpleNamespace(mNumVehicles=1, mTrackTemp=31.5,
+                                            mAmbientTemp=22.04),
+                vehScoringInfo=[scor]),
             telemetry=SimpleNamespace(telemInfo=[telem]))
 
 
@@ -431,6 +445,21 @@ class RecorderLoopTest(unittest.TestCase):
         # tell where lap 1 stopped and counts the tail of lap 2 into it.
         self.assertEqual([(round(ts, 2), lap) for ts, lap in self.laps],
                          [(100.0, 0), (102.5, 1), (105.0, 2)])
+
+    def test_metadata_has_class_version_and_temps(self):
+        scor = fake_scor()
+        script = [(fake_telem(et=100.0 + i * 0.01, pos_x=float(i)), scor) for i in range(300)]
+        _, meta, _, _ = self._run(script)
+        self.assertEqual(meta["VehicleClass"], "LMGT3")
+        self.assertEqual(meta["GameVersion"], "1234")
+        self.assertEqual(meta["TrackTempC"], "31.5")
+        self.assertEqual(meta["AmbientTempC"], "22.0")
+
+    def test_session_meta_missing_sources_are_empty_strings(self):
+        # Older/odd shared-memory layouts: key still written, value "".
+        m = hf._session_meta(SimpleNamespace(), SimpleNamespace())
+        self.assertEqual(m, {"VehicleClass": "", "GameVersion": "",
+                             "TrackTempC": "", "AmbientTempC": ""})
 
     def test_telemetry_slot_miss_does_not_cost_half_a_second(self):
         # Online, a car joining can leave scoring and telemetry disagreeing

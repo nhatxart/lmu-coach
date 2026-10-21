@@ -1,4 +1,4 @@
-"""A file written by recorder/recorder_hf.py must read correctly in the backend.
+"""A file written by recorder/recorder.py must read correctly in the backend.
 
 Builds the file with the recorder's own code and its test fakes, so no game
 and no personal session data are needed.
@@ -18,8 +18,8 @@ from synthetic_session import write_session
 RECORDER_DIR = Path(__file__).resolve().parents[2] / "recorder"
 sys.path.insert(0, str(RECORDER_DIR))
 
-hf = pytest.importorskip("recorder_hf")
-fakes = pytest.importorskip("test_recorder_hf")
+hf = pytest.importorskip("recorder")
+fakes = pytest.importorskip("test_recorder")
 
 from app import telemetry  # noqa: E402
 
@@ -69,7 +69,7 @@ def test_lap_time_rows_are_keyed_to_their_own_lap(hf_file):
 
 
 def test_backend_replays_the_recorders_10hz_gate_exactly():
-    # The backend times every 10 Hz row by replaying recorder_hf.py's gate
+    # The backend times every 10 Hz row by replaying recorder.py's gate
     # over GPS Time (telemetry.session_time_axes). If the two ever diverge,
     # the map silently drifts against the telemetry again (10/14 Fuji bug).
     # Clock with clean ticks, skipped ticks (20 ms), an odd 12.5 ms step and
@@ -107,7 +107,7 @@ def test_warns_when_an_hf_file_does_not_replay(tmp_path, capsys):
 
 
 def test_no_warning_for_recorder_py_files(tmp_path, capsys):
-    # recorder.py decimates by tick count, so the replay is not expected to
+    # the v4 recorder decimates by tick count, so the replay is not expected to
     # match; the index fallback is exact for that format.
     path = write_session(tmp_path / "a.duckdb", recorded_by="lmu-coach-recorder v4")
     con = duckdb.connect(str(path))

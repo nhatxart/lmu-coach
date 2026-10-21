@@ -43,7 +43,7 @@ CONTINUOUS_CHANNELS = [
     "Lap Dist",
     "Path Lateral",
     "Gear",  # not in channelsList but present as a plain table; handled defensively
-    "Yaw Accel",  # rad/s^2, recorder_hf only - tire model's steady-state filter
+    "Yaw Accel",  # rad/s^2, HF1 files only - tire model's steady-state filter
     # rad/s, recorder files only. vehicle_dynamics.compute_slip_trace and
     # corner_features already prefer it when present, but it was never loaded,
     # so both silently fell back to the lateral-G/speed estimate.
@@ -74,11 +74,21 @@ WHEEL_CHANNELS = [
     "TyresRubberTemp",   # mean surface temp per wheel, Celsius
     # Vertical load for the tire model, best first (tire_model._axle_load).
     # Tire Load is mTireLoad (N), populated for some cars only; Susp Force is
-    # mSuspForce, pushrod load in N (recorder_hf). Both are dropped by
+    # mSuspForce, pushrod load in N (HF1 recorder). Both are dropped by
     # _read_channel_frequencies when the recorder marked them unpopulated.
     "Tire Load",
     "Susp Force",
+    # HF1 files only; absent tables are skipped like any missing channel.
+    "Camber",             # rad per wheel
+    "TyresWear",          # fraction per wheel
+    "TyresCarcassTemp",   # Celsius per wheel
+    "Surface Type",       # categorical code per wheel (see CATEGORICAL_CHANNELS)
+    "Tire Lateral Force", # N; zero/flagged unpopulated on GT3
 ]
+
+# Codes, not quantities: linear interpolation would invent surface types that
+# never occurred (e.g. 2.5 between 0 and 5), so these hold the previous sample.
+CATEGORICAL_CHANNELS = {"Surface Type"}
 
 # Event channels: sparse, logged on change only. We forward-fill these onto
 # the common grid (the value holds until the next logged change).
@@ -103,7 +113,7 @@ class LapTelemetry:
     time_s: np.ndarray  # common time grid, seconds from lap start
     channels: dict[str, np.ndarray] = field(default_factory=dict)
     # File metadata (key -> value strings), e.g. TyreOptimalTempC and
-    # TyreCompoundFront from recorder_hf. Shared by every lap of a file.
+    # TyreCompoundFront from the HF1 recorder. Shared by every lap of a file.
     meta: dict[str, str] = field(default_factory=dict)
     # False for the file's last lap: it has no closing Lap event, so it ends
     # wherever the recording stopped (a 1.4 s "lap" was seen). Callers that
@@ -148,12 +158,12 @@ def _read_unpopulated_channels(con: duckdb.DuckDBPyConnection) -> set[str]:
 # there were sliced outside the data entirely.
 # Fix: 100 Hz rows take their time from GPS Time (one value per row), 10 Hz
 # rows from replaying the recorder's own 10 Hz gate over GPS Time.
-SLOW_PERIOD_S = 0.1   # recorder_hf.py's SLOW_PERIOD_S
+SLOW_PERIOD_S = 0.1   # recorder.py's SLOW_PERIOD_S
 SLOW_ROW_TABLES = ("GPS Latitude", "Lap Dist", "Path Lateral")
 
 
 def _replay_slow_gate(t_fast: np.ndarray) -> np.ndarray:
-    """Indices into t_fast where recorder_hf.py wrote a 10 Hz row: the first
+    """Indices into t_fast where recorder.py wrote a 10 Hz row: the first
     tick at or after each due time, re-anchored after a clock jump."""
     nxt, idx = float(t_fast[0]), []
     for i, et in enumerate(t_fast.tolist()):
@@ -177,8 +187,8 @@ def session_time_axes(
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
     """(t_fast, t_slow): game time (s) of each 100 Hz row and each 10 Hz row.
 
-    t_fast is GPS Time itself. t_slow replays the recorder_hf.py gate; if
-    that does not reproduce the file's 10 Hz row count (recorder.py decimated
+    t_fast is GPS Time itself. t_slow replays the recorder.py gate; if
+    that does not reproduce the file's 10 Hz row count (the v4 recorder decimated
     by tick count, native LMU is evenly spaced), the 10 Hz rows are spread
     evenly over the 100 Hz rows by index, which is exact for those formats.
     Either is None when the file lacks the tables to build it.
@@ -196,10 +206,10 @@ def session_time_axes(
     idx = _replay_slow_gate(t_fast)
     if len(idx) == n_slow:
         return t_fast, t_fast[idx]
-    # For recorder_hf.py files the replay must match; the index fallback
-    # below is only exact for recorder.py/native files. A mismatch means the
+    # For recorder.py files the replay must match; the index fallback
+    # below is only exact for v4/native files. A mismatch means the
     # recorder's gate changed (keep SLOW_PERIOD_S and _replay_slow_gate in
-    # step with recorder_hf.py) or the file is damaged, and the map will
+    # step with recorder.py) or the file is damaged, and the map will
     # drift against the telemetry wherever ticks were skipped - say so
     # rather than drift silently.
     try:
@@ -302,11 +312,12 @@ def _unwrap_lap_distance(v: np.ndarray, drop_threshold_m: float = -500.0) -> np.
 
 
 def _resample_to_grid(
-    src_t: np.ndarray, src_v: np.ndarray, grid_t: np.ndarray, forward_fill: bool = False
+    src_t: np.ndarray, src_v: np.ndarray, grid_t: np.ndarray,
+    forward_fill: bool = False, categorical: bool = False,
 ) -> np.ndarray:
     if len(src_t) == 0:
         return np.full_like(grid_t, np.nan)
-    if forward_fill:
+    if forward_fill or categorical:
         # step function: value holds until next change (correct for ABS/TC flags)
         idx = np.searchsorted(src_t, grid_t, side="right") - 1
         idx = np.clip(idx, 0, len(src_v) - 1)
@@ -331,9 +342,9 @@ def _read_lap_time_events(con: duckdb.DuckDBPyConnection) -> dict[int, float]:
     if not rows:
         return {}
     # BUG FIX: this used to match by position (i-th Lap Time row = i-th Lap
-    # row). recorder.py writes a (first crossing, 0.0) placeholder first, so
+    # row). the v4 recorder writes a (first crossing, 0.0) placeholder first, so
     # every lap got the previous lap's time (the "lap 0 duration mismatch …
-    # event=0.000s" warnings); recorder_hf.py has no placeholder and only
+    # event=0.000s" warnings); recorder.py has no placeholder and only
     # lined up by luck. Both recorders stamp a Lap Time row with the ts of
     # the crossing that ENDED the lap, which is the next lap's Lap row, so
     # match on that instead. Rows at the first crossing have no lap to
@@ -501,7 +512,8 @@ def load_telemetry_file(
         for ch, (t, per_wheel) in wheel_series.items():
             for wheel_label, v in per_wheel.items():
                 channels[f"{ch} {wheel_label}"] = _resample_to_grid(
-                    t, v, abs_grid_t, forward_fill=False
+                    t, v, abs_grid_t, forward_fill=False,
+                    categorical=ch in CATEGORICAL_CHANNELS,
                 )
 
         for ch, (t, v, is_sparse) in event_series.items():

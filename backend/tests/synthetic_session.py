@@ -27,7 +27,7 @@ def tick_times(start=10.0, end=130.0, drop_until=40.0):
 
 
 def slow_rows(times):
-    """recorder_hf.py's 10 Hz gate, replayed: index of each 10 Hz row."""
+    """recorder.py's 10 Hz gate, replayed: index of each 10 Hz row."""
     nxt, idx = times[0], []
     for i, et in enumerate(times):
         if et >= nxt:

@@ -13,6 +13,8 @@ The first run downloads the packages, and later runs use uv's cache.
 | `BUILD_TRACK_REFERENCE.ps1` | `data/track_reference/*.json` | Builds each track's reference (corners, complexes, names) from OpenStreetMap + LMU names + your laps; `--fetch` downloads OSM once for a new track |
 | `CHECK_TIRE_FORCES.ps1` | nothing | Checks whether a recording has usable tyre-force channels |
 | `COMPARE_LOAD_SOURCES.ps1` | nothing | Pilot: does Susp Force give the same grip numbers as the game's Tire Load? (needs a car that has both) |
+| `MF_EXPERIMENT.ps1` | nothing | Tyre model v3 experiment: which state factors (load, temp, pressure, wear, camber) improve held-out prediction of the game's true mu? |
+| `CLASS_COLLAPSE.ps1` | nothing | Tyre model v3 experiment: how much should a car lean on the pooled curve of the other cars of its class (works for LMGT3, which has no tyre forces)? |
 
 None of these tools ever modify `data/sessions/*.duckdb`. They open it read-only.
 
@@ -34,15 +36,18 @@ cd backend\tools
 .\INGEST_SESSIONS.ps1 --since 2026-10-14 --until 2026-10-18 --save
 .\INGEST_SESSIONS.ps1 --files "Fuji*" --save                # glob on the file name
 .\INGEST_SESSIONS.ps1 --files "Fuji*" --tyre-only --save    # tyre model only, ledger untouched
-.\INGEST_SESSIONS.ps1 --month 2026-10 --label-only --save   # only record where each lap's load came from; adds no samples
+.\INGEST_SESSIONS.ps1 --month 2026-10 --tyre-only --migrate --save   # also fold old livery-named profiles into the model profile
 ```
 
 - It's a **dry run unless you pass `--save`**. Check the output first.
 - **Backups:** `--save` first copies every profile and the ledger to `data/grip_profiles/backups/<timestamp>/`. To undo a run, copy that folder's files back.
 - **Stop the backend first** (`docker compose down`). It reads and writes the same profile files. Restart it afterwards (`docker compose up -d --build`).
-- **New cars:** a car without a profile gets a new one, named after the car, just as `/analyze` would name it.
-- **Load source labels:** each tyre-model lap is tagged with where its load came from (`Tire Load`, `Susp Force`, `Susp Pos (calibrated...)` or `none`). It is shown in the baselines the LLM sees as `load_normalization`. `--label-only` fills the tag in for laps ingested before it existed.
-- **Old profiles:** a profile from tyre model v1 (no `tire_model_version`) loses its v1 tyre samples when loaded. This is by design. Its baselines are kept.
+- **Profile key (tyre model v3):** profiles are named after the car **model** (`BMW M4 LMGT3.json`), found the same way `/analyze` finds it, so every livery of a model shares one file. A car without a profile gets a new one.
+- **Tyre grid:** the tyre bins are built from files loaded at 50 Hz (`tire_model.TIRE_GRID_HZ`), exactly like `/analyze`. The ABS/TC baselines keep the 20 Hz coaching load.
+- **`--migrate`:** folds the old livery-named profiles (`Team WRT 2026 _69_LP.json`) into their model profile. The ABS/TC/slip lists are concatenated (newest 200 kept) and `lap_count` is summed. Which model a livery belongs to comes from the metadata of the files in `--sessions-dir`. With `--save` the livery files are **moved** into the backup folder, never deleted. Run it once after upgrading to v3, together with `--tyre-only` if you do not want to touch the ledger.
+- **`--label-only`:** does nothing since v3. The load source of each lap (`Tire Load`, `Susp Force`, `Susp Pos (calibrated...)` or `none`) is stored at ingest and shown to the LLM as `load_normalization`.
+- **Old profiles:** a profile from tyre model v1 or v2 loses its tyre samples when loaded, because v3 stores per-lap bins instead of raw samples. This is by design. Its baselines are kept. Re-ingest the recordings to rebuild the tyre model.
+- The profile summary at the end prints, per axle, the model used, peak slip, its 90 % interval, confidence and prior, and how long the fit took.
 
 Typical output per file:
 
@@ -71,6 +76,8 @@ cd backend\tools
 .\VALIDATE_TIRE_MODEL.ps1 WRT                 # any unique part of the profile file name
 .\VALIDATE_TIRE_MODEL.ps1 007_WEC --boot 100  # fewer bootstrap resamples = faster (default 200)
 ```
+
+**(e) v3 model (50 Hz grid):** since tyre model v3 the validator also prints, from the profile's stored bins alone (no session files needed), the held-out R2 of the Magic Formula against the old slip-binned curve, per axle, on the proxy mu and, for cars that record tyre forces, on the game's true mu. It also prints the peak's 90 % interval, the confidence and the prior used, and the time of a full refit. Tests (a) to (d) keep the old 20 Hz grid so their rows stay comparable with earlier scorecards; the final output has one v2 row (20 Hz) and two v3 rows (50 Hz, front and rear). Profiles are named after the car model now, so use e.g. `BMW`, `Cadillac`, `Valkyrie`, `Ferrari`, `Genesis` or `Porsche`.
 
 If the name matches several profiles (e.g. `Manthey`), the tool lists them. Use a longer piece, e.g. `_92_WEC`.
 The last line is a markdown row. Paste it into the **Tyre model scorecard** table in `DevNotes.md` under a new dated heading, so accuracy can be compared over time. Run it after each ingest batch, or after any change to `tire_model.py`.
@@ -122,6 +129,34 @@ LMU writes zero Tire Load / Tire Lateral Force for the GT3 cars (BMW M4, Porsche
 `
 
 Per axle it prints the load correlation and the grip proxy against the game's mu for three load choices: none (raw lat G), Tire Load, and Susp Force. Use it again when you record an LMP2 or LMP3: if that class has both channels, you get a second check. A GT3 file is skipped because it has no true Tire Load.
+
+---
+
+## MF_EXPERIMENT.ps1 — which tyre-model factors earn their place?
+
+Tyre model v3 fits a Magic Formula whose peak and stiffness are scaled by load, tyre temperature, pressure, wear and camber. This tool tests, on recordings that carry the game's own tyre forces (true mu), whether each factor makes the model predict **unseen** data better. It bins the laps like the profile ingest does, then leaves one file out (one lap out, for a car with a single file), fits on the rest and scores the held-out cornering cells (slip of 1.5 degrees or more) against the true mu.
+
+```powershell
+.\MF_EXPERIMENT.ps1 --sessions-dir C:\path\to\data\sessions --class Hypercar
+.\MF_EXPERIMENT.ps1 --sessions-dir C:\path\to\data\sessions --files "*Valkyrie*"
+```
+
+It prints one table per car and axle: held-out R², the change from the previous factor, RMSE, and the factor status of the training fits (`fit` = fitted, `NI` = not identifiable, `AB` = at a bound). `NI` means the data could not test that factor; it is not the same as "fitted but no gain". It runs in seconds and needs recordings with Tire Load and Tire Lateral Force (Hypercars today).
+
+---
+
+## CLASS_COLLAPSE.ps1 - how much should a car borrow from its class?
+
+Cars of one class (all LMGT3, all Hypercars) share tyre physics, so a car with few laps can lean on a Magic Formula pooled over the *other* cars of its class (the "class prior"). This tool measures how much leaning helps. The target is the **proxy mu** (lateral G / load), because LMGT3 cars record no tyre forces.
+
+```powershell
+.\CLASS_COLLAPSE.ps1 --sessions-dir C:\path\to\data\sessions --class LMGT3
+.\CLASS_COLLAPSE.ps1 --sessions-dir C:\path\to\data\sessions --class Hypercar
+```
+
+Per axle and car it prints the car's own fitted peak slip and peak mu (at the class reference state, with the offset vs the class prior; `*` = the peak is beyond that car's data), then leave-one-lap-out held-out R2 for prior weights 0, 0.3, 1, 3 and 10. The prior for a car is always built from the other cars only. The line `BEST WEIGHT` is the weight with the highest mean R2 over the scored cars. A car with one lap cannot be scored (no training lap) and is shown as `n/a`; laps without a load channel (plain lateral G) cannot be pooled and are listed as left out.
+
+**Read it with care:** the cars of a class were recorded on different tracks, so the track is mixed up with the car, and a lap held out from the same file as its training laps is an easy test for weight 0. Runs in about half a minute.
 
 ---
 

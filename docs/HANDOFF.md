@@ -58,7 +58,7 @@ Analyze flow: UI "Analyze" → (if auto_start) host agent `/llm/ensure` → poll
 | **Write to `.<name>.duckdb.tmp`, atomic rename; plus `.spool` pickle safety copy; recover both at startup** | Ctrl+C / crash must not lose a session. Spool is deleted after a successful write. |
 | **Keep recorder output schema-compatible with LMU native DuckDB** (tables `Lap`, `eventsList`, `channelsList`, `GPS Time`, …) | The community viewer https://lamerman.github.io/telemetry-visualizer-for-lmu/ failed with `Catalog Error: Table with name Lap does not exist!` / `eventsList does not exist`. Also lets backend treat native and recorder files uniformly. |
 | **GPS Time = `telem.mElapsedTime`, not `scoringInfo.mCurrentET`** | `mCurrentET` refreshes ~5 Hz → lap times quantised to ~0.1 s. `mElapsedTime` is 100 Hz and is the same clock LMU's native export uses. |
-| **Original `recorder.py`/`START_RECORDER.ps1` flow was kept** (user: "the original worked just fine") | Don't rewrite what works; only add session-end detection, truncation fixes, saving. Standalone use still works; the web Record tab is optional. |
+| **One recorder (2026-10-19): the HF1 recorder took over `recorder.py`, `START_RECORDER.ps1` and `.stop_requested`** (user: "TEST_HF achieves most of what I want") | The v4 recorder and the experimental `recorder_hf.py` were two versions of one program. HF1 already did everything v4 did plus per-session auto-start/stop, so v4 was retired. The launch points and the stop-file protocol the host agent uses were kept. Standalone use still works; the web Record tab is optional. |
 | **llama.cpp (llama-server) instead of Ollama** | User decision; runs natively on Windows on the 7900 XTX. Qwen3.6-27B UD-Q4_K_XL, moving to Qwen3.8-27B. Backend speaks plain OpenAI `/v1/chat/completions`. |
 | **One self-contained `index.html`, vanilla JS + canvas, no framework/build** | Served from the FastAPI static dir, zero toolchain, easy to ship as a zip. Fonts are bundled (offline). |
 | **Slip-angle-relative grip proxy, not Fx/Fy/F_available** | LMU exposes no tyre forces/loads/grip fraction (zero in recorder, absent in native). GU = lap's 95th-percentile \|slip angle\| ÷ learned peak slip angle (cap ≈1.5). 95th percentile because raw max was dominated by single-tick outliers (13 of 1680 samples >10° → everything pinned at the cap). |
@@ -110,12 +110,15 @@ Analyze flow: UI "Analyze" → (if auto_start) host agent `/llm/ensure` → poll
 - Lap selection: auto-picks the fastest complete lap if `lap_number` omitted. Laps are cut by `Lap` event timestamps against `GPS Time`. Partial last lap shows (e.g. lap 4, 16 s).
 
 ### 4.4 Tyre model / grip math (`tire_model.py`, `grip_profile.py`)
-- Observations per axle: (|slip angle| deg of FL/FR or RL/RR mean, |lat G|) for speed > 40 km/h (`MIN_SPEED_KMH_FOR_MODEL`). Histogram bins 0.4° (`SLIP_ANGLE_BIN_DEG`); need ≥300 samples (`MIN_SAMPLES_FOR_MODEL`) before reporting a peak; raw sample store capped at 20 000/axle.
-- Output per axle: `slip_angle: {peak, efficient_range, confidence, sample_count}`; plus temperature/pressure/load (susp deflection) relationships.
-- Empirical curve on a real lap: lat G rises steeply 0–3°, peaks ≈3.0–3.5° (~1.5 g), plateaus/declines >4°.
-- **GU** = p95(|slip|)/learned peak (≈1.5 cap). **CE** (front) = peak lat G in corner ÷ model-predicted lat G at the learned peak. Returns `None` until a peak exists — intentionally no hard-coded fallback peak.
+**Tyre model v3 (2026-10-19; replaces the v2 histogram model described in older notes).**
+- Data: each lap is reduced to per-axle binned statistics (`tire_bins.LapBins`: slip, load ratio, temperature, pressure, wear, camber cells; proxy mu = lat G / load ratio, plus the game's true mu where the car records tyre forces). Files are loaded at `tire_model.TIRE_GRID_HZ` = 50 Hz for the tyre steps; the coaching report stays at 20 Hz.
+- Profile (`grip_profile.py`, `TIRE_MODEL_VERSION = 3`): keyed by car **model** (`car_identity.identify_car`, e.g. `BMW M4 LMGT3.json`), not livery. `tire_files["<file>"]` holds game version and track once per file and the per-lap `LapBins`; `tire_fit_cache` caches the fit (sha1 fingerprint of lap keys, measure, prior). v1/v2 profiles lose their tyre data on load (baselines kept) and are rebuilt by `backend/tools/ingest_sessions.py`.
+- Fit (`tire_mf.py`, `tire_class.py`): factorised Magic Formula, only the load factor enabled (`ENABLED_FACTORS`; the others did not generalise on held-out data); bootstrap over laps gives `peak_slip_ci90` and a confidence based on the interval, not the sample count. Newest game version with ≥ 3 laps is the fit set. A class prior (`CLASS_PRIOR_WEIGHT` 0.3) is used only for cars with < 3 laps. No fit → `binned_v2_fallback` (confidence ≤ 0.3, no interval).
+- Output per axle (`build_axle_tire_model`): all v2 keys (`peak`, `efficient_range`, `peak_observed`, `peak_grip`, `available_grip`, `max_observed_slip_deg`, `confidence`, `sample_count`, `grip_measure`, `tyre_temperature`) plus `model`, `peak_slip_ci90`, `peak_grip_ci90`, `factors`, `factor_effects`, `prior_used`, `version_note`, `coverage`. `efficient_range` is clipped to the slip angles the driver reached. `peak_status` is `observed` | `plateau_unconfirmed` (fitted peak inside the driven range, no fall-off: peak = the fit, GU not an upper bound) | `rising_at_edge` (peak = largest slip driven, a lower bound; GU is an upper bound). GU also works from the binned fallback peak, in which case CE uses the v2 envelope (`ce_method` `v2_envelope`). CE is the lap p90 mu divided by the state-aware peak mu (capped at the largest slip driven), so it is not comparable with v2-era CE values. The older-version prior branch in `_resolve_prior` is dormant by design (PRIOR_MAX_LAPS == MIN_VERSION_LAPS).
+- **GU** = p95(|slip|)/fitted peak (≈1.5 cap). **CE** (front) = the lap's p90 mu ÷ the fitted peak mu at each sample's own load (`ce_method` "state_aware_mf", else "v2_envelope"). Both are `None` until a fit exists.
+- Scorecard (DevNotes 10/19/2026): held-out R2 of the Magic Formula beats the slip-binned curve on every axle that could be scored; weak spots are Porsche rear, Ferrari rear (true mu) and Cadillac rear (peak at the 15° bound, never reached). Largest refit 4.4 s (Porsche, 2.3 MB profile).
 - Traction circle in the UI plots `G Force Lat` vs `Long` with a moving dot and gradient tail.
-- Assumptions to keep in mind: lat G is a proxy for tyre force; slip angle comes from ground-velocity ratio (noisy at low speed); the model is per car (profile file name = car name, e.g. `Akkodis ASP Team 2026 _78_WEC.json`).
+- Assumptions to keep in mind: lat G / load ratio is a proxy for tyre mu (reads ~5-15 % high against the game's mu on Hypercars); GT3 cars have no Tire Load and use Susp Force; slip angle comes from ground-velocity ratio (noisy at low speed).
 
 ### 4.5 Body slip β (new this session; `vehicle_dynamics.compute_body_slip_deg`)
 - β = ψ − course, ψ = ∫ yaw rate (trapezoid, real dt), course = unwrapped velocity heading from position.
@@ -138,6 +141,11 @@ Known zeroed/unpopulated: Tire Load, Tire Lateral Force, Tire Longitudinal Force
 - Lap selector chips with lap times; trackmap orientation fixed; persistent chevron when paused; 8 Hz filter; dynamic ranges; Ground Speed and ABS/TC graphs; balance fix; HUD/fonts/floating dockable telemetry panel; zoom bar; grip utilization + traction circle + tyre model; Settings bubble with JSON import/export + LLM auto-start; full UI redesign (user: "This works!").
 - Body slip + degree conversion + new chevron (backend verified through the real `/trackmap` endpoint on laps 0–4 and a native file; page renders with zero JS errors; screenshots viewed for ×5 and true scale).
 
+### Tyre model v3 (branch `tyre-model-v3`, 2026-10-19)
+- Implemented, covered by the backend suite and re-ingested into `data/grip_profiles` of the worktree (models: Valkyrie, Cadillac, Ferrari, Genesis, BMW, Porsche, Mustang, Lexus, Mercedes; old livery files moved to `data/grip_profiles/backups/`). Real `/analyze` smoke test on the Fuji WRT file with a stub LLM; **not tried in the browser or with the real local LLM**.
+- To use it: merge, copy the re-ingested profiles over `data/grip_profiles`, `docker compose down; docker compose up -d --build`.
+- Open: Cadillac rear / Ferrari rear / Porsche rear peaks and held-out R2 are weak (see DevNotes scorecard); the coach prompt for the new fields has not been judged against a real model answer.
+
 ### Half-done / not verified
 - **Not user-tested yet:** `lmu-coach-bodyslip-v1` (β chevron, `slip_delta_deg`, `slip-gain` select). User must rebuild: `docker compose down; docker compose up -d --build`.
 - jsdom/axe regression suites were **not** re-run after the chevron change (the old `ui_test.js` / `ui_test2.js` lived in `/tmp` and are gone). Previous axe result: 0 violations.
@@ -151,7 +159,7 @@ Known zeroed/unpopulated: Tire Load, Tire Lateral Force, Tire Longitudinal Force
 2. Body slip is `[]` for native LMU files, partial laps and laps whose straights/yaw don't calibrate — UI intentionally falls back to heading-only chevron (no white velocity line, no β label).
 3. Config default port mismatch: `lmu-coach.config*.json` use `http://127.0.0.1:8001/health` / `…:8001/v1` but the user's compose points at `:8000`. Not a code bug; see §6.
 4. Historical errors already fixed (don't regress): `NameError: os` after the atomic-write change; `IndexError` in `_slip_ratio_col` (3924 vs 39239); 12 KB `.tmp` with a `DeprecationWarning` flood after "Stop recording"; `"No complete laps in this file"` before lap handling was fixed.
-5. No automated tests existed at handoff. Since 2026-10-12: `recorder/test_recorder_hf.py` (unittest) and `backend/tests/` (pytest; run with the `uv run --no-project --with ...` command in `test_slip_angle.py`'s docstring). Everything older is still untested.
+5. No automated tests existed at handoff. Since 2026-10-12: `recorder/test_recorder.py` (unittest) and `backend/tests/` (pytest; run with the `uv run --no-project --with ...` command in `test_slip_angle.py`'s docstring). Everything older is still untested.
 
 ---
 
@@ -219,12 +227,11 @@ Backend (`backend/`)
 - `requirements.txt`, `Dockerfile` — python:3.12-slim, uvicorn on 8000.
 
 Recorder (`recorder/`)
-- `recorder.py` — v4 recorder: full-session DuckDB, mElapsedTime clock, CSV+COPY writes, .tmp/.spool recovery, stop-file, selftest.
+- `recorder.py` — THE recorder (HF1 format; merged from the old v4 `recorder.py` and `recorder_hf.py` on 2026-10-19). Records every session it finds by itself, saves on garage/quit/freeze and picks up the next one. 1000 Hz polling with one sample per game tick, extra tyre-model channels, official lap times, full-session DuckDB via CSV+COPY, .tmp/.spool recovery (a leftover `.spool_hf` is still recovered), stop file `.stop_requested`, `--probe`, `--selftest`, `--recover`.
 - `recorder_control.py` — host agent (port 8420): recorder subprocess, SSE logs, config, path checks, LLM health/auto-start, GuardMiddleware.
-- `START_RECORDER.ps1` — `uv sync; uv run recorder.py` (original standalone launch).
+- `START_RECORDER.ps1` — `uv sync; uv run recorder.py` (standalone launch; passes arguments through, e.g. `--poll-hz 200`, `--probe 10`).
 - `START_RECORDER_CONTROL.ps1` — launches the host agent.
-- `recorder_hf.py` — (added 2026-10-12 in Claude Code) experimental clone of `recorder.py`: 1000 Hz polling, one sample per game tick, `--probe`, extra tyre-model channels, official lap times. Not wired into the host agent. Not yet run in-game.
-- `START_RECORDER_HF.ps1`, `test_recorder_hf.py` — its launcher and tests (`uv run python -m unittest test_recorder_hf`).
+- `test_recorder.py` - the recorder's tests (`cd recorder; uv run python -m unittest test_recorder`).
 - `pyproject.toml`, `uv.lock`, `pyLMUSharedMemory/*` — deps and vendored shared-memory bindings (base upload; not edited by us).
 
 Root

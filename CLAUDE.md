@@ -3,7 +3,7 @@
 Telemetry coaching for Le Mans Ultimate (LMU). A recorder captures sim telemetry to DuckDB; a FastAPI backend analyzes laps (grip, tires, vehicle dynamics) and asks a local LLM for coaching; a single-page web UI shows track map, playback scrubber and traces.
 
 ## Layout
-- `recorder/` - Windows-only Python (uv). Reads LMU shared memory via `pyLMUSharedMemory/` and writes `.duckdb` sessions. `recorder.py`, `recorder_control.py`.
+- `recorder/` - Windows-only Python (uv). Reads LMU shared memory via `pyLMUSharedMemory/` and writes `.duckdb` sessions. `recorder.py` is THE recorder: it records every session it finds on its own, saves when you go back to the garage or quit, and picks up the next one. `recorder_control.py` is the host agent (web UI Record tab, LLM launcher, config) and runs that same recorder.
 - `backend/app/` - FastAPI app (`main.py`): `coach.py` (LLM prompts), `telemetry.py`, `grip_analysis.py`, `corner_features.py` (per-corner input features for the coach; `coach_skill/` holds the coaching method prompt), `track_corners.py` / `track_centerline.py` / `track_reference.py` / `osm_source.py` / `track_catalog.py` (track reference: corners, complexes and names per circuit, built by `backend/tools/BUILD_TRACK_REFERENCE.ps1` into `data/track_reference/`; read-only at run time), `grip_profile.py`, `tire_model.py`, `vehicle_dynamics.py`, `track_db.py`. UI is one file: `static/index.html`.
 - `backend/tools/` - CLI tools on the backend code, each with a `.ps1` wrapper: bulk grip-profile ingest, tyre-model validation (scorecard in DevNotes), lap list, tyre-force check. See its `README.md`.
 - `data/` - `sessions/*.duckdb` (recordings), `grip_profiles/*.json` (per-car, written by the backend).
@@ -11,7 +11,7 @@ Telemetry coaching for Le Mans Ultimate (LMU). A recorder captures sim telemetry
 
 ## Run
 - Backend: `docker compose up --build` -> http://localhost:8080
-- Recorder: `recorder\START_RECORDER.ps1` (does `uv sync; uv run recorder.py`)
+- Recorder: `recorder\START_RECORDER.ps1` (does `uv sync; uv run recorder.py`; extra args pass through, e.g. `--poll-hz 200`). Or `recorder\START_RECORDER_CONTROL.ps1` for the host agent. Run one of them, not both.
 - Local LLM is expected at `http://127.0.0.1:8001/v1` (OpenAI-compatible); the UI Settings send URL/model per request.
 
 ## Conventions

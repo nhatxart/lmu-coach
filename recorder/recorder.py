@@ -1,5 +1,33 @@
 """
-LMU-Coach recorder v4 — records the FULL session into a single DuckDB file,
+LMU-Coach recorder (format HF1) - THE recorder. Run it standalone with
+START_RECORDER.ps1, or let the host agent (recorder_control.py, the web UI's
+Record tab) start and stop it.
+
+It records automatically and needs no input: it waits for LMU, records every
+session it finds, saves the file when you return to the garage or quit the
+session, and picks the next session up by itself. See ConnectionState.
+
+History: this file used to be the experimental "recorder_hf.py" next to the
+original v4 recorder.py. The two were merged on 10/19/2026 - the v4 recorder was
+retired, this one took its name, launcher and stop file. Files written by
+either still read in the backend. What this recorder does that v4 did not:
+  - Polls at --poll-hz (default 1000) with a sleep+spin pacer, but stores
+    ONE sample per game tick (when telem.mElapsedTime advances), so a 100 Hz
+    game clock yields a clean 100 Hz file instead of ~16% duplicated and
+    ~20% skipped ticks (measured on a v4 file). --every-poll stores
+    every poll instead, for raw inspection.
+  - Measures what the game actually publishes: polls, unique ticks, the
+    histogram of clock steps, and polls where car data changed without the
+    clock moving. --probe SECONDS does only that and records nothing.
+  - 10 Hz channels are gated by game time, not by sample count.
+  - channelsList.frequency is the MEASURED rate, not the nominal one.
+  - Lap Time uses LMU's own mLastLapTime (1 ms precision) when it agrees
+    with the clock difference.
+  - Records the extra channels a force-based tyre model needs (local
+    velocity, suspension force, camber, patch velocities, wear, ...).
+Everything below this paragraph is the original v4 description, still true.
+
+Records the FULL session into a single DuckDB file,
 schema-compatible with LMU's own native .duckdb export so that all existing
 backend endpoints work without modification.
 
@@ -38,7 +66,7 @@ import sys
 import tempfile
 import time
 import types
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -62,21 +90,57 @@ from pyLMUSharedMemory.lmu_mmap import INVALID_INDEX, LMUConstants, MMapControl
 # directory (same pattern already used for the pyLMUSharedMemory import
 # path above) makes the output location independent of launch method.
 DEFAULT_OUTPUT_DIR  = Path(__file__).parent.parent / "data" / "sessions"
-DEFAULT_POLL_HZ     = 100.0
-# Stop request channel used by recorder_control.py. A plain file is used
-# instead of a signal because on Windows Popen.terminate() does NOT deliver
-# a signal (it force-kills), so signal handlers can never run there. The
-# recorder polls for this file every loop iteration, finishes any save in
-# progress, writes the current session, and exits cleanly.
+DEFAULT_POLL_HZ     = 1000.0
+# DO NOT rename. The file format is called HF1 and the backend recognises
+# these files by " hf" in this string (telemetry.session_time_axes); every
+# recording made so far carries it.
+RECORDER_ID         = "lmu-coach-recorder hf1"
+# Stop request channel used by recorder_control.py (which writes this exact
+# file name). A plain file is used instead of a signal because on Windows
+# Popen.terminate() does NOT deliver a signal (it force-kills), so signal
+# handlers can never run there. The recorder polls for this file, finishes
+# any save in progress, writes the current session, and exits cleanly.
 STOP_FILE           = Path(__file__).parent / ".stop_requested"
+STOP_CHECK_S        = 0.1         # a file stat per poll is too slow at 1000 Hz
+# Safety copies are written as ".<start time>.spool". Until 10/19/2026 this
+# recorder used ".spool_hf" so that the v4 recorder's --recover could not
+# pick its files up; v4 is gone, so new copies use ".spool", and --recover
+# (and the startup notice) still pick up a leftover ".spool_hf".
+SPOOL_SUFFIX        = ".spool"
+LEGACY_SPOOL_SUFFIXES = (".spool_hf",)
 FREEZE_TIMEOUT_S    = 2.0
 SCORING_DECIMATE    = 10          # 10 Hz for geometry + thermal channels
+SLOW_PERIOD_S       = 0.1         # the same 10 Hz, as a game-time period
+OFFICIAL_LAP_WINDOW_S    = 3.0    # how long after a crossing mLastLapTime may arrive
+OFFICIAL_LAP_TOLERANCE_S = 0.05   # it must agree with the clock difference this well
 MIN_SAMPLES         = 200         # discard sessions shorter than this
 
 # Pseudo-GPS origin — overridden per session from first mPos sample
 GPS_REF_LAT         = 35.37
 GPS_REF_LON         = 138.92
 R_DEG               = 111_320.0  # metres per degree of latitude
+
+
+# Extra per-wheel channels (table name, LMUWheel field), stored every sample.
+HF_WHEEL_FIELDS = (
+    ("Susp Force",             "mSuspForce"),
+    ("Ride Height",            "mRideHeight"),
+    ("Camber",                 "mCamber"),
+    ("Toe",                    "mToe"),
+    ("Lateral Patch Vel",      "mLateralPatchVel"),
+    ("Longitudinal Patch Vel", "mLongitudinalPatchVel"),
+    ("Lateral Ground Vel",     "mLateralGroundVel"),
+    ("Longitudinal Ground Vel", "mLongitudinalGroundVel"),
+    ("Tire Deflection",        "mVerticalTireDeflection"),
+    ("Surface Type",           "mSurfaceType"),
+)
+HF_WHEEL_UNITS = {
+    "Susp Force": "N", "Ride Height": "m", "Camber": "rad", "Toe": "rad",
+    "Lateral Patch Vel": "m/s", "Longitudinal Patch Vel": "m/s",
+    "Lateral Ground Vel": "m/s", "Longitudinal Ground Vel": "m/s",
+    "Tire Deflection": "m",
+    "Surface Type": "0=dry 1=wet 2=grass 3=dirt 4=gravel 5=kerb 6=special",
+}
 
 
 # ── Shared-memory helpers ────────────────────────────────────────────────────
@@ -92,12 +156,133 @@ def build_tele_index_map(num_vehicles: int, tele_data) -> dict[int, int]:
     return {tele_data.telemInfo[i].mID: i for i in range(num_vehicles)}
 
 
+def _fmt_lap(seconds: float) -> str:
+    m, s = divmod(seconds, 60)
+    return f"{int(m)}:{s:06.3f}"
+
+
 def _safe_decode(raw: bytes) -> str:
     return raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
 
 
+def _session_meta(data, player_scor) -> dict[str, str]:
+    """Per-session facts that live outside the telemetry slot: car class,
+    game build and weather temps. Written once to the metadata table (never
+    per sample). WHY: tyre force channels are populated by class and the
+    game build changes what LMU exposes, so a reader needs both to know
+    which files to trust. A missing source gives "" rather than a missing
+    key, so readers can tell "not recorded" from "recorder too old"."""
+    def get(fn) -> str:
+        try:
+            return fn()
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return ""
+    info = getattr(getattr(data, "scoring", None), "scoringInfo", None)
+    return {
+        "VehicleClass": get(lambda: _safe_decode(player_scor.mVehicleClass)),
+        "GameVersion":  get(lambda: str(int(data.generic.gameVersion))),
+        "TrackTempC":   get(lambda: f"{float(info.mTrackTemp):.1f}"),
+        "AmbientTempC": get(lambda: f"{float(info.mAmbientTemp):.1f}"),
+    }
+
+
 def _slip_angle(lat_vel: float, lon_vel: float) -> float:
     return math.atan(lat_vel / lon_vel) if lon_vel else 0.0
+
+
+def _find_player(data, si: int, ti: int) -> tuple[int, int]:
+    """Return (scoring index, telemetry index) of the player's car, or
+    INVALID_INDEX for whichever is not found. si/ti are the previous
+    answers: at 1000 Hz, rescanning every vehicle slot on every poll is the
+    most expensive thing in the loop, so they are re-checked first and the
+    full scan only runs when they stop matching."""
+    num_v = data.scoring.scoringInfo.mNumVehicles
+    scor = data.scoring.vehScoringInfo
+    if not (0 <= si < num_v and scor[si].mIsPlayer):
+        si = local_scoring_index(scor)
+        if si == INVALID_INDEX:
+            return INVALID_INDEX, INVALID_INDEX
+    slot = scor[si].mID
+    if not (0 <= ti < num_v and data.telemetry.telemInfo[ti].mID == slot):
+        ti = build_tele_index_map(num_v, data.telemetry).get(slot, INVALID_INDEX)
+    return si, ti
+
+
+def _effective_hz(times: list[float], fallback: float) -> float:
+    """Measured sample rate of a list of game timestamps."""
+    if len(times) < 2 or times[-1] <= times[0]:
+        return fallback
+    return (len(times) - 1) / (times[-1] - times[0])
+
+
+# ── Poll pacing and measurement ──────────────────────────────────────────────
+
+class Pacer:
+    """Holds a fixed poll interval against a perf_counter deadline.
+
+    WHY not time.sleep(interval): measured on this PC, time.sleep(0.001)
+    really takes ~1.5 ms, so a sleep-only loop tops out near 650 Hz. The
+    pacer sleeps until SPIN_S before the deadline and spins the rest.
+
+    CPU COST: the sleep part only exists when the interval is longer than
+    SPIN_S. At 500 Hz and above the whole interval is spin, i.e. one CPU
+    core fully busy next to the game. Measured on this PC: 1000 Hz 99%,
+    500 Hz 98%, 400 Hz 72%, 100 Hz 19% of one core. That is the price of
+    the 1000 Hz test; for everyday recording use --poll-hz 200 or lower.
+    """
+    SPIN_S = 0.002
+
+    def __init__(self, interval_s: float):
+        self.interval = interval_s
+        self._next = time.perf_counter() + interval_s
+
+    def wait(self) -> None:
+        now = time.perf_counter()
+        if now - self._next > 5 * self.interval:
+            # Fell well behind (a save, a stall, a frozen session): resync
+            # instead of firing a burst of back-to-back polls to catch up.
+            self._next = now + self.interval
+        remaining = self._next - now
+        if remaining > self.SPIN_S:
+            time.sleep(remaining - self.SPIN_S)
+        while time.perf_counter() < self._next:
+            time.sleep(0)  # yield the rest of the timeslice; returns at once
+        self._next += self.interval
+
+
+class PollStats:
+    """Counts what the game actually publishes versus how often we look."""
+
+    def __init__(self):
+        self.polls = 0
+        self.ticks = 0                       # polls where mElapsedTime was new
+        self.data_changed_without_tick = 0   # car data moved, clock did not
+        self._steps: Counter = Counter()     # clock step in 0.1 ms units
+        self._last_et: float | None = None
+
+    def record(self, et: float, data_changed: bool) -> None:
+        self.polls += 1
+        if self._last_et is None or et != self._last_et:
+            if self._last_et is not None and et > self._last_et:
+                self._steps[round((et - self._last_et) * 1e4)] += 1
+            self.ticks += 1
+            self._last_et = et
+        elif data_changed:
+            self.data_changed_without_tick += 1
+
+    def histogram(self) -> dict[str, int]:
+        """Clock steps, most common first, e.g. {"10.0ms": 5210}."""
+        return {f"{k / 10:.1f}ms": n for k, n in self._steps.most_common()}
+
+    def summary(self, wall_s: float) -> list[str]:
+        wall_s = max(wall_s, 1e-9)
+        steps = ", ".join(f"{k} x{n:,}" for k, n in list(self.histogram().items())[:6])
+        return [
+            f"polls: {self.polls:,} in {wall_s:.1f}s = {self.polls / wall_s:.0f} Hz achieved",
+            f"unique game ticks: {self.ticks:,} = {self.ticks / wall_s:.0f} Hz published",
+            f"clock steps: {steps or 'none'}",
+            f"car data changed without a clock tick: {self.data_changed_without_tick:,} polls",
+        ]
 
 
 # ── Connection watchdog ──────────────────────────────────────────────────────
@@ -208,6 +393,18 @@ class SessionBuffer:
         self._last_tc:    float | None = None
         self._last_pits:  float | None = None
 
+        # Game time at which the next 10 Hz row is due (see add_sample).
+        self._next_slow_et: float = session_et_start
+
+        # Static per-session facts and poll statistics, written to the
+        # metadata table. Filled on the first sample and at flush.
+        self.meta: dict[str, str] = {}
+
+        # LMU's own lap time (see update_official_lap_time).
+        self._official_used: float | None = None      # last mLastLapTime dealt with
+        self._official_pending_since: float | None = None
+        self._official_watch_since: float | None = None   # missed; watching for a late value
+
     # ── Lap crossing ─────────────────────────────────────────────────────────
 
     def register_lap(self, lap_number: int, current_et: float) -> None:
@@ -221,18 +418,115 @@ class SessionBuffer:
             self.lap_time_events.append((current_et, duration))
             m, s = divmod(duration, 60)
             print(f"  Lap {self._last_lap}  {int(m)}:{s:06.3f}  ({duration:.3f}s)")
-        else:
-            self.lap_time_events.append((current_et, 0.0))
+            self._official_pending_since = current_et
+            self._official_watch_since = None
+        # DIFFERENT FROM the retired v4 recorder: no (ts, 0.0) placeholder row for the
+        # first crossing. With the placeholder, row i held the duration of
+        # lap i-1, while the backend's _read_lap_time_events matches row i
+        # to Lap row i - the source of its "duration mismatch" warnings.
+        # One row per COMPLETED lap keeps the two tables aligned by position.
 
         self._last_lap       = lap_number
         self._last_et_at_lap = current_et
 
+    def update_official_lap_time(self, last_lap_time: float, current_et: float) -> None:
+        """Swap the newest Lap Time for LMU's own mLastLapTime when it arrives.
+
+        WHY: the clock-difference lap time above can only be as fine as the
+        game clock's tick (0.01 s on every file measured so far), while
+        mLastLapTime is the timing-loop value to the millisecond. It lives
+        in the scoring block, which refreshes only ~5 Hz, so at the moment
+        the lap number changes it may still hold the PREVIOUS lap's time.
+        A value is therefore only taken when it is new since the last
+        crossing, arrives within OFFICIAL_LAP_WINDOW_S, and agrees with the
+        clock difference. Disagreement means the two are not the same lap
+        (recorder started mid-lap, invalidated lap) and the clock difference
+        is kept. Call this on every poll.
+        """
+        # DIAGNOSTICS (10/14/2026 Fuji session: 8 of 18 laps, including the
+        # best, got no official time and nothing said why). Every way a lap
+        # can miss out now prints a line: the value never changed, it changed
+        # too late (watched until the next crossing), or it disagreed.
+        if self._official_used is None:
+            self._official_used = last_lap_time   # left over from before recording
+            return
+        if self._official_watch_since is not None:
+            # Window already missed: only report if the value turns up later.
+            if last_lap_time != self._official_used:
+                print(f"    official lap time {_fmt_lap(last_lap_time)} arrived "
+                      f"{current_et - self._official_watch_since:.1f} s after the crossing "
+                      f"(window {OFFICIAL_LAP_WINDOW_S:.1f} s, not applied)")
+                self._official_used = last_lap_time
+                self._official_watch_since = None
+            return
+        if self._official_pending_since is None:
+            return
+        diffed = self.lap_time_events[-1][1]
+        age = current_et - self._official_pending_since
+        if age > OFFICIAL_LAP_WINDOW_S:
+            if last_lap_time != self._official_used:
+                print(f"    no official lap time: {_fmt_lap(last_lap_time)} arrived "
+                      f"{age:.1f} s after the crossing (window {OFFICIAL_LAP_WINDOW_S:.1f} s); "
+                      f"keeping clock {_fmt_lap(diffed)}")
+            else:
+                print(f"    no official lap time: mLastLapTime unchanged at "
+                      f"{_fmt_lap(last_lap_time)} {age:.1f} s after the crossing; "
+                      f"keeping clock {_fmt_lap(diffed)}")
+                self._official_watch_since = self._official_pending_since
+            self._official_pending_since = None
+            self._official_used = last_lap_time
+            return
+        if last_lap_time == self._official_used:
+            return                                # scoring has not refreshed yet
+        self._official_used = last_lap_time
+        self._official_pending_since = None
+        ts = self.lap_time_events[-1][0]
+        if last_lap_time > 0 and abs(last_lap_time - diffed) <= OFFICIAL_LAP_TOLERANCE_S:
+            self.lap_time_events[-1] = (ts, last_lap_time)
+            print(f"    official lap time {_fmt_lap(last_lap_time)}")
+        else:
+            print(f"    no official lap time: mLastLapTime {_fmt_lap(last_lap_time)} "
+                  f"disagrees with clock {_fmt_lap(diffed)} "
+                  f"(tolerance {OFFICIAL_LAP_TOLERANCE_S * 1000:.0f} ms)")
+
     # ── Per-sample recording ─────────────────────────────────────────────────
 
-    def add_sample(self, telem, wheels, player_scor, current_et: float) -> None:
-        """Record one poll tick.  current_et = mCurrentET from scoring."""
+    def add_sample(self, telem, wheels, player_scor, current_et: float,
+                   poll_time: float = 0.0, session_meta: dict | None = None) -> None:
+        """Record one sample.  current_et = telem.mElapsedTime; poll_time =
+        wall-clock seconds since this session started (when we read it);
+        session_meta = extra static facts (see _session_meta), taken once."""
         s   = self.s                       # alias
-        shz = self.poll_hz / SCORING_DECIMATE
+
+        if not self.meta:
+            self.meta.update(session_meta or {})
+            self.meta.update({
+                "TyreRadiusCm": ",".join(
+                    str(int(w.mStaticUndeflectedRadius)) for w in wheels),
+                "TyreOptimalTempC": ",".join(f"{w.mOptimalTemp:.1f}" for w in wheels),
+                "TyreCompoundFront": _safe_decode(telem.mFrontTireCompoundName),
+                "TyreCompoundRear":  _safe_decode(telem.mRearTireCompoundName),
+                "VehicleModel":      _safe_decode(telem.mVehicleModel),
+            })
+
+        # ── HF extras, every sample ───────────────────────────────────────
+        # Raw values, raw signs: nothing here is derived, so a wrong guess
+        # about LMU's axis convention cannot be baked into a recording.
+        # Local velocity gives body slip directly (lateral vs forward)
+        # instead of reconstructing it from yaw rate and position.
+        s["Poll Time"].append(poll_time)
+        s["Local Vel X"].append(telem.mLocalVel.x)
+        s["Local Vel Y"].append(telem.mLocalVel.y)
+        s["Local Vel Z"].append(telem.mLocalVel.z)
+        s["Yaw Accel"].append(telem.mLocalRotAccel.y)
+        s["Front Downforce"].append(telem.mFrontDownforce)
+        s["Rear Downforce"].append(telem.mRearDownforce)
+        s["Drag"].append(telem.mDrag)
+        s["Front Ride Height"].append(telem.mFrontRideHeight)
+        s["Rear Ride Height"].append(telem.mRearRideHeight)
+        s["Steering Shaft Torque"].append(telem.mSteeringShaftTorque)
+        for ch, attr in HF_WHEEL_FIELDS:
+            s[ch].append(tuple(getattr(w, attr) for w in wheels))
 
         # ── 100 Hz: telemetry-sourced continuous ──────────────────────────
         # GPS Time matches LMU's own convention: absolute session ET in seconds
@@ -281,7 +575,26 @@ class SessionBuffer:
              wheels[2].mSuspensionDeflection, wheels[3].mSuspensionDeflection))
 
         # ── 10 Hz: scoring-sourced geometry + thermals ────────────────────
-        if self.tick % SCORING_DECIMATE == 0:
+        # Gated by GAME TIME, not by sample count: the v4 recorder's
+        # `tick % SCORING_DECIMATE` is only 10 Hz if exactly 100 samples
+        # arrive per second, which no longer holds when the sample rate is
+        # whatever the game turns out to publish.
+        if current_et >= self._next_slow_et:
+            self._next_slow_et += SLOW_PERIOD_S
+            if self._next_slow_et <= current_et:
+                # Clock jumped (pause, stall): one row, not a catch-up burst.
+                self._next_slow_et = current_et + SLOW_PERIOD_S
+            s["TyresWear"].append(tuple(w.mWear for w in wheels))
+            s["TyresCarcassTemp"].append(
+                tuple(w.mTireCarcassTemperature - 273.15 for w in wheels))
+            # Left/center/right across the tread as the game orders them,
+            # which is NOT inside/center/outside (see lmu_data.py).
+            s["TyresTempLeft"].append(tuple(w.mTemperature[0] - 273.15 for w in wheels))
+            s["TyresTempCenter"].append(tuple(w.mTemperature[1] - 273.15 for w in wheels))
+            s["TyresTempRight"].append(tuple(w.mTemperature[2] - 273.15 for w in wheels))
+            # Stored raw: the struct comment says Celsius, rFactor 2 reported
+            # Kelvin here, and LMU has not been checked.
+            s["Brake Temp"].append(tuple(w.mBrakeTemp for w in wheels))
             # Pseudo-GPS: reproject mPos.x/z to lat/lon degrees using
             # a per-session origin so track shape is self-consistent
             dx_m = telem.mPos.x - self.origin_x
@@ -350,8 +663,14 @@ def write_session(buf: SessionBuffer, output_dir: Path) -> Path:
     look like a valid, silently-broken session file to the backend or to
     external tools.
     """
-    hz  = buf.poll_hz
-    shz = hz / SCORING_DECIMATE                     # 10.0 Hz
+    # MEASURED rates, not nominal ones. The backend places row N at
+    # N / frequency, so a nominal 100 written over data that really arrived
+    # at ~96 Hz (v4 recorder) stretches every time axis by a few percent.
+    gps_t = buf.s.get("GPS Time", [])
+    hz    = _effective_hz(gps_t, buf.poll_hz)
+    n_slow = len(buf.s.get("Lap Dist", []))
+    span   = gps_t[-1] - gps_t[0] if len(gps_t) > 1 else 0.0
+    shz    = (n_slow - 1) / span if n_slow > 1 and span > 0 else 1.0 / SLOW_PERIOD_S
     ts  = buf.start_wall.strftime("%Y-%m-%dT%H_%M_%SZ")
 
     def _safe(name: str) -> str:
@@ -374,9 +693,16 @@ def write_session(buf: SessionBuffer, output_dir: Path) -> Path:
             ("RecordingTime",    ts),
             ("TrackName",        buf.track_name),
             ("CarName",          buf.car_name),
-            ("RecordedBy",       "lmu-coach-recorder v4"),
+            ("RecordedBy",       RECORDER_ID),
             ("TotalSamples",     str(buf.sample_count)),
-            ("LapCount",         str(len(buf.lap_events))),
+            # Completed laps. The Lap table has one more row when the
+            # session stopped mid-lap (see flush).
+            ("LapCount",         str(len(buf.lap_time_events))),
+            ("PollHz",           f"{buf.poll_hz:g}"),
+            ("EffectiveHz",      f"{hz:.3f}"),
+            # getattr: --recover and --selftest pass plain namespaces that
+            # may predate the meta field.
+            *sorted(getattr(buf, "meta", {}).items()),
         ])
 
         # ── channel / event registry ──────────────────────────────────────────
@@ -436,9 +762,15 @@ def write_session(buf: SessionBuffer, output_dir: Path) -> Path:
                 load_csv.unlink(missing_ok=True)
             print(f"    {ch}: {n:,} rows, {time.monotonic() - t0:.1f}s", flush=True)
 
-        def _write_scalar(ch: str, freq: float, unit: str) -> None:
-            """Write a single-value continuous channel."""
+        def _write_scalar(ch: str, freq: float, unit: str,
+                          detect_empty: bool = False) -> None:
+            """Write a single-value continuous channel. detect_empty flags an
+            all-zero channel as unpopulated (same rule as _write_wheel); it
+            is only used for the HF extras, where it is not yet known which
+            fields LMU fills in. The original channels are never dropped."""
             vals = buf.s.get(ch, [])
+            if detect_empty and vals and not any(vals):
+                unit, vals = "unpopulated_by_lmu", []
             con.execute("INSERT INTO channelsList VALUES (?,?,?)", [ch, freq, unit])
             con.execute(f'CREATE TABLE "{ch}" (value DOUBLE)')
             if vals:
@@ -448,7 +780,10 @@ def write_session(buf: SessionBuffer, output_dir: Path) -> Path:
             """Write a per-wheel (value1..value4) continuous channel."""
             rows = buf.s.get(ch, [])
             # Mark channels LMU doesn't populate for this car
-            effective_unit = "unpopulated_by_lmu" if _all_zero_wheel(ch) else unit
+            # Surface Type is exempt: 0 means "dry tarmac", so an all-zero
+            # channel is a clean run, not a field LMU leaves empty.
+            effective_unit = ("unpopulated_by_lmu"
+                              if ch != "Surface Type" and _all_zero_wheel(ch) else unit)
             con.execute("INSERT INTO channelsList VALUES (?,?,?)",
                         [ch, freq, effective_unit])
             con.execute(f'CREATE TABLE "{ch}" '
@@ -497,6 +832,27 @@ def write_session(buf: SessionBuffer, output_dir: Path) -> Path:
         _write_wheel("Tire Load",               hz, "N")
         _write_wheel("Tire Lateral Force",      hz, "N")
         _write_wheel("Tire Longitudinal Force", hz, "N")
+
+        # ── HF extras ─────────────────────────────────────────────────────────
+        _write_scalar("Poll Time",             hz, "s")
+        _write_scalar("Local Vel X",           hz, "m/s",    detect_empty=True)
+        _write_scalar("Local Vel Y",           hz, "m/s",    detect_empty=True)
+        _write_scalar("Local Vel Z",           hz, "m/s",    detect_empty=True)
+        _write_scalar("Yaw Accel",             hz, "rad/s2", detect_empty=True)
+        _write_scalar("Front Downforce",       hz, "N",      detect_empty=True)
+        _write_scalar("Rear Downforce",        hz, "N",      detect_empty=True)
+        _write_scalar("Drag",                  hz, "N",      detect_empty=True)
+        _write_scalar("Front Ride Height",     hz, "m",      detect_empty=True)
+        _write_scalar("Rear Ride Height",      hz, "m",      detect_empty=True)
+        _write_scalar("Steering Shaft Torque", hz, "Nm",     detect_empty=True)
+        for _ch, _ in HF_WHEEL_FIELDS:
+            _write_wheel(_ch, hz, HF_WHEEL_UNITS[_ch])
+        _write_wheel("TyresWear",        shz, "fraction")
+        _write_wheel("TyresCarcassTemp", shz, "C")
+        _write_wheel("TyresTempLeft",    shz, "C")
+        _write_wheel("TyresTempCenter",  shz, "C")
+        _write_wheel("TyresTempRight",   shz, "C")
+        _write_wheel("Brake Temp",       shz, "raw (C or K, unverified)")
 
         # ── 10 Hz scalar channels ─────────────────────────────────────────────
         _write_scalar("GPS Latitude",  shz, "deg")
@@ -548,7 +904,88 @@ def write_session(buf: SessionBuffer, output_dir: Path) -> Path:
 
 # ── Main loop ────────────────────────────────────────────────────────────────
 
-def run_recorder(output_dir: Path, poll_hz: float) -> None:
+def run_probe(seconds: float, poll_hz: float) -> None:
+    """Measure how fast LMU really publishes telemetry. Records nothing.
+
+    Must be run while driving (not in the garage or a menu): the game clock
+    only advances on track.
+    """
+    print(f"lmu-coach HF probe  |  polling at {poll_hz:.0f}Hz for {seconds:g}s")
+    print("Waiting for LMU (drive the car, then leave this running)...", flush=True)
+    mmap_ctrl = None
+    while mmap_ctrl is None:
+        try:
+            mmap_ctrl = MMapControl(LMUConstants.LMU_SHARED_MEMORY_FILE,
+                                    lmu_data.LMUObjectOut)
+            mmap_ctrl.create(access_mode=0)
+        except Exception:
+            mmap_ctrl = None
+            time.sleep(2.0)
+
+    stats = PollStats()
+    pacer = Pacer(1.0 / poll_hz)
+    si = ti = INVALID_INDEX
+    last_sig = None
+    first_et = None
+    t0 = None
+    dt_min, dt_max = math.inf, 0.0
+    try:
+        while True:
+            mmap_ctrl.update()
+            data = mmap_ctrl.data
+            si, ti = _find_player(data, si, ti)
+            if si == INVALID_INDEX or ti == INVALID_INDEX:
+                time.sleep(0.5)
+                continue
+            telem = data.telemetry.telemInfo[ti]
+            et = float(telem.mElapsedTime)
+            if t0 is None:
+                # Start the measurement on the first clock movement, so time
+                # spent parked in the garage is not counted as "no ticks".
+                if first_et is None:
+                    first_et = et
+                if et == first_et:
+                    time.sleep(0.01)
+                    continue
+                t0 = time.perf_counter()
+                pacer = Pacer(1.0 / poll_hz)
+                print("Clock is running - measuring...", flush=True)
+            sig = (telem.mPos.x, telem.mPos.z, telem.mLocalVel.z)
+            stats.record(et, sig != last_sig)
+            last_sig = sig
+            dt = float(telem.mDeltaTime)
+            if dt > 0:
+                dt_min, dt_max = min(dt_min, dt), max(dt_max, dt)
+            if time.perf_counter() - t0 >= seconds:
+                break
+            pacer.wait()
+    except KeyboardInterrupt:
+        print("\nStopped early.")
+    finally:
+        mmap_ctrl.close()
+
+    if t0 is None or stats.ticks < 2:
+        print("No clock movement seen - was the car on track?")
+        return
+    wall = time.perf_counter() - t0
+    for line in stats.summary(wall):
+        print("  " + line)
+    if dt_max > 0:
+        print(f"  mDeltaTime reported by the game: {dt_min * 1000:.2f}-{dt_max * 1000:.2f} ms")
+    published = stats.ticks / wall
+    achieved = stats.polls / wall
+    if achieved < published * 1.5:
+        print(f"  INCONCLUSIVE: only polled {achieved:.0f} Hz, too close to the "
+              f"{published:.0f} Hz seen. Re-run with a higher --poll-hz.")
+    elif stats.data_changed_without_tick > 0.05 * stats.polls:
+        print("  RESULT: car data changes BETWEEN clock ticks - the game publishes "
+              "faster than its clock shows. Record with --every-poll to capture it.")
+    else:
+        print(f"  RESULT: LMU publishes ~{published:.0f} Hz. Polling faster than "
+              f"that adds no new data.")
+
+
+def run_recorder(output_dir: Path, poll_hz: float, every_poll: bool = False) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     interval = 1.0 / poll_hz
     STOP_FILE.unlink(missing_ok=True)  # a leftover request must not stop a fresh run
@@ -579,18 +1016,30 @@ def run_recorder(output_dir: Path, poll_hz: float) -> None:
         os.replace(stray, final_path)
         print(f"Recovered orphaned session file: {final_path.name}")
 
-    for _sp in sorted(output_dir.glob(".*.spool")):
+    for _sp in _spool_files(output_dir):
         print(f"Found an unconverted session safety copy: {_sp.name}\n"
               f"  Convert it with:  uv run recorder.py --recover", flush=True)
 
-    print(f"lmu-coach recorder v4  |  {poll_hz:.0f}Hz  |  "
+    print(f"lmu-coach recorder (HF1)  |  polling {poll_hz:.0f}Hz  |  "
+          f"{'every poll stored' if every_poll else 'one sample per game tick'}  |  "
           f"10Hz geometry  |  out={output_dir}")
+    if interval <= Pacer.SPIN_S:
+        print(f"NOTE: polling at {poll_hz:.0f}Hz keeps one CPU core fully busy while "
+              f"driving. Use --poll-hz 200 if the game stutters.")
     print("Waiting for LMU...\n")
 
     mmap_ctrl: MMapControl | None = None
     conn_state                    = ConnectionState()
     buf: SessionBuffer | None     = None
     last_lap: int | None          = None
+
+    pacer                          = Pacer(interval)
+    stats                          = PollStats()
+    stats_t0                       = time.perf_counter()
+    si = ti                        = INVALID_INDEX
+    last_sample_et: float | None   = None
+    last_sig                       = None
+    next_stop_check                = 0.0
 
     origin_x: float | None = None
     origin_z: float | None = None
@@ -608,24 +1057,21 @@ def run_recorder(output_dir: Path, poll_hz: float) -> None:
         if buf.sample_count < MIN_SAMPLES:
             print(f"  Discarding ({reason}, {buf.sample_count} samples < {MIN_SAMPLES})")
         else:
-            # The most recent entry in buf.lap_events marks the START of
-            # whatever lap was in progress when we stopped (Ctrl+C, session
-            # end, car/track change). That lap was never completed, so it
-            # has no real duration — writing it into Lap/Lap Time anyway
-            # produces a bogus short "lap" at the end of the file (this is
-            # what looked like laps getting merged: a real lap's tail was
-            # cut off and saved as its own fake short lap). Drop it before
-            # writing, unless it's the session's only lap (nothing to
-            # compare it against, and dropping it would discard everything).
+            # DIFFERENT FROM the retired v4 recorder, which at this point dropped the
+            # newest row of BOTH lap tables to hide the unfinished final lap.
+            # Neither is dropped here:
+            #   - The newest Lap row is the crossing that ENDS the last
+            #     completed lap. Without it the backend has no end boundary
+            #     for that lap and runs it to end-of-file, so its lap time
+            #     silently includes the tail of the unfinished lap.
+            #   - The newest Lap Time row is that completed lap's duration
+            #     (see register_lap); dropping it lost the lap's time.
+            # Result: Lap has one row per lap STARTED (the last one is the
+            # unfinished lap, which readers see as a lap with no end), and
+            # Lap Time has one row per lap COMPLETED, aligned by position.
             if len(buf.lap_events) > 1:
-                incomplete_ts, incomplete_lap_num = buf.lap_events[-1]
-                buf.lap_events = buf.lap_events[:-1]
-                # lap_time_events has one row per lap_events row in the same
-                # order (see register_lap) — drop its matching last row too.
-                if buf.lap_time_events:
-                    buf.lap_time_events = buf.lap_time_events[:-1]
-                print(f"  Dropping incomplete final lap {incomplete_lap_num} "
-                      f"(in progress at stop, {reason})")
+                print(f"  Final lap {buf.lap_events[-1][1]} was in progress at stop "
+                      f"({reason}); kept as an unfinished lap")
             # write_session() is isolated in its own try/except so that a
             # write-time bug (bad tuple shape, disk full, etc.) is never
             # mistaken for a shared-memory disconnect by the caller's outer
@@ -633,6 +1079,15 @@ def run_recorder(output_dir: Path, poll_hz: float) -> None:
             # swallowed exactly this kind of failure and silently produced
             # a truncated file (the v3 bug). A write failure here is loud,
             # distinct, and does NOT get reinterpreted as "reconnecting".
+            for _line in stats.summary(time.perf_counter() - stats_t0):
+                print("  " + _line, flush=True)
+            buf.meta.update({
+                "Polls":                  str(stats.polls),
+                "UniqueTicks":            str(stats.ticks),
+                "DataChangedWithoutTick": str(stats.data_changed_without_tick),
+                "ClockStepHistogram":     ", ".join(
+                    f"{k} x{n}" for k, n in stats.histogram().items()),
+            })
             print(f"  Saving session ({buf.sample_count} samples, "
                   f"{len(buf.lap_events)} laps) - do not close this window...",
                   flush=True)
@@ -704,8 +1159,13 @@ def run_recorder(output_dir: Path, poll_hz: float) -> None:
 
     try:
         while True:
-            if _stop_state["stop_pending"] or STOP_FILE.exists():
+            if _stop_state["stop_pending"]:
                 raise KeyboardInterrupt  # stop requested; any save has finished
+            _now = time.perf_counter()
+            if _now >= next_stop_check:
+                next_stop_check = _now + STOP_CHECK_S
+                if STOP_FILE.exists():
+                    raise KeyboardInterrupt
             # ── Connect ───────────────────────────────────────────────────
             if mmap_ctrl is None:
                 try:
@@ -722,19 +1182,19 @@ def run_recorder(output_dir: Path, poll_hz: float) -> None:
                 mmap_ctrl.update()
                 data = mmap_ctrl.data
 
-                num_v    = data.scoring.scoringInfo.mNumVehicles
-                si       = local_scoring_index(data.scoring.vehScoringInfo)
+                si, ti = _find_player(data, si, ti)
                 if si == INVALID_INDEX:
                     time.sleep(0.5)
                     continue
-
-                pscor = data.scoring.vehScoringInfo[si]
-                tmap  = build_tele_index_map(num_v, data.telemetry)
-                ti    = tmap.get(pscor.mID, INVALID_INDEX)
                 if ti == INVALID_INDEX:
-                    time.sleep(0.5)
+                    # Player is scored but not in telemetry THIS poll (the
+                    # two blocks can disagree for a moment when a car joins
+                    # or leaves). Retry on the next poll: a 0.5 s wait here
+                    # would silently drop ~50 ticks mid-session.
+                    pacer.wait()
                     continue
 
+                pscor       = data.scoring.vehScoringInfo[si]
                 telem       = data.telemetry.telemInfo[ti]
                 car_name    = _safe_decode(telem.mVehicleName)
                 track_name  = _safe_decode(telem.mTrackName)
@@ -787,7 +1247,9 @@ def run_recorder(output_dir: Path, poll_hz: float) -> None:
                     flush("session went idle")
 
                 if conn_state.is_frozen:
-                    time.sleep(interval)
+                    # Idle (menu, pause, loading): a plain sleep, so the
+                    # pacer is not spinning a CPU core while nothing happens.
+                    time.sleep(0.01)
                     continue
 
                 # ── Create new session buffer ──────────────────────────────
@@ -801,6 +1263,9 @@ def run_recorder(output_dir: Path, poll_hz: float) -> None:
                     )
                     last_lap = lap_number
                     buf.register_lap(lap_number, current_et)
+                    stats          = PollStats()
+                    stats_t0       = time.perf_counter()
+                    last_sample_et = None
                     print(f"Session: {track_name} / {car_name} "
                           f"(driver: {driver_name})")
 
@@ -809,7 +1274,20 @@ def run_recorder(output_dir: Path, poll_hz: float) -> None:
                     buf.register_lap(lap_number, current_et)
                     last_lap = lap_number
 
-                buf.add_sample(telem, telem.mWheels, pscor, current_et)
+                # One stored sample per game tick. Polling faster than the
+                # game publishes re-reads the same tick; storing those would
+                # only duplicate rows (the v4 recorder's ~16% duplicates).
+                sig = (telem.mPos.x, telem.mPos.z, telem.mLocalVel.z)
+                stats.record(current_et, sig != last_sig)
+                last_sig = sig
+                buf.update_official_lap_time(float(pscor.mLastLapTime), current_et)
+                if every_poll or current_et != last_sample_et:
+                    buf.add_sample(telem, telem.mWheels, pscor, current_et,
+                                   poll_time=time.perf_counter() - stats_t0,
+                                   # Only the first sample uses it; skip the work after.
+                                   session_meta=None if buf.meta
+                                   else _session_meta(data, pscor))
+                    last_sample_et = current_et
 
             except (OSError, ValueError) as e:
                 print(f"Lost shared memory ({e}); reconnecting…")
@@ -822,10 +1300,11 @@ def run_recorder(output_dir: Path, poll_hz: float) -> None:
                 mmap_ctrl = None
                 conn_state = ConnectionState()
                 origin_x = origin_z = None
+                si = ti = INVALID_INDEX
                 time.sleep(2.0)
                 continue
 
-            time.sleep(interval)
+            pacer.wait()
 
     except KeyboardInterrupt:
         print("\nStopping.", flush=True)
@@ -838,15 +1317,16 @@ def run_recorder(output_dir: Path, poll_hz: float) -> None:
 
 SPOOL_FIELDS = ("car_name", "track_name", "driver_name", "poll_hz", "start_wall",
                 "sample_count", "lap_events", "lap_time_events", "gear_events",
-                "abs_events", "tc_events", "pits_events")
+                "abs_events", "tc_events", "pits_events", "meta")
 
 
 def spool_session(buf, output_dir: Path) -> Path:
     """Dump the raw in-memory session to disk as fast as possible."""
     name = buf.start_wall.strftime("%Y-%m-%dT%H_%M_%SZ")
-    final = output_dir / f".{name}.spool"
-    part = output_dir / f".{name}.spool.part"
-    data = {k: getattr(buf, k) for k in SPOOL_FIELDS}
+    final = output_dir / f".{name}{SPOOL_SUFFIX}"
+    part = output_dir / f".{name}{SPOOL_SUFFIX}.part"
+    data = {k: getattr(buf, k) for k in SPOOL_FIELDS if k != "meta"}
+    data["meta"] = getattr(buf, "meta", {})  # absent on --selftest's namespace
     data["s"] = dict(buf.s)
     with open(part, "wb") as f:
         pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -857,13 +1337,20 @@ def spool_session(buf, output_dir: Path) -> Path:
 def load_spool(path: Path):
     with open(path, "rb") as f:
         data = pickle.load(f)
+    data.setdefault("meta", {})
     s = defaultdict(list)
     s.update(data.pop("s"))
     return types.SimpleNamespace(s=s, **data)
 
 
+def _spool_files(output_dir: Path) -> list[Path]:
+    """Unconverted safety copies: ".*.spool" plus the pre-10/19/2026 ".*.spool_hf"."""
+    return sorted(p for suffix in (SPOOL_SUFFIX, *LEGACY_SPOOL_SUFFIXES)
+                  for p in output_dir.glob(f".*{suffix}"))
+
+
 def recover_spools(output_dir: Path) -> None:
-    spools = sorted(output_dir.glob(".*.spool"))
+    spools = _spool_files(output_dir)
     if not spools:
         print(f"No unconverted safety copies in {output_dir}")
         return
@@ -964,10 +1451,17 @@ if __name__ == "__main__":
     parser.add_argument("--selftest", action="store_true",
                         help="time a synthetic-session save on this machine, then exit")
     parser.add_argument("--selftest-minutes", type=float, default=25.0)
+    parser.add_argument("--probe", type=float, metavar="SECONDS", default=None,
+                        help="measure how fast LMU publishes telemetry for SECONDS "
+                             "while you drive, record nothing, then exit")
+    parser.add_argument("--every-poll", action="store_true",
+                        help="store every poll, not one sample per game tick")
     args = parser.parse_args()
     if args.selftest:
         selftest(args.selftest_minutes)
     elif args.recover:
         recover_spools(args.output_dir)
+    elif args.probe is not None:
+        run_probe(args.probe, args.poll_hz)
     else:
-        run_recorder(args.output_dir, args.poll_hz)
+        run_recorder(args.output_dir, args.poll_hz, args.every_poll)
