@@ -38,7 +38,7 @@ Name the misconception, give the tire-level reason, reframe the term (understeer
 
 OUTPUT
 ## Lap summary (1-2 sentences: where the time is and the habit)
-### T<n> <name> - <phase> - est. <s> (other corners with the same habit)
+### <corner name or phase/habit> - <phase> (other corners with the same habit)
 - What the data shows / What the tires are doing / Why / Fix / Feel cue
 ## Drill for next run
 ## Confidence (measured vs assumed; missing channels; tire-model confidence)

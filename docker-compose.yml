@@ -17,6 +17,9 @@ services:
       # /analyze call. NOT read-only: the backend writes to it after each
       # analysis. Override with GRIP_PROFILES_PATH in .env.
       - "${GRIP_PROFILES_PATH:-./data/grip_profiles}:/data/grip_profiles"
+      # Track references (corners, complexes, names per circuit), built by
+      # backend/tools/BUILD_TRACK_REFERENCE.ps1. Read-only: the app only reads them.
+      - "${TRACK_REFERENCE_PATH:-./data/track_reference}:/data/track_reference:ro"
     environment:
       # FALLBACKS ONLY. The web UI's Settings sends the LLM URL, model and
       # timeout with every request, so you normally do not need to touch these.

@@ -888,11 +888,22 @@ def locate_corner(dist_m: float, index: list[dict]) -> str | None:
     return _locate(dist_m, index)[0]
 
 
-def annotate_report_with_corners(report: dict, track_name: str, layout_name: str = "") -> None:
+def annotate_report_with_corners(report: dict, track_name: str, layout_name: str = "",
+                                 lap_length_m: float | None = None) -> None:
     """Adds 'corner' (and 'corner_end' when an event spans past another
     point) to every event with lap distances, plus report['corner_index'].
     Leaves the report unchanged except corner_names_available=False when
     the track has no index."""
+    # A built track reference (OpenStreetMap + LMU names + aligned recordings, see
+    # track_reference.py) names corners and complexes better than the sparse ref points below.
+    try:
+        from .track_reference import annotate_report, load_reference
+        ref = load_reference(track_name, lap_length_m)
+        if ref:
+            annotate_report(report, ref)
+            return
+    except Exception:       # a damaged reference file must never break an analysis
+        pass
     index = corner_index_for(track_name, layout_name)
     report["corner_names_available"] = bool(index)
     if not index:
@@ -908,6 +919,10 @@ def annotate_report_with_corners(report: dict, track_name: str, layout_name: str
                 end_label, end_place = _locate(end, index)
                 if end_place != place:
                     ev["corner_end"] = end_label
+    for cf in (report.get("corner_analysis") or {}).get("corners", []):
+        # name each analysed corner by its slowest point (the corner's anchor)
+        if cf.get("mrp_dist_m") is not None:
+            cf["corner"] = _locate(cf["mrp_dist_m"], index)[0]
     slip = report.get("slip_angle_analysis") or {}
     for v in slip.values():
         if isinstance(v, dict) and v.get("lap_dist_m") is not None:

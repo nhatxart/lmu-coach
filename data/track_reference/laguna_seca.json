@@ -1,0 +1,292 @@
+{
+ "schema": 1,
+ "slug": "laguna_seca",
+ "display_name": "WeatherTech Raceway Laguna Seca",
+ "built": "2026-10-21",
+ "sources": {
+  "osm": "OpenStreetMap contributors (ODbL)",
+  "wikipedia": "Laguna Seca",
+  "lmu_track_db": true,
+  "recordings": []
+ },
+ "official": {
+  "title": "Laguna Seca",
+  "turns": 11,
+  "length_m": 3602
+ },
+ "layouts": [
+  {
+   "label": "Main circuit",
+   "length_m": 3605,
+   "turning_direction": "counterclockwise",
+   "direction_from_osm": true,
+   "status": "osm_only",
+   "alignment": null,
+   "official": {
+    "turns": 11,
+    "length_m": 3602
+   },
+   "corners": [
+    {
+     "apex_m": 307.0,
+     "start_m": 45.0,
+     "end_m": 409.0,
+     "radius_m": 320,
+     "heading_deg": 37,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 1,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 552.0,
+     "start_m": 449.0,
+     "end_m": 581.0,
+     "radius_m": 28,
+     "heading_deg": 97,
+     "direction": "left",
+     "kind": "corner",
+     "osm_name": "Andretti Hairpin",
+     "name": "Andretti Hairpin",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 2,
+     "complex": "Andretti Hairpin",
+     "numbers": [],
+     "display": "Andretti Hairpin"
+    },
+    {
+     "apex_m": 610.0,
+     "start_m": 581.0,
+     "end_m": 680.0,
+     "radius_m": 35,
+     "heading_deg": 105,
+     "direction": "left",
+     "kind": "corner",
+     "osm_name": "Andretti Hairpin",
+     "name": "Andretti Hairpin",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 3,
+     "complex": "Andretti Hairpin",
+     "numbers": [],
+     "display": "Andretti Hairpin"
+    },
+    {
+     "apex_m": 714.0,
+     "start_m": 683.0,
+     "end_m": 757.0,
+     "radius_m": 108,
+     "heading_deg": 23,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 4,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 885.0,
+     "start_m": 776.0,
+     "end_m": 1013.0,
+     "radius_m": 35,
+     "heading_deg": 106,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 5,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 1139.0,
+     "start_m": 1091.0,
+     "end_m": 1284.0,
+     "radius_m": 50,
+     "heading_deg": 79,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 6,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 1360.0,
+     "start_m": 1317.0,
+     "end_m": 1469.0,
+     "radius_m": 321,
+     "heading_deg": 17,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 7,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 1629.0,
+     "start_m": 1501.0,
+     "end_m": 1750.0,
+     "radius_m": 40,
+     "heading_deg": 120,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 8,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 2039.0,
+     "start_m": 2013.0,
+     "end_m": 2261.0,
+     "radius_m": 33,
+     "heading_deg": 82,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 9,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 2484.0,
+     "start_m": 2420.0,
+     "end_m": 2509.0,
+     "radius_m": 122,
+     "heading_deg": 25,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 10,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 2559.0,
+     "start_m": 2512.0,
+     "end_m": 2584.0,
+     "radius_m": 23,
+     "heading_deg": 96,
+     "direction": "left",
+     "kind": "corner",
+     "osm_name": "The Corkscrew",
+     "name": "The Corkscrew",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 11,
+     "complex": "The Corkscrew",
+     "numbers": [],
+     "display": "The Corkscrew"
+    },
+    {
+     "apex_m": 2609.0,
+     "start_m": 2586.0,
+     "end_m": 2684.0,
+     "radius_m": 26,
+     "heading_deg": 78,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "The Corkscrew",
+     "name": "The Corkscrew",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 12,
+     "complex": "The Corkscrew",
+     "numbers": [],
+     "display": "The Corkscrew"
+    },
+    {
+     "apex_m": 2776.0,
+     "start_m": 2651.8,
+     "end_m": 2775.7,
+     "radius_m": 99,
+     "heading_deg": 27,
+     "direction": "left",
+     "kind": "kink",
+     "osm_name": "WeatherTech Raceway Laguna Seca",
+     "name": "WeatherTech Raceway Laguna Seca",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 13,
+     "display": "WeatherTech Raceway Laguna Seca"
+    },
+    {
+     "apex_m": 2842.0,
+     "start_m": 2695.0,
+     "end_m": 2968.0,
+     "radius_m": 49,
+     "heading_deg": 112,
+     "direction": "left",
+     "kind": "corner",
+     "osm_name": "Rainey Curve",
+     "name": "Rainey Curve",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 14,
+     "display": "Rainey Curve"
+    },
+    {
+     "apex_m": 3089.0,
+     "start_m": 2992.0,
+     "end_m": 3165.0,
+     "radius_m": 35,
+     "heading_deg": 85,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 15,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 3378.0,
+     "start_m": 3311.0,
+     "end_m": 3437.0,
+     "radius_m": 17,
+     "heading_deg": 125,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 16,
+     "display": "Unnamed corner"
+    }
+   ],
+   "straights": [
+    {
+     "name": "Rahal Straight",
+     "start_m": 2209.6,
+     "end_m": 2520.7
+    }
+   ],
+   "complexes": [
+    {
+     "name": "Andretti Hairpin",
+     "parts": [
+      2,
+      3
+     ],
+     "numbers": []
+    },
+    {
+     "name": "The Corkscrew",
+     "parts": [
+      11,
+      12
+     ],
+     "numbers": []
+    }
+   ]
+  }
+ ]
+}

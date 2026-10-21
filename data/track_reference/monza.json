@@ -1,0 +1,304 @@
+{
+ "schema": 1,
+ "slug": "monza",
+ "display_name": "Autodromo Nazionale Monza",
+ "built": "2026-10-21",
+ "sources": {
+  "osm": "OpenStreetMap contributors (ODbL)",
+  "wikipedia": "Monza Circuit",
+  "lmu_track_db": true,
+  "recordings": []
+ },
+ "official": {
+  "title": "Monza Circuit",
+  "turns": 11,
+  "length_m": 5793
+ },
+ "layouts": [
+  {
+   "label": "Main circuit",
+   "length_m": 5802,
+   "turning_direction": "clockwise",
+   "direction_from_osm": true,
+   "status": "osm_only",
+   "alignment": null,
+   "official": {
+    "turns": 11,
+    "length_m": 5793
+   },
+   "corners": [
+    {
+     "apex_m": 515.0,
+     "start_m": 489.0,
+     "end_m": 548.0,
+     "radius_m": 29,
+     "heading_deg": 56,
+     "direction": "left",
+     "kind": "corner",
+     "osm_name": "Curva Vialone",
+     "name": "Curva Vialone",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 1,
+     "display": "Curva Vialone"
+    },
+    {
+     "apex_m": 585.0,
+     "start_m": 551.0,
+     "end_m": 611.0,
+     "radius_m": 86,
+     "heading_deg": 26,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "Variante Ascari",
+     "name": "Variante Ascari",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 2,
+     "complex": "Variante Ascari",
+     "numbers": [],
+     "display": "Variante Ascari"
+    },
+    {
+     "apex_m": 649.0,
+     "start_m": 611.0,
+     "end_m": 673.0,
+     "radius_m": 68,
+     "heading_deg": 36,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "Variante Ascari",
+     "name": "Variante Ascari",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 3,
+     "complex": "Variante Ascari",
+     "numbers": [],
+     "display": "Variante Ascari"
+    },
+    {
+     "apex_m": 700.0,
+     "start_m": 675.0,
+     "end_m": 867.0,
+     "radius_m": 41,
+     "heading_deg": 48,
+     "direction": "left",
+     "kind": "corner",
+     "osm_name": "Variante Ascari",
+     "name": "Variante Ascari",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 4,
+     "complex": "Variante Ascari",
+     "numbers": [],
+     "display": "Variante Ascari"
+    },
+    {
+     "apex_m": 1721.0,
+     "start_m": 1670.0,
+     "end_m": 2337.0,
+     "radius_m": 56,
+     "heading_deg": 176,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "Curva Alboreto",
+     "name": "Curva Alboreto",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 5,
+     "display": "Curva Alboreto"
+    },
+    {
+     "apex_m": 3291.0,
+     "start_m": 3064.0,
+     "end_m": 3306.0,
+     "radius_m": 15,
+     "heading_deg": 96,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 6,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 3327.0,
+     "start_m": 3307.0,
+     "end_m": 3362.0,
+     "radius_m": 15,
+     "heading_deg": 115,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 7,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 3875.0,
+     "start_m": 3365.0,
+     "end_m": 4254.0,
+     "radius_m": 273,
+     "heading_deg": 103,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "Curva Biassono",
+     "name": "Curva Biassono",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 8,
+     "display": "Curva Biassono"
+    },
+    {
+     "apex_m": 4515.0,
+     "start_m": 4385.0,
+     "end_m": 4530.0,
+     "radius_m": 20,
+     "heading_deg": 73,
+     "direction": "left",
+     "kind": "corner",
+     "osm_name": "Variante della Roggia",
+     "name": "Variante della Roggia",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 9,
+     "complex": "Variante della Roggia",
+     "numbers": [],
+     "display": "Variante della Roggia"
+    },
+    {
+     "apex_m": 4551.0,
+     "start_m": 4532.0,
+     "end_m": 4587.0,
+     "radius_m": 25,
+     "heading_deg": 68,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "Variante della Roggia",
+     "name": "Variante della Roggia",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 10,
+     "complex": "Variante della Roggia",
+     "numbers": [],
+     "display": "Variante della Roggia"
+    },
+    {
+     "apex_m": 4907.0,
+     "start_m": 4742.0,
+     "end_m": 4941.0,
+     "radius_m": 52,
+     "heading_deg": 71,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "Lesmo 1",
+     "name": "Lesmo 1",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 11,
+     "complex": "Lesmo 1",
+     "numbers": [],
+     "display": "Lesmo 1"
+    },
+    {
+     "apex_m": 4964.0,
+     "start_m": 4941.0,
+     "end_m": 4992.0,
+     "radius_m": 52,
+     "heading_deg": 34,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "Lesmo 1",
+     "name": "Lesmo 1",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 12,
+     "complex": "Lesmo 1",
+     "numbers": [],
+     "display": "Lesmo 1"
+    },
+    {
+     "apex_m": 5245.0,
+     "start_m": 5126.0,
+     "end_m": 5418.0,
+     "radius_m": 29,
+     "heading_deg": 68,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "Lesmo 2",
+     "name": "Lesmo 2",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 13,
+     "display": "Lesmo 2"
+    },
+    {
+     "apex_m": 5664.0,
+     "start_m": 5605.0,
+     "end_m": 5741.8,
+     "radius_m": 588,
+     "heading_deg": 9,
+     "direction": "left",
+     "kind": "kink",
+     "osm_name": "Curva del Serraglio",
+     "name": "Curva del Serraglio",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 14,
+     "display": "Curva del Serraglio"
+    }
+   ],
+   "straights": [
+    {
+     "name": "Rettifilo di partenza",
+     "start_m": 2353.9,
+     "end_m": 3277.9
+    },
+    {
+     "name": "Variante del Rettifilo",
+     "start_m": 3277.9,
+     "end_m": 3356.1
+    }
+   ],
+   "complexes": [
+    {
+     "name": "Variante Ascari",
+     "parts": [
+      2,
+      3,
+      4
+     ],
+     "numbers": []
+    },
+    {
+     "name": "Variante della Roggia",
+     "parts": [
+      9,
+      10
+     ],
+     "numbers": []
+    },
+    {
+     "name": "Lesmo 1",
+     "parts": [
+      11,
+      12
+     ],
+     "numbers": []
+    }
+   ]
+  }
+ ]
+}

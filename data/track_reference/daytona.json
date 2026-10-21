@@ -1,0 +1,193 @@
+{
+ "schema": 1,
+ "slug": "daytona",
+ "display_name": "Daytona International Speedway",
+ "built": "2026-10-21",
+ "sources": {
+  "osm": "OpenStreetMap contributors (ODbL)",
+  "wikipedia": "Daytona International Speedway",
+  "lmu_track_db": true,
+  "recordings": []
+ },
+ "official": {
+  "title": "Daytona International Speedway",
+  "turns": 4,
+  "length_m": 4023
+ },
+ "layouts": [
+  {
+   "label": "Main circuit",
+   "length_m": 4022,
+   "turning_direction": "counterclockwise",
+   "direction_from_osm": true,
+   "status": "osm_only",
+   "alignment": null,
+   "official": {
+    "turns": 4,
+    "length_m": 4023
+   },
+   "corners": [
+    {
+     "apex_m": 860.0,
+     "start_m": 150.0,
+     "end_m": 1191.0,
+     "radius_m": 269,
+     "heading_deg": 159,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 1,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 1709.0,
+     "start_m": 1463.0,
+     "end_m": 2021.0,
+     "radius_m": 400,
+     "heading_deg": 41,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 2,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 2635.0,
+     "start_m": 2316.0,
+     "end_m": 3411.0,
+     "radius_m": 263,
+     "heading_deg": 158,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 3,
+     "display": "Unnamed corner"
+    }
+   ],
+   "straights": [],
+   "complexes": []
+  },
+  {
+   "label": "Main circuit",
+   "length_m": 4061,
+   "turning_direction": "counterclockwise",
+   "direction_from_osm": true,
+   "status": "osm_only",
+   "alignment": null,
+   "official": {
+    "turns": 4,
+    "length_m": 4023
+   },
+   "corners": [
+    {
+     "apex_m": 305.0,
+     "start_m": 97.0,
+     "end_m": 623.0,
+     "radius_m": 421,
+     "heading_deg": 42,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 1,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 1664.0,
+     "start_m": 943.0,
+     "end_m": 1905.0,
+     "radius_m": 279,
+     "heading_deg": 158,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 2,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 2455.0,
+     "start_m": 2198.0,
+     "end_m": 2494.0,
+     "radius_m": 186,
+     "heading_deg": 51,
+     "direction": "left",
+     "kind": "corner",
+     "osm_name": "Le Mans Chicane",
+     "name": "Le Mans Chicane",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 3,
+     "complex": "Le Mans Chicane",
+     "numbers": [],
+     "display": "Le Mans Chicane"
+    },
+    {
+     "apex_m": 2589.0,
+     "start_m": 2497.0,
+     "end_m": 2629.0,
+     "radius_m": 63,
+     "heading_deg": 80,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "Le Mans Chicane",
+     "name": "Le Mans Chicane",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 4,
+     "complex": "Le Mans Chicane",
+     "numbers": [],
+     "display": "Le Mans Chicane"
+    },
+    {
+     "apex_m": 2664.0,
+     "start_m": 2632.0,
+     "end_m": 2724.0,
+     "radius_m": 82,
+     "heading_deg": 35,
+     "direction": "left",
+     "kind": "corner",
+     "osm_name": "Le Mans Chicane",
+     "name": "Le Mans Chicane",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 5,
+     "complex": "Le Mans Chicane",
+     "numbers": [],
+     "display": "Le Mans Chicane"
+    },
+    {
+     "apex_m": 3568.0,
+     "start_m": 2780.0,
+     "end_m": 3790.0,
+     "radius_m": 270,
+     "heading_deg": 159,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 6,
+     "display": "Unnamed corner"
+    }
+   ],
+   "straights": [],
+   "complexes": [
+    {
+     "name": "Le Mans Chicane",
+     "parts": [
+      3,
+      4,
+      5
+     ],
+     "numbers": []
+    }
+   ]
+  }
+ ]
+}

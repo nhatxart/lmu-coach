@@ -9,6 +9,8 @@ The first run downloads the packages, and later runs use uv's cache.
 | `INGEST_SESSIONS.ps1` | grip profiles (only with `--save`) | Folds many sessions into the per-car grip profiles at once |
 | `VALIDATE_TIRE_MODEL.ps1` | nothing | Checks how accurate one car's tyre model is and prints a scorecard row |
 | `LIST_LAPS.ps1` | nothing | Shows each file's laps as the backend sees them |
+| `DETECT_TRACK_CORNERS.ps1` | corner maps (only with `--save`) | Finds each track's corners from curvature and compares them with the official turn count |
+| `BUILD_TRACK_REFERENCE.ps1` | `data/track_reference/*.json` | Builds each track's reference (corners, complexes, names) from OpenStreetMap + LMU names + your laps; `--fetch` downloads OSM once for a new track |
 | `CHECK_TIRE_FORCES.ps1` | nothing | Checks whether a recording has usable tyre-force channels |
 | `COMPARE_LOAD_SOURCES.ps1` | nothing | Pilot: does Susp Force give the same grip numbers as the game's Tire Load? (needs a car that has both) |
 

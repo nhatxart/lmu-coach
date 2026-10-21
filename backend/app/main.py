@@ -274,7 +274,8 @@ async def analyze(ref: LapRef):
     grip_report = build_grip_report(lap, car_setup_json=get_car_setup_json(path))
     annotate_report_with_corners(
         grip_report, lap.track_name,
-        lap.meta.get("TrackLayout", lap.meta.get("Layout", "")))
+        lap.meta.get("TrackLayout", lap.meta.get("Layout", "")),
+        lap_length_m=float(np.nanmax(lap.channels["Lap Dist"])) if "Lap Dist" in lap.channels else None)
 
     # Grip utilization / cornering efficiency (tire_model.py) needs to be
     # scored against the model as it existed BEFORE this lap's own samples

@@ -44,6 +44,10 @@ CONTINUOUS_CHANNELS = [
     "Path Lateral",
     "Gear",  # not in channelsList but present as a plain table; handled defensively
     "Yaw Accel",  # rad/s^2, recorder_hf only - tire model's steady-state filter
+    # rad/s, recorder files only. vehicle_dynamics.compute_slip_trace and
+    # corner_features already prefer it when present, but it was never loaded,
+    # so both silently fell back to the lateral-G/speed estimate.
+    "Yaw Rate",
 ]
 
 # Per-wheel channels: value1..value4 map to FL, FR, RL, RR in LMU's convention.

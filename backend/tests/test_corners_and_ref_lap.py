@@ -29,7 +29,9 @@ def test_locate_near_and_between():
     assert locate_corner(100, []) is None
 
 
-def test_annotate_events_and_unknown_track():
+def test_annotate_events_and_unknown_track(monkeypatch):
+    # this test is about the track_db fallback: ignore any built track reference
+    monkeypatch.setattr("app.track_reference.load_reference", lambda name, length=None: None)
     report = {
         "abs_events": [{"lap_dist_start_m": 770.0, "lap_dist_end_m": 790.0}],
         "tc_events": [{"lap_dist_start_m": 900.0, "lap_dist_end_m": 1300.0}],

@@ -1,0 +1,352 @@
+{
+ "schema": 1,
+ "slug": "fuji",
+ "display_name": "Fuji Speedway",
+ "built": "2026-10-21",
+ "sources": {
+  "osm": "OpenStreetMap contributors (ODbL)",
+  "wikipedia": "Fuji Speedway",
+  "lmu_track_db": true,
+  "recordings": [
+   "Fuji Speedway-Team WRT 2026 _69_LP-2026-10-14T03_43_22Z.duckdb",
+   "Fuji Speedway-The Bend Manthey 2026 _92_LM-2026-10-19T22_49_27Z.duckdb",
+   "Fuji Speedway-Team WRT 2026 _69_LM-2026-10-19T23_18_37Z.duckdb",
+   "Fuji Speedway-Team WRT 2026 _69_LP-2026-10-15T03_10_17Z.duckdb",
+   "Fuji Speedway-The Bend Manthey 2026 _92_LM-2026-10-19T22_48_08Z.duckdb",
+   "Fuji Speedway-Akkodis ASP Team 2026 _78_WEC-L0-2026-09-24T03_00_22Z.duckdb",
+   "Fuji Speedway-Akkodis ASP Team 2026 _78_WEC-L8-2026-09-24T03_15_29Z.duckdb",
+   "Fuji Speedway-Akkodis ASP Team 2026 _78_WEC-L13-2026-09-24T03_24_34Z.duckdb",
+   "Fuji Speedway-Akkodis ASP Team 2026 _78_WEC-L0-2026-09-21T22_00_55Z.duckdb",
+   "Fuji Speedway-Akkodis ASP Team 2026 _78_WEC-L11-2026-09-24T03_21_43Z.duckdb"
+  ]
+ },
+ "official": {
+  "title": "Fuji Speedway",
+  "turns": 16,
+  "length_m": 4563
+ },
+ "layouts": [
+  {
+   "label": "Main circuit",
+   "length_m": 4574,
+   "turning_direction": "clockwise",
+   "direction_from_osm": true,
+   "status": "verified",
+   "alignment": {
+    "laps_used": 40,
+    "ref_corners": 14,
+    "detected": 12,
+    "matched_pairs": 11,
+    "start_finish_ref_m": 210.4,
+    "lap_scale": 1.0134,
+    "median_position_error_m": 12.1,
+    "mirror": true,
+    "direction": "osm",
+    "alignment_cost": 7.36
+   },
+   "official": {
+    "turns": 16,
+    "length_m": 4563
+   },
+   "corners": [
+    {
+     "apex_m": 988.0,
+     "start_m": 919.0,
+     "end_m": 1308.0,
+     "radius_m": 24,
+     "heading_deg": 185,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 758.0,
+     "lmu_start_m": 680.0,
+     "lmu_end_m": 1054.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "TGR Corner",
+     "name_source": "lmu",
+     "numbers": [
+      1
+     ],
+     "number_source": "lmu",
+     "order": 1,
+     "display": "TGR Corner (1)"
+    },
+    {
+     "apex_m": 1548.0,
+     "start_m": 1351.0,
+     "end_m": 1611.0,
+     "radius_m": 39,
+     "heading_deg": 72,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 1303.5,
+     "lmu_start_m": 1168.0,
+     "lmu_end_m": 1411.5,
+     "demand": "braking",
+     "matched": true,
+     "name": "Coca-Cola Corner",
+     "name_source": "lmu",
+     "numbers": [
+      3
+     ],
+     "number_source": "lmu",
+     "order": 2,
+     "display": "Coca-Cola Corner (3)"
+    },
+    {
+     "apex_m": 1866.0,
+     "start_m": 1623.0,
+     "end_m": 1932.0,
+     "radius_m": 110,
+     "heading_deg": 102,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 1728.5,
+     "lmu_start_m": 1431.5,
+     "lmu_end_m": 1886.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "100R",
+     "name_source": "lmu",
+     "numbers": [
+      4,
+      5
+     ],
+     "number_source": "lmu",
+     "order": 3,
+     "display": "100R (4, 5)"
+    },
+    {
+     "apex_m": 2018.0,
+     "start_m": 1932.0,
+     "end_m": 2123.0,
+     "radius_m": 90,
+     "heading_deg": 75,
+     "direction": "right",
+     "kind": "corner",
+     "matched": false,
+     "lmu_apex_m": 1841.5,
+     "order": 4,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 2238.0,
+     "start_m": 2135.0,
+     "end_m": 2307.0,
+     "radius_m": 27,
+     "heading_deg": 128,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 2005.0,
+     "lmu_start_m": 1905.0,
+     "lmu_end_m": 2181.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Hairpin Corner",
+     "name_source": "lmu",
+     "numbers": [
+      6
+     ],
+     "number_source": "lmu",
+     "order": 5,
+     "display": "Hairpin Corner (6)"
+    },
+    {
+     "apex_m": 2342.0,
+     "start_m": 2307.0,
+     "end_m": 2436.0,
+     "radius_m": 165,
+     "heading_deg": 30,
+     "direction": "left",
+     "kind": "corner",
+     "matched": false,
+     "lmu_apex_m": 2118.7,
+     "order": 6,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 2517.0,
+     "start_m": 2450.0,
+     "end_m": 2798.0,
+     "radius_m": 250,
+     "heading_deg": 51,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 2310.0,
+     "lmu_start_m": 2204.0,
+     "lmu_end_m": 2685.5,
+     "demand": "braking",
+     "matched": true,
+     "name": "300R",
+     "name_source": "lmu",
+     "numbers": [
+      7,
+      8
+     ],
+     "number_source": "lmu",
+     "order": 7,
+     "display": "300R (7, 8)"
+    },
+    {
+     "apex_m": 3080.0,
+     "start_m": 2861.0,
+     "end_m": 3104.0,
+     "radius_m": 17,
+     "heading_deg": 136,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 2831.0,
+     "lmu_start_m": 2764.0,
+     "lmu_end_m": 2864.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Dunlop Chicane",
+     "name_source": "lmu",
+     "numbers": [
+      9,
+      10
+     ],
+     "number_source": "lmu",
+     "order": 8,
+     "complex": "Dunlop Chicane",
+     "display": "Dunlop Chicane (9, 10)"
+    },
+    {
+     "apex_m": 3136.0,
+     "start_m": 3106.0,
+     "end_m": 3185.0,
+     "radius_m": 26,
+     "heading_deg": 99,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 2901.5,
+     "lmu_start_m": 2866.0,
+     "lmu_end_m": 2948.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Dunlop Chicane",
+     "name_source": "lmu",
+     "numbers": [
+      9,
+      10
+     ],
+     "number_source": "lmu",
+     "order": 9,
+     "complex": "Dunlop Chicane",
+     "display": "Dunlop Chicane (9, 10)"
+    },
+    {
+     "apex_m": 3216.0,
+     "start_m": 3187.0,
+     "end_m": 3308.0,
+     "radius_m": 69,
+     "heading_deg": 52,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 2970.0,
+     "lmu_start_m": 2950.0,
+     "lmu_end_m": 3024.5,
+     "demand": "braking",
+     "matched": true,
+     "numbers": [
+      11
+     ],
+     "number_source": "lmu",
+     "order": 10,
+     "display": "Turn 11"
+    },
+    {
+     "apex_m": 3367.0,
+     "start_m": 3308.0,
+     "end_m": 3453.0,
+     "radius_m": 37,
+     "heading_deg": 116,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 3123.0,
+     "lmu_start_m": 3038.0,
+     "lmu_end_m": 3208.0,
+     "demand": "braking",
+     "matched": true,
+     "numbers": [
+      12
+     ],
+     "number_source": "lmu",
+     "order": 11,
+     "display": "Turn 12"
+    },
+    {
+     "apex_m": 3560.0,
+     "start_m": 3456.0,
+     "end_m": 3619.0,
+     "radius_m": 76,
+     "heading_deg": 95,
+     "direction": "left",
+     "kind": "corner",
+     "matched": false,
+     "lmu_apex_m": 3296.1,
+     "order": 12,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 3663.0,
+     "start_m": 3619.0,
+     "end_m": 3744.0,
+     "radius_m": 22,
+     "heading_deg": 114,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 3388.5,
+     "lmu_start_m": 3242.5,
+     "lmu_end_m": 3459.5,
+     "demand": "braking",
+     "matched": true,
+     "name": "Sector 3 Climb",
+     "name_source": "lmu",
+     "numbers": [
+      13
+     ],
+     "number_source": "lmu",
+     "order": 13,
+     "display": "Sector 3 Climb (13)"
+    },
+    {
+     "apex_m": 3958.0,
+     "start_m": 3749.0,
+     "end_m": 3992.0,
+     "radius_m": 26,
+     "heading_deg": 190,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 3678.0,
+     "lmu_start_m": 3569.0,
+     "lmu_end_m": 3791.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Panasonic Corner",
+     "name_source": "lmu",
+     "numbers": [
+      16
+     ],
+     "number_source": "lmu",
+     "order": 14,
+     "display": "Panasonic Corner (16)"
+    }
+   ],
+   "straights": [],
+   "complexes": [
+    {
+     "name": "Dunlop Chicane",
+     "parts": [
+      8,
+      9
+     ],
+     "numbers": [
+      9,
+      10
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,1416 @@
+{
+ "schema": 1,
+ "slug": "barcelona",
+ "display_name": "Circuit de Barcelona",
+ "built": "2026-10-21",
+ "sources": {
+  "osm": "OpenStreetMap contributors (ODbL)",
+  "wikipedia": "Circuit de Barcelona-Catalunya",
+  "lmu_track_db": true,
+  "recordings": [
+   "Circuit de Barcelona-Manthey DK Engineering 2026 _91_LM-2026-10-18T03_03_57Z.duckdb"
+  ]
+ },
+ "official": {
+  "title": "Circuit de Barcelona-Catalunya",
+  "turns": 14,
+  "length_m": 4657
+ },
+ "layouts": [
+  {
+   "label": "Main circuit",
+   "length_m": 4685,
+   "turning_direction": "clockwise",
+   "direction_from_osm": true,
+   "status": "provisional",
+   "alignment": {
+    "laps_used": 4,
+    "ref_corners": 16,
+    "detected": 15,
+    "matched_pairs": 13,
+    "start_finish_ref_m": 4623.1,
+    "lap_scale": 0.9933,
+    "median_position_error_m": 10.7,
+    "mirror": true,
+    "direction": "osm",
+    "alignment_cost": 11.62
+   },
+   "official": {
+    "turns": 14,
+    "length_m": 4657
+   },
+   "corners": [
+    {
+     "apex_m": 769.0,
+     "start_m": 679.0,
+     "end_m": 799.0,
+     "radius_m": 42,
+     "heading_deg": 97,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 825.0,
+     "lmu_start_m": 743.0,
+     "lmu_end_m": 888.5,
+     "demand": "braking",
+     "matched": true,
+     "name": "Elf Right",
+     "name_source": "lmu",
+     "numbers": [
+      1
+     ],
+     "number_source": "lmu",
+     "order": 1,
+     "display": "Elf Right (1)"
+    },
+    {
+     "apex_m": 850.0,
+     "start_m": 800.0,
+     "end_m": 914.0,
+     "radius_m": 48,
+     "heading_deg": 71,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 915.5,
+     "lmu_start_m": 891.5,
+     "lmu_end_m": 1024.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Elf Left",
+     "name_source": "lmu",
+     "numbers": [
+      2
+     ],
+     "number_source": "lmu",
+     "order": 2,
+     "display": "Elf Left (2)"
+    },
+    {
+     "apex_m": 1023.0,
+     "start_m": 924.0,
+     "end_m": 1382.0,
+     "radius_m": 88,
+     "heading_deg": 156,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 1171.0,
+     "lmu_start_m": 1027.5,
+     "lmu_end_m": 1506.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Curvone Long Right",
+     "name_source": "lmu",
+     "numbers": [
+      3
+     ],
+     "number_source": "lmu",
+     "order": 3,
+     "display": "Curvone Long Right (3)"
+    },
+    {
+     "apex_m": 1620.0,
+     "start_m": 1463.0,
+     "end_m": 1894.0,
+     "radius_m": 45,
+     "heading_deg": 189,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 1727.0,
+     "lmu_start_m": 1607.0,
+     "lmu_end_m": 1886.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Repsol Right",
+     "name_source": "lmu",
+     "numbers": [
+      4
+     ],
+     "number_source": "lmu",
+     "order": 4,
+     "display": "Repsol Right (4)"
+    },
+    {
+     "apex_m": 2037.0,
+     "start_m": 1906.0,
+     "end_m": 2106.0,
+     "radius_m": 31,
+     "heading_deg": 147,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 2113.5,
+     "lmu_start_m": 2005.5,
+     "lmu_end_m": 2224.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Seat Hairpin Downhill",
+     "name_source": "lmu",
+     "numbers": [
+      5
+     ],
+     "number_source": "lmu",
+     "order": 5,
+     "display": "Seat Hairpin Downhill (5)"
+    },
+    {
+     "apex_m": 2289.0,
+     "start_m": 2106.0,
+     "end_m": 2354.0,
+     "radius_m": 249,
+     "heading_deg": 32,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 2378.0,
+     "lmu_start_m": 2241.0,
+     "lmu_end_m": 2426.5,
+     "demand": "braking",
+     "matched": true,
+     "numbers": [
+      6
+     ],
+     "number_source": "lmu",
+     "order": 6,
+     "display": "Turn 6"
+    },
+    {
+     "apex_m": 2472.0,
+     "start_m": 2354.0,
+     "end_m": 2518.0,
+     "radius_m": 32,
+     "heading_deg": 92,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 2539.5,
+     "lmu_start_m": 2426.5,
+     "lmu_end_m": 2592.0,
+     "demand": "braking",
+     "matched": true,
+     "numbers": [
+      7
+     ],
+     "number_source": "lmu",
+     "order": 7,
+     "display": "Turn 7"
+    },
+    {
+     "apex_m": 2564.0,
+     "start_m": 2522.0,
+     "end_m": 2634.0,
+     "radius_m": 100,
+     "heading_deg": 35,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 2640.5,
+     "lmu_start_m": 2606.5,
+     "lmu_end_m": 2740.0,
+     "demand": "braking",
+     "matched": true,
+     "numbers": [
+      8
+     ],
+     "number_source": "lmu",
+     "order": 8,
+     "display": "Turn 8"
+    },
+    {
+     "apex_m": 2850.0,
+     "start_m": 2712.0,
+     "end_m": 2986.0,
+     "radius_m": 72,
+     "heading_deg": 90,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 2898.0,
+     "lmu_start_m": 2787.5,
+     "lmu_end_m": 3031.0,
+     "demand": "lift",
+     "matched": true,
+     "name": "Campsa",
+     "name_source": "lmu",
+     "numbers": [
+      9
+     ],
+     "number_source": "lmu",
+     "order": 9,
+     "display": "Campsa (9)"
+    },
+    {
+     "apex_m": 3413.0,
+     "start_m": 3273.0,
+     "end_m": 3597.0,
+     "radius_m": 31,
+     "heading_deg": 198,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 3506.5,
+     "lmu_start_m": 3391.5,
+     "lmu_end_m": 3629.5,
+     "demand": "braking",
+     "matched": true,
+     "name": "La Caixa Hairpin",
+     "name_source": "lmu",
+     "numbers": [
+      10
+     ],
+     "number_source": "lmu",
+     "order": 10,
+     "display": "La Caixa Hairpin (10)"
+    },
+    {
+     "apex_m": 3650.0,
+     "start_m": 3601.0,
+     "end_m": 3685.0,
+     "radius_m": 49,
+     "heading_deg": 67,
+     "direction": "right",
+     "kind": "corner",
+     "matched": false,
+     "lmu_apex_m": 3735.1,
+     "numbers": [
+      11
+     ],
+     "number_source": "lmu",
+     "order": 11,
+     "display": "Turn 11"
+    },
+    {
+     "apex_m": 3723.0,
+     "start_m": 3685.0,
+     "end_m": 3840.0,
+     "radius_m": 48,
+     "heading_deg": 120,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 3805.5,
+     "lmu_start_m": 3741.0,
+     "lmu_end_m": 3853.5,
+     "demand": "braking",
+     "matched": true,
+     "name": "Banc de Sabadell",
+     "name_source": "lmu",
+     "numbers": [
+      12
+     ],
+     "number_source": "lmu",
+     "order": 12,
+     "display": "Banc de Sabadell (12)"
+    },
+    {
+     "apex_m": 3964.0,
+     "start_m": 3900.0,
+     "end_m": 4008.0,
+     "radius_m": 34,
+     "heading_deg": 88,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 4063.5,
+     "lmu_start_m": 3962.5,
+     "lmu_end_m": 4207.0,
+     "demand": "lift",
+     "matched": true,
+     "name": "New Fast Right",
+     "name_source": "lmu",
+     "numbers": [
+      13
+     ],
+     "number_source": "lmu",
+     "order": 13,
+     "display": "New Fast Right (13)"
+    },
+    {
+     "apex_m": 4044.0,
+     "start_m": 4011.0,
+     "end_m": 4065.0,
+     "radius_m": 18,
+     "heading_deg": 90,
+     "direction": "left",
+     "kind": "corner",
+     "matched": false,
+     "lmu_apex_m": 4230.4,
+     "order": 14,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 4086.0,
+     "start_m": 4066.0,
+     "end_m": 4110.0,
+     "radius_m": 17,
+     "heading_deg": 86,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "AZ",
+     "name": "Final Right Sweep",
+     "name_source": "lmu",
+     "lmu_apex_m": 4318.0,
+     "lmu_start_m": 4236.0,
+     "lmu_end_m": 4497.0,
+     "demand": "braking",
+     "matched": true,
+     "aliases": [
+      "AZ"
+     ],
+     "numbers": [
+      14
+     ],
+     "number_source": "lmu",
+     "order": 15,
+     "display": "Final Right Sweep (14)"
+    },
+    {
+     "apex_m": 4308.0,
+     "start_m": 4171.0,
+     "end_m": 4371.0,
+     "radius_m": 62,
+     "heading_deg": 91,
+     "direction": "right",
+     "kind": "corner",
+     "matched": false,
+     "lmu_apex_m": 4541.5,
+     "order": 16,
+     "display": "Unnamed corner"
+    }
+   ],
+   "straights": [],
+   "complexes": []
+  },
+  {
+   "label": "Main circuit",
+   "length_m": 4685,
+   "turning_direction": "clockwise",
+   "direction_from_osm": true,
+   "status": "provisional",
+   "alignment": {
+    "laps_used": 4,
+    "ref_corners": 17,
+    "detected": 15,
+    "matched_pairs": 13,
+    "start_finish_ref_m": 4422.0,
+    "lap_scale": 0.995,
+    "median_position_error_m": 11.3,
+    "mirror": true,
+    "direction": "osm",
+    "alignment_cost": 10.9
+   },
+   "official": {
+    "turns": 14,
+    "length_m": 4657
+   },
+   "corners": [
+    {
+     "apex_m": 581.0,
+     "start_m": 483.0,
+     "end_m": 608.0,
+     "radius_m": 36,
+     "heading_deg": 96,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 825.0,
+     "lmu_start_m": 743.0,
+     "lmu_end_m": 888.5,
+     "demand": "braking",
+     "matched": true,
+     "name": "Elf Right",
+     "name_source": "lmu",
+     "numbers": [
+      1
+     ],
+     "number_source": "lmu",
+     "order": 1,
+     "display": "Elf Right (1)"
+    },
+    {
+     "apex_m": 635.0,
+     "start_m": 610.0,
+     "end_m": 734.0,
+     "radius_m": 54,
+     "heading_deg": 77,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 915.5,
+     "lmu_start_m": 891.5,
+     "lmu_end_m": 1024.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Elf Left",
+     "name_source": "lmu",
+     "numbers": [
+      2
+     ],
+     "number_source": "lmu",
+     "order": 2,
+     "display": "Elf Left (2)"
+    },
+    {
+     "apex_m": 901.0,
+     "start_m": 740.0,
+     "end_m": 1185.0,
+     "radius_m": 101,
+     "heading_deg": 162,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 1171.0,
+     "lmu_start_m": 1027.5,
+     "lmu_end_m": 1506.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Curvone Long Right",
+     "name_source": "lmu",
+     "numbers": [
+      3
+     ],
+     "number_source": "lmu",
+     "order": 3,
+     "display": "Curvone Long Right (3)"
+    },
+    {
+     "apex_m": 1444.0,
+     "start_m": 1280.0,
+     "end_m": 1699.0,
+     "radius_m": 44,
+     "heading_deg": 192,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 1727.0,
+     "lmu_start_m": 1607.0,
+     "lmu_end_m": 1886.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Repsol Right",
+     "name_source": "lmu",
+     "numbers": [
+      4
+     ],
+     "number_source": "lmu",
+     "order": 4,
+     "display": "Repsol Right (4)"
+    },
+    {
+     "apex_m": 1855.0,
+     "start_m": 1712.0,
+     "end_m": 1912.0,
+     "radius_m": 27,
+     "heading_deg": 151,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 2113.5,
+     "lmu_start_m": 2005.5,
+     "lmu_end_m": 2224.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Seat Hairpin Downhill",
+     "name_source": "lmu",
+     "numbers": [
+      5
+     ],
+     "number_source": "lmu",
+     "order": 5,
+     "display": "Seat Hairpin Downhill (5)"
+    },
+    {
+     "apex_m": 2072.0,
+     "start_m": 1957.0,
+     "end_m": 2240.0,
+     "radius_m": 262,
+     "heading_deg": 43,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 2378.0,
+     "lmu_start_m": 2241.0,
+     "lmu_end_m": 2426.5,
+     "demand": "braking",
+     "matched": true,
+     "numbers": [
+      6
+     ],
+     "number_source": "lmu",
+     "order": 6,
+     "display": "Turn 6"
+    },
+    {
+     "apex_m": 2275.0,
+     "start_m": 2240.0,
+     "end_m": 2331.0,
+     "radius_m": 32,
+     "heading_deg": 85,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 2539.5,
+     "lmu_start_m": 2426.5,
+     "lmu_end_m": 2592.0,
+     "demand": "braking",
+     "matched": true,
+     "numbers": [
+      7
+     ],
+     "number_source": "lmu",
+     "order": 7,
+     "display": "Turn 7"
+    },
+    {
+     "apex_m": 2361.0,
+     "start_m": 2333.0,
+     "end_m": 2406.0,
+     "radius_m": 61,
+     "heading_deg": 36,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 2640.5,
+     "lmu_start_m": 2606.5,
+     "lmu_end_m": 2740.0,
+     "demand": "braking",
+     "matched": true,
+     "numbers": [
+      8
+     ],
+     "number_source": "lmu",
+     "order": 8,
+     "display": "Turn 8"
+    },
+    {
+     "apex_m": 2623.0,
+     "start_m": 2556.0,
+     "end_m": 2817.0,
+     "radius_m": 69,
+     "heading_deg": 88,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 2898.0,
+     "lmu_start_m": 2787.5,
+     "lmu_end_m": 3031.0,
+     "demand": "lift",
+     "matched": true,
+     "name": "Campsa",
+     "name_source": "lmu",
+     "numbers": [
+      9
+     ],
+     "number_source": "lmu",
+     "order": 9,
+     "display": "Campsa (9)"
+    },
+    {
+     "apex_m": 3220.0,
+     "start_m": 3091.0,
+     "end_m": 3410.0,
+     "radius_m": 29,
+     "heading_deg": 194,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 3506.5,
+     "lmu_start_m": 3391.5,
+     "lmu_end_m": 3629.5,
+     "demand": "braking",
+     "matched": true,
+     "name": "La Caixa Hairpin",
+     "name_source": "lmu",
+     "numbers": [
+      10
+     ],
+     "number_source": "lmu",
+     "order": 10,
+     "display": "La Caixa Hairpin (10)"
+    },
+    {
+     "apex_m": 3469.0,
+     "start_m": 3414.0,
+     "end_m": 3506.0,
+     "radius_m": 45,
+     "heading_deg": 74,
+     "direction": "right",
+     "kind": "corner",
+     "matched": false,
+     "lmu_apex_m": 3735.6,
+     "numbers": [
+      11
+     ],
+     "number_source": "lmu",
+     "order": 11,
+     "display": "Turn 11"
+    },
+    {
+     "apex_m": 3545.0,
+     "start_m": 3506.0,
+     "end_m": 3650.0,
+     "radius_m": 48,
+     "heading_deg": 107,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 3805.5,
+     "lmu_start_m": 3741.0,
+     "lmu_end_m": 3853.5,
+     "demand": "braking",
+     "matched": true,
+     "name": "Banc de Sabadell",
+     "name_source": "lmu",
+     "numbers": [
+      12
+     ],
+     "number_source": "lmu",
+     "order": 12,
+     "display": "Banc de Sabadell (12)"
+    },
+    {
+     "apex_m": 3772.0,
+     "start_m": 3710.0,
+     "end_m": 3839.0,
+     "radius_m": 35,
+     "heading_deg": 88,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 4063.5,
+     "lmu_start_m": 3962.5,
+     "lmu_end_m": 4207.0,
+     "demand": "lift",
+     "matched": true,
+     "name": "New Fast Right",
+     "name_source": "lmu",
+     "numbers": [
+      13
+     ],
+     "number_source": "lmu",
+     "order": 13,
+     "display": "New Fast Right (13)"
+    },
+    {
+     "apex_m": 3908.0,
+     "start_m": 3843.0,
+     "end_m": 3927.0,
+     "radius_m": 22,
+     "heading_deg": 92,
+     "direction": "left",
+     "kind": "corner",
+     "matched": false,
+     "lmu_apex_m": 4260.2,
+     "order": 14,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 3948.0,
+     "start_m": 3929.0,
+     "end_m": 3979.0,
+     "radius_m": 19,
+     "heading_deg": 85,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 4318.0,
+     "lmu_start_m": 4236.0,
+     "lmu_end_m": 4497.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Final Right Sweep",
+     "name_source": "lmu",
+     "numbers": [
+      14
+     ],
+     "number_source": "lmu",
+     "order": 15,
+     "display": "Final Right Sweep (14)"
+    },
+    {
+     "apex_m": 4049.0,
+     "start_m": 4016.0,
+     "end_m": 4084.0,
+     "radius_m": 75,
+     "heading_deg": 38,
+     "direction": "right",
+     "kind": "corner",
+     "matched": false,
+     "lmu_apex_m": 4419.5,
+     "order": 16,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 4134.0,
+     "start_m": 4084.0,
+     "end_m": 4179.0,
+     "radius_m": 66,
+     "heading_deg": 54,
+     "direction": "right",
+     "kind": "corner",
+     "matched": false,
+     "lmu_apex_m": 4504.9,
+     "order": 17,
+     "display": "Unnamed corner"
+    }
+   ],
+   "straights": [],
+   "complexes": []
+  },
+  {
+   "label": "Circuit de Barcelona-Catalunya",
+   "length_m": 4686,
+   "turning_direction": "clockwise",
+   "direction_from_osm": true,
+   "status": "provisional",
+   "alignment": {
+    "laps_used": 4,
+    "ref_corners": 16,
+    "detected": 15,
+    "matched_pairs": 13,
+    "start_finish_ref_m": 4591.5,
+    "lap_scale": 0.9942,
+    "median_position_error_m": 10.2,
+    "mirror": true,
+    "direction": "osm",
+    "alignment_cost": 10.24
+   },
+   "official": {
+    "turns": 14,
+    "length_m": 4657
+   },
+   "corners": [
+    {
+     "apex_m": 742.0,
+     "start_m": 649.0,
+     "end_m": 774.0,
+     "radius_m": 32,
+     "heading_deg": 94,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 825.0,
+     "lmu_start_m": 743.0,
+     "lmu_end_m": 888.5,
+     "demand": "braking",
+     "matched": true,
+     "name": "Elf Right",
+     "name_source": "lmu",
+     "numbers": [
+      1
+     ],
+     "number_source": "lmu",
+     "order": 1,
+     "display": "Elf Right (1)"
+    },
+    {
+     "apex_m": 806.0,
+     "start_m": 775.0,
+     "end_m": 902.0,
+     "radius_m": 60,
+     "heading_deg": 75,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 915.5,
+     "lmu_start_m": 891.5,
+     "lmu_end_m": 1024.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Elf Left",
+     "name_source": "lmu",
+     "numbers": [
+      2
+     ],
+     "number_source": "lmu",
+     "order": 2,
+     "display": "Elf Left (2)"
+    },
+    {
+     "apex_m": 1069.0,
+     "start_m": 908.0,
+     "end_m": 1353.0,
+     "radius_m": 101,
+     "heading_deg": 161,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 1171.0,
+     "lmu_start_m": 1027.5,
+     "lmu_end_m": 1506.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Curvone Long Right",
+     "name_source": "lmu",
+     "numbers": [
+      3
+     ],
+     "number_source": "lmu",
+     "order": 3,
+     "display": "Curvone Long Right (3)"
+    },
+    {
+     "apex_m": 1611.0,
+     "start_m": 1449.0,
+     "end_m": 1874.0,
+     "radius_m": 45,
+     "heading_deg": 192,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 1727.0,
+     "lmu_start_m": 1607.0,
+     "lmu_end_m": 1886.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Repsol Right",
+     "name_source": "lmu",
+     "numbers": [
+      4
+     ],
+     "number_source": "lmu",
+     "order": 4,
+     "display": "Repsol Right (4)"
+    },
+    {
+     "apex_m": 2023.0,
+     "start_m": 1886.0,
+     "end_m": 2079.0,
+     "radius_m": 28,
+     "heading_deg": 152,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 2113.5,
+     "lmu_start_m": 2005.5,
+     "lmu_end_m": 2224.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Seat Hairpin Downhill",
+     "name_source": "lmu",
+     "numbers": [
+      5
+     ],
+     "number_source": "lmu",
+     "order": 5,
+     "display": "Seat Hairpin Downhill (5)"
+    },
+    {
+     "apex_m": 2239.0,
+     "start_m": 2133.0,
+     "end_m": 2408.0,
+     "radius_m": 249,
+     "heading_deg": 43,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 2378.0,
+     "lmu_start_m": 2241.0,
+     "lmu_end_m": 2426.5,
+     "demand": "braking",
+     "matched": true,
+     "numbers": [
+      6
+     ],
+     "number_source": "lmu",
+     "order": 6,
+     "display": "Turn 6"
+    },
+    {
+     "apex_m": 2443.0,
+     "start_m": 2408.0,
+     "end_m": 2499.0,
+     "radius_m": 32,
+     "heading_deg": 85,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 2539.5,
+     "lmu_start_m": 2426.5,
+     "lmu_end_m": 2592.0,
+     "demand": "braking",
+     "matched": true,
+     "numbers": [
+      7
+     ],
+     "number_source": "lmu",
+     "order": 7,
+     "display": "Turn 7"
+    },
+    {
+     "apex_m": 2529.0,
+     "start_m": 2501.0,
+     "end_m": 2573.0,
+     "radius_m": 61,
+     "heading_deg": 36,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 2640.5,
+     "lmu_start_m": 2606.5,
+     "lmu_end_m": 2740.0,
+     "demand": "braking",
+     "matched": true,
+     "numbers": [
+      8
+     ],
+     "number_source": "lmu",
+     "order": 8,
+     "display": "Turn 8"
+    },
+    {
+     "apex_m": 2789.0,
+     "start_m": 2723.0,
+     "end_m": 2987.0,
+     "radius_m": 64,
+     "heading_deg": 89,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 2898.0,
+     "lmu_start_m": 2787.5,
+     "lmu_end_m": 3031.0,
+     "demand": "lift",
+     "matched": true,
+     "name": "Campsa",
+     "name_source": "lmu",
+     "numbers": [
+      9
+     ],
+     "number_source": "lmu",
+     "order": 9,
+     "display": "Campsa (9)"
+    },
+    {
+     "apex_m": 3385.0,
+     "start_m": 3262.0,
+     "end_m": 3577.0,
+     "radius_m": 28,
+     "heading_deg": 196,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 3506.5,
+     "lmu_start_m": 3391.5,
+     "lmu_end_m": 3629.5,
+     "demand": "braking",
+     "matched": true,
+     "name": "La Caixa Hairpin",
+     "name_source": "lmu",
+     "numbers": [
+      10
+     ],
+     "number_source": "lmu",
+     "order": 10,
+     "display": "La Caixa Hairpin (10)"
+    },
+    {
+     "apex_m": 3629.0,
+     "start_m": 3580.0,
+     "end_m": 3664.0,
+     "radius_m": 48,
+     "heading_deg": 68,
+     "direction": "right",
+     "kind": "corner",
+     "matched": false,
+     "lmu_apex_m": 3735.2,
+     "numbers": [
+      11
+     ],
+     "number_source": "lmu",
+     "order": 11,
+     "display": "Turn 11"
+    },
+    {
+     "apex_m": 3704.0,
+     "start_m": 3664.0,
+     "end_m": 3850.0,
+     "radius_m": 47,
+     "heading_deg": 122,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 3805.5,
+     "lmu_start_m": 3741.0,
+     "lmu_end_m": 3853.5,
+     "demand": "braking",
+     "matched": true,
+     "name": "Banc de Sabadell",
+     "name_source": "lmu",
+     "numbers": [
+      12
+     ],
+     "number_source": "lmu",
+     "order": 12,
+     "display": "Banc de Sabadell (12)"
+    },
+    {
+     "apex_m": 3940.0,
+     "start_m": 3919.0,
+     "end_m": 4015.0,
+     "radius_m": 19,
+     "heading_deg": 88,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 4063.5,
+     "lmu_start_m": 3962.5,
+     "lmu_end_m": 4207.0,
+     "demand": "lift",
+     "matched": true,
+     "name": "New Fast Right",
+     "name_source": "lmu",
+     "numbers": [
+      13
+     ],
+     "number_source": "lmu",
+     "order": 13,
+     "display": "New Fast Right (13)"
+    },
+    {
+     "apex_m": 4075.0,
+     "start_m": 4019.0,
+     "end_m": 4096.0,
+     "radius_m": 22,
+     "heading_deg": 89,
+     "direction": "left",
+     "kind": "corner",
+     "matched": false,
+     "lmu_apex_m": 4259.8,
+     "order": 14,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 4115.0,
+     "start_m": 4097.0,
+     "end_m": 4137.0,
+     "radius_m": 17,
+     "heading_deg": 80,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 4318.0,
+     "lmu_start_m": 4236.0,
+     "lmu_end_m": 4497.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Final Right Sweep",
+     "name_source": "lmu",
+     "numbers": [
+      14
+     ],
+     "number_source": "lmu",
+     "order": 15,
+     "display": "Final Right Sweep (14)"
+    },
+    {
+     "apex_m": 4295.0,
+     "start_m": 4169.0,
+     "end_m": 4356.0,
+     "radius_m": 61,
+     "heading_deg": 88,
+     "direction": "right",
+     "kind": "corner",
+     "matched": false,
+     "lmu_apex_m": 4499.0,
+     "order": 16,
+     "display": "Unnamed corner"
+    }
+   ],
+   "straights": [],
+   "complexes": []
+  },
+  {
+   "label": "Main circuit",
+   "length_m": 4671,
+   "turning_direction": "clockwise",
+   "direction_from_osm": true,
+   "status": "provisional",
+   "alignment": {
+    "laps_used": 4,
+    "ref_corners": 14,
+    "detected": 15,
+    "matched_pairs": 13,
+    "start_finish_ref_m": 4564.8,
+    "lap_scale": 1.0069,
+    "median_position_error_m": 18.6,
+    "mirror": true,
+    "direction": "osm",
+    "alignment_cost": 8.77
+   },
+   "official": {
+    "turns": 14,
+    "length_m": 4657
+   },
+   "corners": [
+    {
+     "apex_m": 755.0,
+     "start_m": 676.0,
+     "end_m": 795.0,
+     "radius_m": 38,
+     "heading_deg": 95,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 825.0,
+     "lmu_start_m": 743.0,
+     "lmu_end_m": 888.5,
+     "demand": "braking",
+     "matched": true,
+     "name": "Elf Right",
+     "name_source": "lmu",
+     "numbers": [
+      1
+     ],
+     "number_source": "lmu",
+     "order": 1,
+     "display": "Elf Right (1)"
+    },
+    {
+     "apex_m": 849.0,
+     "start_m": 797.0,
+     "end_m": 911.0,
+     "radius_m": 47,
+     "heading_deg": 70,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 915.5,
+     "lmu_start_m": 891.5,
+     "lmu_end_m": 1024.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Elf Left",
+     "name_source": "lmu",
+     "numbers": [
+      2
+     ],
+     "number_source": "lmu",
+     "order": 2,
+     "display": "Elf Left (2)"
+    },
+    {
+     "apex_m": 1021.0,
+     "start_m": 921.0,
+     "end_m": 1381.0,
+     "radius_m": 88,
+     "heading_deg": 157,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 1171.0,
+     "lmu_start_m": 1027.5,
+     "lmu_end_m": 1506.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Curvone Long Right",
+     "name_source": "lmu",
+     "numbers": [
+      3
+     ],
+     "number_source": "lmu",
+     "order": 3,
+     "display": "Curvone Long Right (3)"
+    },
+    {
+     "apex_m": 1618.0,
+     "start_m": 1461.0,
+     "end_m": 1892.0,
+     "radius_m": 44,
+     "heading_deg": 189,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 1727.0,
+     "lmu_start_m": 1607.0,
+     "lmu_end_m": 1886.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Repsol Right",
+     "name_source": "lmu",
+     "numbers": [
+      4
+     ],
+     "number_source": "lmu",
+     "order": 4,
+     "display": "Repsol Right (4)"
+    },
+    {
+     "apex_m": 2033.0,
+     "start_m": 1904.0,
+     "end_m": 2102.0,
+     "radius_m": 31,
+     "heading_deg": 148,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 2113.5,
+     "lmu_start_m": 2005.5,
+     "lmu_end_m": 2224.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Seat Hairpin Downhill",
+     "name_source": "lmu",
+     "numbers": [
+      5
+     ],
+     "number_source": "lmu",
+     "order": 5,
+     "display": "Seat Hairpin Downhill (5)"
+    },
+    {
+     "apex_m": 2287.0,
+     "start_m": 2106.0,
+     "end_m": 2352.0,
+     "radius_m": 238,
+     "heading_deg": 32,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 2378.0,
+     "lmu_start_m": 2241.0,
+     "lmu_end_m": 2426.5,
+     "demand": "braking",
+     "matched": true,
+     "numbers": [
+      6
+     ],
+     "number_source": "lmu",
+     "order": 6,
+     "display": "Turn 6"
+    },
+    {
+     "apex_m": 2470.0,
+     "start_m": 2352.0,
+     "end_m": 2513.0,
+     "radius_m": 35,
+     "heading_deg": 99,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 2539.5,
+     "lmu_start_m": 2426.5,
+     "lmu_end_m": 2592.0,
+     "demand": "braking",
+     "matched": true,
+     "numbers": [
+      7
+     ],
+     "number_source": "lmu",
+     "order": 7,
+     "display": "Turn 7"
+    },
+    {
+     "apex_m": 2534.0,
+     "start_m": 2514.0,
+     "end_m": 2628.0,
+     "radius_m": 76,
+     "heading_deg": 41,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 2640.5,
+     "lmu_start_m": 2606.5,
+     "lmu_end_m": 2740.0,
+     "demand": "braking",
+     "matched": true,
+     "numbers": [
+      8
+     ],
+     "number_source": "lmu",
+     "order": 8,
+     "display": "Turn 8"
+    },
+    {
+     "apex_m": 2797.0,
+     "start_m": 2705.0,
+     "end_m": 2963.0,
+     "radius_m": 78,
+     "heading_deg": 95,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 2898.0,
+     "lmu_start_m": 2787.5,
+     "lmu_end_m": 3031.0,
+     "demand": "lift",
+     "matched": true,
+     "name": "Campsa",
+     "name_source": "lmu",
+     "numbers": [
+      9
+     ],
+     "number_source": "lmu",
+     "order": 9,
+     "display": "Campsa (9)"
+    },
+    {
+     "apex_m": 3407.0,
+     "start_m": 3267.0,
+     "end_m": 3595.0,
+     "radius_m": 30,
+     "heading_deg": 197,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": 3506.5,
+     "lmu_start_m": 3391.5,
+     "lmu_end_m": 3629.5,
+     "demand": "braking",
+     "matched": true,
+     "name": "La Caixa Hairpin",
+     "name_source": "lmu",
+     "numbers": [
+      10
+     ],
+     "number_source": "lmu",
+     "order": 10,
+     "display": "La Caixa Hairpin (10)"
+    },
+    {
+     "apex_m": 3647.0,
+     "start_m": 3599.0,
+     "end_m": 3683.0,
+     "radius_m": 47,
+     "heading_deg": 68,
+     "direction": "right",
+     "kind": "corner",
+     "matched": false,
+     "lmu_apex_m": 3733.6,
+     "numbers": [
+      11
+     ],
+     "number_source": "lmu",
+     "order": 11,
+     "display": "Turn 11"
+    },
+    {
+     "apex_m": 3723.0,
+     "start_m": 3683.0,
+     "end_m": 3874.0,
+     "radius_m": 46,
+     "heading_deg": 121,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 3805.5,
+     "lmu_start_m": 3741.0,
+     "lmu_end_m": 3853.5,
+     "demand": "braking",
+     "matched": true,
+     "name": "Banc de Sabadell",
+     "name_source": "lmu",
+     "numbers": [
+      12
+     ],
+     "number_source": "lmu",
+     "order": 12,
+     "display": "Banc de Sabadell (12)"
+    },
+    {
+     "apex_m": 3964.0,
+     "start_m": 3943.0,
+     "end_m": 4074.0,
+     "radius_m": 42,
+     "heading_deg": 80,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "AZ",
+     "name": "New Fast Right",
+     "name_source": "lmu",
+     "lmu_apex_m": 4063.5,
+     "lmu_start_m": 3962.5,
+     "lmu_end_m": 4207.0,
+     "demand": "lift",
+     "matched": true,
+     "aliases": [
+      "AZ"
+     ],
+     "numbers": [
+      13
+     ],
+     "number_source": "lmu",
+     "order": 13,
+     "display": "New Fast Right (13)"
+    },
+    {
+     "apex_m": 4291.0,
+     "start_m": 4145.0,
+     "end_m": 4354.0,
+     "radius_m": 61,
+     "heading_deg": 91,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": 4318.0,
+     "lmu_start_m": 4236.0,
+     "lmu_end_m": 4497.0,
+     "demand": "braking",
+     "matched": true,
+     "name": "Final Right Sweep",
+     "name_source": "lmu",
+     "numbers": [
+      14
+     ],
+     "number_source": "lmu",
+     "order": 14,
+     "display": "Final Right Sweep (14)"
+    }
+   ],
+   "straights": [],
+   "complexes": []
+  }
+ ]
+}

@@ -1,0 +1,472 @@
+{
+ "schema": 1,
+ "slug": "silverstone",
+ "display_name": "Silverstone",
+ "built": "2026-10-21",
+ "sources": {
+  "osm": "OpenStreetMap contributors (ODbL)",
+  "wikipedia": "Silverstone Circuit",
+  "lmu_track_db": true,
+  "recordings": []
+ },
+ "official": {
+  "title": "Silverstone Circuit",
+  "turns": 18,
+  "length_m": 5891
+ },
+ "layouts": [
+  {
+   "label": "Club",
+   "length_m": 5888,
+   "turning_direction": "clockwise",
+   "direction_from_osm": true,
+   "status": "osm_only",
+   "alignment": null,
+   "official": {
+    "turns": 18,
+    "length_m": 5891
+   },
+   "corners": [
+    {
+     "apex_m": 300.0,
+     "start_m": 75.0,
+     "end_m": 355.0,
+     "radius_m": 67,
+     "heading_deg": 86,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "Stowe",
+     "name": "Stowe",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 1,
+     "complex": "Stowe",
+     "numbers": [],
+     "display": "Stowe"
+    },
+    {
+     "apex_m": 387.0,
+     "start_m": 355.0,
+     "end_m": 450.0,
+     "radius_m": 89,
+     "heading_deg": 43,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "Stowe",
+     "name": "Stowe",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 2,
+     "complex": "Stowe",
+     "numbers": [],
+     "display": "Stowe"
+    },
+    {
+     "apex_m": 489.0,
+     "start_m": 456.0,
+     "end_m": 562.0,
+     "radius_m": 202,
+     "heading_deg": 18,
+     "direction": "left",
+     "kind": "corner",
+     "osm_name": "Vale",
+     "name": "Vale",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 3,
+     "complex": "Vale",
+     "numbers": [],
+     "display": "Vale"
+    },
+    {
+     "apex_m": 788.0,
+     "start_m": 650.0,
+     "end_m": 819.0,
+     "radius_m": 19,
+     "heading_deg": 96,
+     "direction": "left",
+     "kind": "corner",
+     "osm_name": "Vale",
+     "name": "Vale",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 4,
+     "complex": "Vale",
+     "numbers": [],
+     "display": "Vale"
+    },
+    {
+     "apex_m": 849.0,
+     "start_m": 820.0,
+     "end_m": 935.0,
+     "radius_m": 27,
+     "heading_deg": 105,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 5,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 1039.0,
+     "start_m": 935.0,
+     "end_m": 1073.0,
+     "radius_m": 45,
+     "heading_deg": 70,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 6,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 1547.0,
+     "start_m": 1512.0,
+     "end_m": 1667.0,
+     "radius_m": 62,
+     "heading_deg": 66,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "Abbey",
+     "name": "Abbey",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 7,
+     "display": "Abbey"
+    },
+    {
+     "apex_m": 1787.0,
+     "start_m": 1677.0,
+     "end_m": 1895.0,
+     "radius_m": 119,
+     "heading_deg": 56,
+     "direction": "left",
+     "kind": "corner",
+     "osm_name": "Farm Curve",
+     "name": "Farm Curve",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 8,
+     "display": "Farm Curve"
+    },
+    {
+     "apex_m": 2051.0,
+     "start_m": 1909.0,
+     "end_m": 2122.0,
+     "radius_m": 26,
+     "heading_deg": 126,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "Village",
+     "name": "Village",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 9,
+     "display": "Village"
+    },
+    {
+     "apex_m": 2206.0,
+     "start_m": 2126.0,
+     "end_m": 2322.0,
+     "radius_m": 21,
+     "heading_deg": 162,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 10,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 2389.0,
+     "start_m": 2352.0,
+     "end_m": 2523.0,
+     "radius_m": 45,
+     "heading_deg": 58,
+     "direction": "left",
+     "kind": "corner",
+     "osm_name": "Aintree",
+     "name": "Aintree",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 11,
+     "display": "Aintree"
+    },
+    {
+     "apex_m": 3094.0,
+     "start_m": 2932.0,
+     "end_m": 3117.0,
+     "radius_m": 61,
+     "heading_deg": 52,
+     "direction": "left",
+     "kind": "corner",
+     "osm_name": "Brooklands",
+     "name": "Brooklands",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 12,
+     "complex": "Brooklands",
+     "numbers": [],
+     "display": "Brooklands"
+    },
+    {
+     "apex_m": 3168.0,
+     "start_m": 3117.0,
+     "end_m": 3219.0,
+     "radius_m": 50,
+     "heading_deg": 82,
+     "direction": "left",
+     "kind": "corner",
+     "osm_name": "Brooklands",
+     "name": "Brooklands",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 13,
+     "complex": "Brooklands",
+     "numbers": [],
+     "display": "Brooklands"
+    },
+    {
+     "apex_m": 3306.0,
+     "start_m": 3222.0,
+     "end_m": 3334.0,
+     "radius_m": 51,
+     "heading_deg": 96,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "Luffield",
+     "name": "Luffield",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 14,
+     "complex": "Luffield",
+     "numbers": [],
+     "display": "Luffield"
+    },
+    {
+     "apex_m": 3362.0,
+     "start_m": 3334.0,
+     "end_m": 3469.0,
+     "radius_m": 50,
+     "heading_deg": 112,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "Luffield",
+     "name": "Luffield",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 15,
+     "complex": "Luffield",
+     "numbers": [],
+     "display": "Luffield"
+    },
+    {
+     "apex_m": 3727.0,
+     "start_m": 3526.0,
+     "end_m": 3805.0,
+     "radius_m": 174,
+     "heading_deg": 57,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "Woodcote",
+     "name": "Woodcote",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 16,
+     "display": "Woodcote"
+    },
+    {
+     "apex_m": 4226.0,
+     "start_m": 3991.0,
+     "end_m": 4594.0,
+     "radius_m": 74,
+     "heading_deg": 93,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "Copse",
+     "name": "Copse",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 17,
+     "display": "Copse"
+    },
+    {
+     "apex_m": 4782.0,
+     "start_m": 4720.0,
+     "end_m": 4816.0,
+     "radius_m": 100,
+     "heading_deg": 30,
+     "direction": "left",
+     "kind": "corner",
+     "osm_name": "Maggotts",
+     "name": "Maggotts",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 18,
+     "complex": "Maggotts",
+     "numbers": [],
+     "display": "Maggotts"
+    },
+    {
+     "apex_m": 4873.0,
+     "start_m": 4819.0,
+     "end_m": 4925.0,
+     "radius_m": 57,
+     "heading_deg": 53,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "Maggotts",
+     "name": "Maggotts",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 19,
+     "complex": "Maggotts",
+     "numbers": [],
+     "display": "Maggotts"
+    },
+    {
+     "apex_m": 5041.0,
+     "start_m": 4938.0,
+     "end_m": 5092.0,
+     "radius_m": 64,
+     "heading_deg": 58,
+     "direction": "left",
+     "kind": "corner",
+     "osm_name": "Becketts",
+     "name": "Becketts",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 20,
+     "display": "Becketts"
+    },
+    {
+     "apex_m": 5149.0,
+     "start_m": 5096.0,
+     "end_m": 5279.0,
+     "radius_m": 61,
+     "heading_deg": 101,
+     "direction": "right",
+     "kind": "corner",
+     "osm_name": "Chapel Curve",
+     "name": "Chapel Curve",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 21,
+     "complex": "Chapel Curve",
+     "numbers": [],
+     "display": "Chapel Curve"
+    },
+    {
+     "apex_m": 5335.0,
+     "start_m": 5284.0,
+     "end_m": 5500.0,
+     "radius_m": 101,
+     "heading_deg": 36,
+     "direction": "left",
+     "kind": "corner",
+     "osm_name": "Chapel Curve",
+     "name": "Chapel Curve",
+     "name_source": "osm",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 22,
+     "complex": "Chapel Curve",
+     "numbers": [],
+     "display": "Chapel Curve"
+    }
+   ],
+   "straights": [
+    {
+     "name": "Hamilton Straight",
+     "start_m": 1076.4,
+     "end_m": 1515.5
+    },
+    {
+     "name": "Wellington Straight",
+     "start_m": 2430.3,
+     "end_m": 3053.6
+    },
+    {
+     "name": "National Pit Straight",
+     "start_m": 3816.2,
+     "end_m": 4166.8
+    },
+    {
+     "name": "Hangar Straight",
+     "start_m": 5380.8,
+     "end_m": 223.9
+    }
+   ],
+   "complexes": [
+    {
+     "name": "Stowe",
+     "parts": [
+      1,
+      2
+     ],
+     "numbers": []
+    },
+    {
+     "name": "Vale",
+     "parts": [
+      3,
+      4
+     ],
+     "numbers": []
+    },
+    {
+     "name": "Brooklands",
+     "parts": [
+      12,
+      13
+     ],
+     "numbers": []
+    },
+    {
+     "name": "Luffield",
+     "parts": [
+      14,
+      15
+     ],
+     "numbers": []
+    },
+    {
+     "name": "Maggotts",
+     "parts": [
+      18,
+      19
+     ],
+     "numbers": []
+    },
+    {
+     "name": "Chapel Curve",
+     "parts": [
+      21,
+      22
+     ],
+     "numbers": []
+    }
+   ]
+  }
+ ]
+}

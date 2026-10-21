@@ -1,0 +1,219 @@
+{
+ "schema": 1,
+ "slug": "bahrain",
+ "display_name": "Bahrain International Circuit",
+ "built": "2026-10-21",
+ "sources": {
+  "osm": "OpenStreetMap contributors (ODbL)",
+  "wikipedia": "Bahrain International Circuit",
+  "lmu_track_db": true,
+  "recordings": [
+   "Bahrain International Circuit-The Bend Manthey 2026 _92_WEC-L0-2026-09-19T20_18_35Z.duckdb"
+  ]
+ },
+ "official": {
+  "title": "Bahrain International Circuit",
+  "turns": 15,
+  "length_m": 5412
+ },
+ "layouts": [
+  {
+   "label": "Grand Prix Circuit",
+   "length_m": 5427,
+   "turning_direction": "clockwise",
+   "direction_from_osm": true,
+   "status": "osm_only",
+   "alignment": null,
+   "official": {
+    "turns": 15,
+    "length_m": 5412
+   },
+   "corners": [
+    {
+     "apex_m": 642.0,
+     "start_m": 535.0,
+     "end_m": 698.0,
+     "radius_m": 15,
+     "heading_deg": 141,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 1,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 743.0,
+     "start_m": 701.0,
+     "end_m": 800.0,
+     "radius_m": 32,
+     "heading_deg": 74,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 2,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 865.0,
+     "start_m": 804.0,
+     "end_m": 895.0,
+     "radius_m": 97,
+     "heading_deg": 33,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 3,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 1440.0,
+     "start_m": 1336.0,
+     "end_m": 1532.0,
+     "radius_m": 22,
+     "heading_deg": 138,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 4,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 1724.0,
+     "start_m": 1672.0,
+     "end_m": 1750.0,
+     "radius_m": 109,
+     "heading_deg": 23,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 5,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 1793.0,
+     "start_m": 1753.0,
+     "end_m": 1876.0,
+     "radius_m": 61,
+     "heading_deg": 80,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 6,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 1926.0,
+     "start_m": 1879.0,
+     "end_m": 2048.0,
+     "radius_m": 57,
+     "heading_deg": 73,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 7,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 2192.0,
+     "start_m": 2059.0,
+     "end_m": 2360.0,
+     "radius_m": 19,
+     "heading_deg": 164,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 8,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 2557.0,
+     "start_m": 2404.0,
+     "end_m": 2608.0,
+     "radius_m": 59,
+     "heading_deg": 57,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 9,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 2652.0,
+     "start_m": 2608.0,
+     "end_m": 2780.0,
+     "radius_m": 14,
+     "heading_deg": 131,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 10,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 3375.0,
+     "start_m": 3338.0,
+     "end_m": 3623.0,
+     "radius_m": 30,
+     "heading_deg": 161,
+     "direction": "left",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 11,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 3757.0,
+     "start_m": 3631.0,
+     "end_m": 3956.0,
+     "radius_m": 102,
+     "heading_deg": 101,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 12,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 4063.0,
+     "start_m": 3956.0,
+     "end_m": 4147.0,
+     "radius_m": 35,
+     "heading_deg": 119,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 13,
+     "display": "Unnamed corner"
+    },
+    {
+     "apex_m": 4850.0,
+     "start_m": 4679.0,
+     "end_m": 4981.0,
+     "radius_m": 26,
+     "heading_deg": 122,
+     "direction": "right",
+     "kind": "corner",
+     "lmu_apex_m": null,
+     "matched": false,
+     "order": 14,
+     "display": "Unnamed corner"
+    }
+   ],
+   "straights": [],
+   "complexes": []
+  }
+ ]
+}

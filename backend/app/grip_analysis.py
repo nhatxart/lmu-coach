@@ -33,6 +33,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .corner_features import compute_corner_analysis
 from .telemetry import LapTelemetry, WHEEL_LABELS
 from .vehicle_dynamics import compute_slip_trace, summarize_slip_trace
 
@@ -300,4 +301,7 @@ def build_grip_report(lap: LapTelemetry, car_setup_json: dict | None = None) -> 
             label: round(float(np.nanmax(np.abs(v))), 4) for label, v in wheel_slip.items()
         },
         "slip_angle_analysis": slip_summary,
+        # per-corner inputs/rotation/exit features + repeated habits (the coach's
+        # evidence for WHY a limit was hit, see corner_features.py)
+        "corner_analysis": compute_corner_analysis(lap),
     }
