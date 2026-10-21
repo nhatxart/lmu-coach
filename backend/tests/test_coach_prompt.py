@@ -15,6 +15,18 @@ def test_system_prompt_has_method_and_data_notes():
     assert "Corner names are optional" in p
 
 
+def test_prompt_and_source_have_no_double_encoded_characters():
+    # coach.py once carried the run U+00E2 U+20AC U+201D (an em dash saved as
+    # UTF-8, read as cp1252, saved as UTF-8 again) in 14 places. The prompt text goes to the LLM
+    # verbatim, so the model was shown that garbage. U+00E2 followed by U+20AC
+    # is the unmistakable start of such a run.
+    from pathlib import Path
+    bad = "â€"
+    assert bad not in coach.SYSTEM_PROMPT
+    source = Path(coach.__file__).read_text(encoding="utf-8")
+    assert bad not in source
+
+
 def test_fewshot_pair_is_parsed(monkeypatch):
     monkeypatch.setattr(coach, "USE_FEWSHOT", True)
     pair = coach._fewshot_messages()

@@ -2,12 +2,12 @@
 Turns a grip_analysis report into a prompt for a local LLM and calls it via
 Ollama's OpenAI-compatible endpoint.
 
-Deliberately NOT sending raw per-tick telemetry arrays to the model â€” that
+Deliberately NOT sending raw per-tick telemetry arrays to the model — that
 would blow the context budget for no benefit. We send the *already-computed*
 event list (ABS lockups, TC zones, understeer candidates, peak G, slip
 numbers), which is exactly what a human coach would want summarized before
 giving feedback. The model's job is explanation and prioritization, not
-signal processing â€” we did that in grip_analysis.py.
+signal processing — we did that in grip_analysis.py.
 """
 
 from __future__ import annotations
@@ -60,20 +60,20 @@ _DATA_NOTES = """DATA YOU ARE GIVEN (how to read lmu-coach's report)
 
 You are given a structured summary of one lap from a Le Mans Ultimate session: lap time, ABS lockup events, traction control \
 intervention zones, understeer candidates, peak combined G, per-wheel slip figures, slip \
-angle analysis (yaw rate, front/rear axle slip angle), and grip utilization â€” all derived \
+angle analysis (yaw rate, front/rear axle slip angle), and grip utilization — all derived \
 directly from the car's physics, not from comparing against another driver's lap.
 
 On slip_angle_analysis specifically: peak_vehicle_slip_angle_deg is always 0 by construction \
-(a modeling simplification, not a real measurement) â€” ignore it. Trust \
+(a modeling simplification, not a real measurement) — ignore it. Trust \
 peak_slip_angle_difference_deg and its sign as the primary understeer/oversteer indicator: \
 positive means front axle slipping more than rear (understeer tendency) at that moment, \
 negative means the reverse (oversteer tendency). Treat the absolute front/rear slip angle \
 degree values as approximate magnitude, not precise figures.
 
-On grip_utilization (present once enough history exists for this car â€” null before that): \
+On grip_utilization (present once enough history exists for this car — null before that): \
 front_grip_utilization / rear_grip_utilization is this lap's sustained peak slip angle on \
 that axle divided by the LEARNED optimal slip angle for that axle (from accumulated laps, \
-not a spec sheet) â€” near 1.0 means the driver used the tire close to its own observed limit; \
+not a spec sheet) — near 1.0 means the driver used the tire close to its own observed limit; \
 well above 1.0 means they pushed past the point where more slip angle stops producing more \
 grip (into the tire's declining region, which costs time and adds instability, not more \
 cornering force); well below 1.0 means grip was left unused. When front/rear_utilization_is_upper_bound is \
@@ -83,7 +83,7 @@ a lower bound and the utilization may overstate how hard the tire was used — n
 throttle-on phases). cornering_efficiency is this lap's typical-high (p90) grip divided by \
 the p90 grip the model has observed near the tire's optimal slip angle, in grip_measure units \
 (mu_load_normalized = lateral G per unit of actual axle load, which removes downforce \
-differences between slow and fast corners) â€” this is the more important number for prioritizing advice: \
+differences between slow and fast corners) — this is the more important number for prioritizing advice: \
 high grip_utilization with low cornering_efficiency means the driver is asking a lot of the \
 tire but converting it poorly into actual cornering force (excess/wasted sliding, likely a \
 smoothness or line issue); low grip_utilization with low cornering_efficiency means capability \
@@ -125,7 +125,7 @@ outside their window, which is itself a root cause worth naming. The baselines' 
 load_normalization.laps_by_load_source says which load the grip numbers (mu) rest on: \
 "Tire Load" is the game's real tyre load; "Susp Force" is a stand-in used for classes where \
 the game provides no tyre load (all GT3 cars so far) and is a somewhat noisier measure of the \
-same thing â€” when it is the source, treat absolute grip values as approximate, compare \
+same thing — when it is the source, treat absolute grip values as approximate, compare \
 laps and corners with each other rather than quoting a friction coefficient, and follow the \
 note given there. Do not bring any of this up when the source is Tire Load.
 
@@ -174,8 +174,8 @@ labels. No other bullet symbols.
 
 YOUR TASK AND OUTPUT
 1. Identify the 1-3 most time-costly or risk-costly moments or habits in this lap, prioritized by \
-severity (duration, how many events cluster in one zone, how extreme the numbers are, and â€” \
-when available â€” how far grip_utilization/cornering_efficiency deviate from a healthy pairing). \
+severity (duration, how many events cluster in one zone, how extreme the numbers are, and — \
+when available — how far grip_utilization/cornering_efficiency deviate from a healthy pairing). \
 When the same habit shows up in several places, report it once as a habit.
 2. Explain in plain language what physically happened (e.g. "front tires locked under braking" \
 not just "ABS fired"), what it likely cost, and give one concrete input change per issue with a \
@@ -204,11 +204,11 @@ whole sequence or to teach the convention, and a single part when the point is s
 If track_reference.status is "provisional", the corner names are likely right but not yet \
 confirmed against enough laps: do not stress them.
 5. If the data shows a genuinely clean lap with no major issues, say so plainly instead of \
-inventing problems â€” do not manufacture critique to fill space.
+inventing problems — do not manufacture critique to fill space.
 6. The worked example you may see is invented data for style only: never reuse its numbers, \
 corners or car.
 
-Do not mention that you are an AI or that this is telemetry data "provided to you" â€” just coach, \
+Do not mention that you are an AI or that this is telemetry data "provided to you" — just coach, \
 the way a race engineer would over the radio after a session."""
 
 # Method first (who you are, how to think, output format), then our data notes
@@ -230,7 +230,7 @@ def _fewshot_messages() -> list[dict]:
 
 
 def build_user_prompt(grip_report: dict, grip_baselines: dict | None = None) -> str:
-    # Strip driver_name before it ever reaches the prompt â€” the model doesn't
+    # Strip driver_name before it ever reaches the prompt — the model doesn't
     # need it for coaching, and there's no reason to put a real name in an
     # LLM context window that might get logged by the inference server.
     safe_report = {k: v for k, v in grip_report.items() if k != "driver_name"}
@@ -244,7 +244,7 @@ def build_user_prompt(grip_report: dict, grip_baselines: dict | None = None) -> 
         prompt += (
             f"\n\nThis driver's established grip baselines for this car, built from "
             f"{grip_baselines['total_laps_analyzed']} previously analyzed laps "
-            f"(median and 90th-percentile values â€” use these to judge whether "
+            f"(median and 90th-percentile values — use these to judge whether "
             f"something in THIS lap is normal for this driver/car or unusually "
             f"severe, rather than judging severity from general assumptions):\n\n"
             f"{json.dumps({k: v for k, v in grip_baselines.items() if v is not None}, separators=(',', ':'))}"
