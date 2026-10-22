@@ -417,6 +417,17 @@ class RecorderLoopTest(unittest.TestCase):
         self.assertEqual(meta["UniqueTicks"], "300")
         self.assertEqual(meta["DataChangedWithoutTick"], "0")
 
+    def test_a_recording_that_lost_updates_says_so(self):
+        # 250 stored ticks, each one 30 ms after the last: two updates missing
+        # between every pair. The save must say so, in the log and the file.
+        scor = fake_scor()
+        script = [(fake_telem(et=100.0 + i * 0.03, pos_x=float(i)), scor) for i in range(250)]
+        n, meta, _, log = self._run(script)
+        self.assertEqual(n, 250)
+        self.assertEqual(meta["SkippedTicks"], str(2 * 249))
+        self.assertIn("WARNING", log)
+        self.assertIn("lost", log)
+
     def test_every_poll_stores_all(self):
         scor = fake_scor()
         script = [(fake_telem(et=100.0 + (i // 3) * 0.01), scor) for i in range(900)]
@@ -662,22 +673,22 @@ class PeekElapsedTimeTest(unittest.TestCase):
 
 
 class PollModeTest(unittest.TestCase):
-    # 10/21/2026: the first real drive showed tick-synced polling catching only
-    # 56 of 100 updates a second (1,323 skipped), against 100 caught with 1
-    # skipped for fixed 1000 Hz. Fixed polling is therefore the default again
-    # and tick-sync is opt-in until a drive shows why it lost ticks.
-    def test_default_is_the_proven_fixed_rate(self):
-        self.assertEqual(hf.resolve_poll_mode(None, False), ("fixed", hf.DEFAULT_POLL_HZ))
+    # 10/21/2026, A/B on a real drive (same mode, same session):
+    #   tick-sync at below-normal priority: 91 Hz caught, 286 skipped, wake-ups
+    #     up to 4.9 ms late; at NORMAL priority: 100 Hz, 6 skipped, <= 1.0 ms late.
+    # The lowered priority (LMU runs at High) made the sleeping recorder wait for
+    # a core. Tick-sync at normal priority is the default; fixed polling is
+    # selected by --poll-hz / --every-poll.
+    def test_default_is_tick_synced(self):
+        self.assertEqual(hf.resolve_poll_mode(None, False), ("tick", 100.0))
+
+    def test_a_poll_rate_or_every_poll_selects_fixed_polling(self):
         self.assertEqual(hf.resolve_poll_mode(200.0, False), ("fixed", 200.0))
-
-    def test_tick_sync_is_opt_in(self):
-        self.assertEqual(hf.resolve_poll_mode(None, False, tick_sync=True), ("tick", 100.0))
-
-    def test_every_poll_needs_fixed_polling(self):
         self.assertEqual(hf.resolve_poll_mode(None, True), ("fixed", hf.DEFAULT_POLL_HZ))
         self.assertEqual(hf.resolve_poll_mode(500.0, True), ("fixed", 500.0))
 
-    def test_tick_sync_cannot_be_combined_with_a_fixed_rate(self):
+    def test_an_explicit_tick_sync_cannot_be_combined_with_a_fixed_rate(self):
+        self.assertEqual(hf.resolve_poll_mode(None, False, tick_sync=True), ("tick", 100.0))
         with self.assertRaises(ValueError):
             hf.resolve_poll_mode(200.0, False, tick_sync=True)
         with self.assertRaises(ValueError):
@@ -687,12 +698,58 @@ class PollModeTest(unittest.TestCase):
         parser = hf.build_parser()
         args = parser.parse_args([])
         self.assertIsNone(args.poll_hz)
-        self.assertFalse(args.tick_sync)
-        self.assertFalse(args.normal_priority)
-        args = parser.parse_args(["--poll-hz", "200", "--normal-priority"])
-        self.assertEqual(args.poll_hz, 200.0)
-        self.assertTrue(args.normal_priority)
-        self.assertTrue(parser.parse_args(["--tick-sync"]).tick_sync)
+        self.assertFalse(args.low_priority)
+        self.assertTrue(parser.parse_args(["--low-priority"]).low_priority)
+        self.assertEqual(parser.parse_args(["--poll-hz", "200"]).poll_hz, 200.0)
+        # flags from the first day of the experiment still parse (they are no-ops now)
+        parser.parse_args(["--tick-sync", "--normal-priority"])
+
+    def test_help_text_renders(self):
+        # argparse %-formats help strings: a bare "%" in one makes --help crash.
+        text = hf.build_parser().format_help()
+        self.assertIn("--low-priority", text)
+        self.assertIn("--poll-hz", text)
+
+    def test_priority_is_left_alone_unless_asked(self):
+        calls, runs = [], []
+        real = (hf.lower_priority, hf.run_recorder)
+        hf.lower_priority = lambda *a: (calls.append(1), True)[1]
+        hf.run_recorder = lambda *a, **k: runs.append(a)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                hf.main([])
+                self.assertEqual(calls, [])              # default: normal priority
+                hf.main(["--low-priority"])
+                self.assertEqual(calls, [1])
+        finally:
+            hf.lower_priority, hf.run_recorder = real
+        self.assertEqual(len(runs), 2)
+
+
+class SkipWarningTest(unittest.TestCase):
+    def _stats(self, steps_ms):
+        stats = hf.PollStats()
+        et = 100.0
+        stats.record(et, False)
+        for s in steps_ms:
+            et += s / 1000.0
+            stats.record(et, False)
+        return stats
+
+    def test_a_recording_that_lost_a_tenth_of_its_updates_is_flagged(self):
+        stats = self._stats([10, 20] * 150)              # every other step skips one
+        msg = hf.skip_warning(stats)
+        self.assertIsNotNone(msg)
+        self.assertIn("lost", msg)
+        self.assertIn("--poll-hz 1000", msg)
+
+    def test_a_handful_of_game_skips_is_not_flagged(self):
+        stats = self._stats([10] * 2990 + [20, 20, 30, 30])   # 6 skipped in ~3000 (the real 0.2%)
+        self.assertEqual(stats.skipped_ticks, 6)
+        self.assertIsNone(hf.skip_warning(stats))
+
+    def test_no_data_no_warning(self):
+        self.assertIsNone(hf.skip_warning(hf.PollStats()))
 
 
 class PriorityTest(unittest.TestCase):
@@ -802,7 +859,7 @@ class TickModeLoopTest(unittest.TestCase):
         hf.MMapControl = mmap_cls
         with tempfile.TemporaryDirectory() as d:
             with contextlib.redirect_stdout(io.StringIO()) as log:
-                hf.run_recorder(Path(d), None, tick_sync=True, **kw)
+                hf.run_recorder(Path(d), None, **kw)
             files = list(Path(d).glob("*.duckdb"))
             self.assertEqual(len(files), 1, log.getvalue())
             con = duckdb.connect(str(files[0]), read_only=True)
@@ -893,7 +950,7 @@ class ProbeCpuTest(unittest.TestCase):
         hf.MMapControl = TimeWorld
         try:
             with contextlib.redirect_stdout(io.StringIO()) as out:
-                hf.run_probe(0.4, None, tick_sync=True)
+                hf.run_probe(0.4, None)
         finally:
             hf.MMapControl = real
         text = out.getvalue()

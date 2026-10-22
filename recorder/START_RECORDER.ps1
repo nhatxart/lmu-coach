@@ -7,25 +7,24 @@
 # The web UI's Record tab (START_RECORDER_CONTROL.ps1) runs this same recorder;
 # do not run both at once.
 #
-# Default: polls at a fixed 1000 Hz. That catches every game update (100 a
-# second, one row each, stamped with the game's clock) but keeps one CPU core
-# ~96% busy, which can stutter the game. It runs at below-normal priority.
+# Default: follows the game's own updates (about 100 a second, one row each,
+# stamped with the game's clock). It sleeps between them, so it uses about 1% of
+# a core. It stays at NORMAL priority on purpose: LMU runs at High priority and a
+# sleeping thread below it wakes late and loses updates.
+# If a saved recording lost more than 2% of the game's updates it says WARNING.
 #
-#   .\START_RECORDER.ps1                    record (fixed 1000 Hz)
+#   .\START_RECORDER.ps1                    record
 #   .\START_RECORDER.ps1 --probe 30         while driving: measure update rate, skipped
-#                                           updates, CPU use and loop timing; records nothing
-#   .\START_RECORDER.ps1 --probe 30 --tick-sync
-#                                           the same for the experimental mode below, plus
-#                                           how late its wake-ups are (that is the number
-#                                           that explains lost updates)
-#   .\START_RECORDER.ps1 --tick-sync        EXPERIMENTAL: follow the game's updates, ~1% CPU.
-#                                           On its first real drive it caught only 56 of 100
-#                                           updates a second. Do not record with it until
-#                                           --probe shows ~100 Hz and ~0 skipped.
-#   .\START_RECORDER.ps1 --poll-hz 200      poll at another fixed rate
+#                                           updates, CPU use, loop time and wake-up lateness;
+#                                           records nothing
+#   .\START_RECORDER.ps1 --probe 30 --poll-hz 1000
+#                                           the same for fixed 1000 Hz polling, to compare
+#   .\START_RECORDER.ps1 --poll-hz 1000     poll at a FIXED rate instead (96% of a core;
+#                                           500 Hz and above keep one core fully busy)
 #   .\START_RECORDER.ps1 --every-poll       store every poll, not one per game tick
 #                                           (fixed polling; for inspecting raw data)
-#   .\START_RECORDER.ps1 --normal-priority  do not lower the recorder's priority
+#   .\START_RECORDER.ps1 --low-priority     NOT recommended: below-normal priority lost
+#                                           9% to 44% of the updates in testing
 #   .\START_RECORDER.ps1 --recover          convert a leftover safety copy (.spool)
 #   .\START_RECORDER.ps1 --selftest         time a save on this PC, no game needed
 cd $PSScriptRoot
