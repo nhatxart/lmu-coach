@@ -7,17 +7,22 @@
 # The web UI's Record tab (START_RECORDER_CONTROL.ps1) runs this same recorder;
 # do not run both at once.
 #
-# By default it follows the game's own updates (about 100 a second): it sleeps
-# between them, so it uses very little CPU, and every row is stamped with the
-# game's clock. It runs at below-normal priority so the game wins any contention.
+# Default: polls at a fixed 1000 Hz. That catches every game update (100 a
+# second, one row each, stamped with the game's clock) but keeps one CPU core
+# ~96% busy, which can stutter the game. It runs at below-normal priority.
 #
-#   .\START_RECORDER.ps1                    record (follows the game's updates)
-#   .\START_RECORDER.ps1 --probe 10         measure LMU's update rate, skipped updates
-#                                           and the recorder's CPU use for 10 s while
-#                                           you drive; records nothing. Run it again with
-#                                           --poll-hz 1000 in the same session to compare.
-#   .\START_RECORDER.ps1 --poll-hz 1000     poll at a FIXED rate instead (the old way).
-#                                           500 Hz and above keep one CPU core fully busy
+#   .\START_RECORDER.ps1                    record (fixed 1000 Hz)
+#   .\START_RECORDER.ps1 --probe 30         while driving: measure update rate, skipped
+#                                           updates, CPU use and loop timing; records nothing
+#   .\START_RECORDER.ps1 --probe 30 --tick-sync
+#                                           the same for the experimental mode below, plus
+#                                           how late its wake-ups are (that is the number
+#                                           that explains lost updates)
+#   .\START_RECORDER.ps1 --tick-sync        EXPERIMENTAL: follow the game's updates, ~1% CPU.
+#                                           On its first real drive it caught only 56 of 100
+#                                           updates a second. Do not record with it until
+#                                           --probe shows ~100 Hz and ~0 skipped.
+#   .\START_RECORDER.ps1 --poll-hz 200      poll at another fixed rate
 #   .\START_RECORDER.ps1 --every-poll       store every poll, not one per game tick
 #                                           (fixed polling; for inspecting raw data)
 #   .\START_RECORDER.ps1 --normal-priority  do not lower the recorder's priority

@@ -565,6 +565,39 @@ class TickSyncTest(unittest.TestCase):
         self.assertFalse(sync.wait(lambda: None, last_et=5.0))
         self.assertLess(ft.t, 0.0105)
 
+    def test_diagnostics_report_how_late_the_wake_ups_are(self):
+        ft = FakeTime()
+        sync = hf.TickSync(clock=ft.clock, sleep=ft.sleep)
+        peek = self._world_peek(ft)
+        last = peek()
+        for _ in range(100):
+            sync.wait(peek, last_et=last)
+            last = peek()
+        d = sync.diagnostics()
+        self.assertEqual(d["waits"], 100)
+        self.assertAlmostEqual(d["wake_late_ms_p50"], 0.4, delta=0.2)   # FakeTime overshoots 0.4 ms
+        self.assertLess(d["wake_late_ms_max"], 2.0)
+        self.assertGreater(d["looks_per_tick"], 0.9)
+
+    def test_diagnostics_show_a_scheduler_that_wakes_the_thread_late(self):
+        # The suspected failure on a loaded PC: a sleep(8.5 ms) that returns
+        # ~8 ms late. The numbers must make that visible, not average it away.
+        ft = FakeTime()
+
+        def late_sleep(s):
+            ft.sleeps.append(s)
+            ft.t += s + (0.008 if s > 0.005 else 0.0004)
+
+        sync = hf.TickSync(clock=ft.clock, sleep=late_sleep)
+        peek = self._world_peek(ft)
+        last = peek()
+        for _ in range(60):
+            sync.wait(peek, last_et=last)
+            last = peek()
+        d = sync.diagnostics()
+        self.assertGreater(d["wake_late_ms_p50"], 7.0)
+        self.assertGreater(d["wake_late_ms_max"], 7.0)
+
     def test_a_skipped_copy_is_retried_at_once_and_teaches_nothing(self):
         # mmap_ctrl.update() copies only when LMU's update flag is set. When it
         # does not, the recorder is handed the SAME tick again and asks to wait
@@ -629,22 +662,37 @@ class PeekElapsedTimeTest(unittest.TestCase):
 
 
 class PollModeTest(unittest.TestCase):
-    def test_default_is_tick_synced_and_a_poll_rate_forces_fixed_polling(self):
-        self.assertEqual(hf.resolve_poll_mode(None, False), ("tick", 100.0))
+    # 10/21/2026: the first real drive showed tick-synced polling catching only
+    # 56 of 100 updates a second (1,323 skipped), against 100 caught with 1
+    # skipped for fixed 1000 Hz. Fixed polling is therefore the default again
+    # and tick-sync is opt-in until a drive shows why it lost ticks.
+    def test_default_is_the_proven_fixed_rate(self):
+        self.assertEqual(hf.resolve_poll_mode(None, False), ("fixed", hf.DEFAULT_POLL_HZ))
         self.assertEqual(hf.resolve_poll_mode(200.0, False), ("fixed", 200.0))
+
+    def test_tick_sync_is_opt_in(self):
+        self.assertEqual(hf.resolve_poll_mode(None, False, tick_sync=True), ("tick", 100.0))
 
     def test_every_poll_needs_fixed_polling(self):
         self.assertEqual(hf.resolve_poll_mode(None, True), ("fixed", hf.DEFAULT_POLL_HZ))
         self.assertEqual(hf.resolve_poll_mode(500.0, True), ("fixed", 500.0))
 
+    def test_tick_sync_cannot_be_combined_with_a_fixed_rate(self):
+        with self.assertRaises(ValueError):
+            hf.resolve_poll_mode(200.0, False, tick_sync=True)
+        with self.assertRaises(ValueError):
+            hf.resolve_poll_mode(None, True, tick_sync=True)
+
     def test_command_line(self):
         parser = hf.build_parser()
         args = parser.parse_args([])
         self.assertIsNone(args.poll_hz)
+        self.assertFalse(args.tick_sync)
         self.assertFalse(args.normal_priority)
         args = parser.parse_args(["--poll-hz", "200", "--normal-priority"])
         self.assertEqual(args.poll_hz, 200.0)
         self.assertTrue(args.normal_priority)
+        self.assertTrue(parser.parse_args(["--tick-sync"]).tick_sync)
 
 
 class PriorityTest(unittest.TestCase):
@@ -749,7 +797,7 @@ class TickModeLoopTest(unittest.TestCase):
         hf.MMapControl = mmap_cls
         with tempfile.TemporaryDirectory() as d:
             with contextlib.redirect_stdout(io.StringIO()) as log:
-                hf.run_recorder(Path(d), None, **kw)
+                hf.run_recorder(Path(d), None, tick_sync=True, **kw)
             files = list(Path(d).glob("*.duckdb"))
             self.assertEqual(len(files), 1, log.getvalue())
             con = duckdb.connect(str(files[0]), read_only=True)
@@ -840,12 +888,15 @@ class ProbeCpuTest(unittest.TestCase):
         hf.MMapControl = TimeWorld
         try:
             with contextlib.redirect_stdout(io.StringIO()) as out:
-                hf.run_probe(0.4, None)
+                hf.run_probe(0.4, None, tick_sync=True)
         finally:
             hf.MMapControl = real
         text = out.getvalue()
         self.assertIn("CPU", text)
         self.assertIn("tick-synced", text)
+        # what the next real drive needs to tell WHY ticks were lost
+        self.assertIn("wake-up lateness", text)
+        self.assertIn("loop iteration", text)
         # about 40 ticks in 0.4 s; copying the block once per tick, not per look
         self.assertLess(TimeWorld.w.updates, 80)
 
