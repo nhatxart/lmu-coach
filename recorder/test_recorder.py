@@ -783,9 +783,14 @@ class FakeLiveMMap:
 class TickModeLoopTest(unittest.TestCase):
     def setUp(self):
         self._saved = {n: getattr(hf.TickSync, n) for n in
-                       ("NOMINAL_S", "EARLY_S", "STEP_S", "PERIOD_MIN_S")}
+                       ("NOMINAL_S", "EARLY_S", "STEP_S", "PERIOD_MIN_S", "GIVE_UP_S")}
         hf.TickSync.NOMINAL_S, hf.TickSync.EARLY_S = 0.001, 0.0004   # keep the test fast
         hf.TickSync.STEP_S, hf.TickSync.PERIOD_MIN_S = 0.0004, 0.0005
+        # These tests count copies exactly, but they run on real sleeps. A
+        # scheduling stall past the 50 ms give-up (seen once, with the game
+        # running) makes the loop copy an extra time and breaks the count.
+        # TickSyncTest covers the give-up itself on a fake clock.
+        hf.TickSync.GIVE_UP_S = 5.0
         self._mmap = hf.MMapControl
 
     def tearDown(self):
