@@ -48,6 +48,15 @@ CONTINUOUS_CHANNELS = [
     # corner_features already prefer it when present, but it was never loaded,
     # so both silently fell back to the lateral-G/speed estimate.
     "Yaw Rate",
+    # Chase view: world position incl. height and the raw orientation matrix
+    # (recorder files from 10/25/2026 on; vehicle_pose.py decodes the matrix).
+    # Pos X/Z are 100 Hz here, unlike the 10 Hz GPS the track map uses.
+    "Pos X",
+    "Pos Y",
+    "Pos Z",
+    "Ori R0X", "Ori R0Y", "Ori R0Z",
+    "Ori R1X", "Ori R1Y", "Ori R1Z",
+    "Ori R2X", "Ori R2Y", "Ori R2Z",
 ]
 
 # Per-wheel channels: value1..value4 map to FL, FR, RL, RR in LMU's convention.
@@ -84,6 +93,7 @@ WHEEL_CHANNELS = [
     "TyresCarcassTemp",   # Celsius per wheel
     "Surface Type",       # categorical code per wheel (see CATEGORICAL_CHANNELS)
     "Tire Lateral Force", # N; zero/flagged unpopulated on GT3
+    "Ride Height",        # m per wheel; chase view's ground probe
 ]
 
 # Codes, not quantities: linear interpolation would invent surface types that
