@@ -45,6 +45,7 @@ MIN_SPEED_MS = 8.0
 FIT_WINDOW_ROWS = 2              # rows r-2..r+2 feed row r's plane
 MIN_FIT_WEIGHT = 3.0
 MIN_LAT_STD_M = 0.5              # below this the probes cannot see a slope across the row
+MIN_DS_STD_M = 0.5               # ... nor a grade along it
 OUTLIER_M = 0.15                 # kerb strikes, airborne ticks
 SMOOTH_H_ROWS = 1.5
 SMOOTH_BANK_ROWS = 3.0
@@ -261,7 +262,7 @@ def _plane(lat, y, w, ds):
     if has_bank:
         cols.append(lat - m)
     dm = float((w * ds).sum() / W)
-    if math.sqrt(float((w * (ds - dm) ** 2).sum() / W)) >= MIN_LAT_STD_M:
+    if math.sqrt(float((w * (ds - dm) ** 2).sum() / W)) >= MIN_DS_STD_M:
         cols.append(ds)
     A = np.stack(cols, axis=1)
     sw = np.sqrt(w)

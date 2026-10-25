@@ -79,21 +79,79 @@ def test_synthetic_laps_load_cleanly(hilly):
         assert tt.lap_pose_basis(lap) is not None
         assert lap.channels["Lap Dist"][-1] == pytest.approx(L, abs=8.0)
     assert all(len(p.s) > 1000 and np.all(p.w == 1.0) for p in probes)
+    # body roll/pitch: each wheel has its own ride height, so wheel order matters
+    rh = np.stack([laps[0].channels[f"Ride Height {w}"] for w in telemetry.WHEEL_LABELS])
+    assert np.max(np.abs(rh[0] - rh[1])) > 0.03     # FL vs FR (roll)
+    assert np.max(np.abs(rh[0] - rh[2])) > 0.02     # FL vs RL (pitch)
+    assert rh.min() > 0.0
+
+
+def _planar_probes(rng, n=6000, length=600.0):
+    s = rng.uniform(0, length, n)
+    lat = rng.uniform(-3, 3, n)
+    y = 2.0 + 0.06 * lat     # level at 2.0 m, bank 0.06
+    return s, lat, y
+
+
+def test_outlier_spikes_are_rejected():
+    """~5 % of probes 0.5 m too high (kerb strikes, airborne ticks) must not
+    move the plane: reject-and-refit."""
+    rng = np.random.default_rng(7)
+    s, lat, y = _planar_probes(rng)
+    spike = rng.random(len(s)) < 0.05
+    y = y + np.where(spike, 0.5, 0.0)
+    ps = tt.ProbeSet(s=s, lat=lat, y=y, w=np.ones(len(s)), paint_s=np.array([]),
+                     paint_lat=np.array([]), paint_kind=np.array([], dtype=int))
+    lay = tt.build_layout_topography([ps], 600.0)
+    assert np.max(np.abs(np.asarray(lay["h"]) - 2.0)) < 0.01
+    assert np.max(np.abs(np.asarray(lay["bank"]) - 0.06)) < 0.005
+
+
+def test_outlier_spikes_in_wheel_probes(hilly):
+    _, probes, _ = hilly
+    rng = np.random.default_rng(11)
+    spiked = []
+    for p in probes:
+        bump = np.where(rng.random(len(p.y)) < 0.05, 0.5, 0.0)
+        spiked.append(tt.ProbeSet(p.s, p.lat, p.y + bump, p.w,
+                                  p.paint_s, p.paint_lat, p.paint_kind))
+    lay = tt.build_layout_topography(spiked, L)
+    s = np.arange(0.0, L, 5.0)
+    for lat in (-3.0, 0.0, 3.0):
+        err = tt.lookup_height(lay, s, np.full_like(s, lat)) - truth(s, lat)
+        assert np.max(np.abs(err)) < (0.03 if lat == 0.0 else 0.08)
+    _, bank = tt.grade_bank(lay, np.arange(1040.0, 1160.0, 2.0))
+    assert float(np.mean(bank)) == pytest.approx(0.08, abs=0.01)
 
 
 def test_hill_and_bank_recovered(hilly):
     _, _, lay = hilly
+    assert lay is not None
     s = np.arange(0.0, L, 5.0)
     worst = 0.0
     for lat in (-3.0, 0.0, 3.0):
         got = tt.lookup_height(lay, s, np.full_like(s, lat))
         want = np.array([truth(si, lat) for si in s])
         worst = max(worst, float(np.max(np.abs(got - want))))
+        if lat == 0.0:
+            # tighter on the centre path: a dropped Ride Height subtraction
+            # (~0.05 m) must not pass
+            assert np.max(np.abs(got - want)) < 0.03
     assert worst < 0.08, worst
     mid = np.arange(1040.0, 1160.0, 2.0)
     _, bank = tt.grade_bank(lay, mid)
     assert float(np.mean(bank)) == pytest.approx(0.08, abs=0.01)
     assert np.all(true_bank(mid) == pytest.approx(0.08))
+
+    # The pooled fit averages a swapped wheel's ride height away (laps on
+    # different lines dominate the bank), so check the probes themselves and
+    # a single lap whose bank comes from its own wheel pairs only. Ride
+    # heights differ per wheel by 0.025 m (pitch) to 0.042 m (roll).
+    _, probes, _ = hilly
+    err = np.concatenate([p.y - truth(np.mod(p.s, L), p.lat) for p in probes])
+    assert np.percentile(np.abs(err), 99) < 0.015
+    _, bank0 = tt.grade_bank(tt.build_layout_topography(probes[:1], L), mid)
+    assert float(np.mean(bank0)) == pytest.approx(0.08, abs=0.01)
 
 
 def test_grade_follows_hill(hilly):

@@ -23,10 +23,16 @@ so telemetry's per-lap re-zero of Lap Dist is exact (it subtracts the first
 10 Hz value after the wrap). Speed along the centre path is ~40 m/s; each lap
 is stretched slightly so its crossings land on those 10 Hz ticks.
 
-The car sits on the surface: its up axis is the surface normal, forward is
-the direction of motion in the surface, so the ground under each wheel (the
-reference point + fwd*(+-1.45) + left*(+-0.80), measured vertically down by
-Ride Height and the 0.25 m CG allowance) is the surface, to first order.
+The surface frame at the car: up = surface normal, forward = direction of
+motion within the surface. The chassis is that frame plus body attitude on
+its springs: roll up to 1.5 deg right side down in the (left-hand) corners,
+scaled by yaw rate, and a constant 0.5 deg nose up. Ori is the CHASSIS
+orientation, and each wheel's Ride Height is what that attitude leaves
+between its chassis corner (reference point + fwd*(+-1.45) + left*(+-0.80))
+and the ground plane under it, so Pos Y + corner y - Ride Height - 0.25 is
+the surface under that wheel, to first order. Ride heights therefore differ
+per wheel (~0.02-0.08 m): a swapped wheel order or a dropped Ride Height
+subtraction shows up as height and bank errors.
 Orientation is written rF2 style: local +x left, +y up, +z rear,
 world = M @ local, table "Ori R<k><X|Y|Z>" = row k of M.
 """
@@ -49,6 +55,9 @@ BANK = 0.08
 BANK_RAMP_M = 20.0
 CG_M, RIDE_M = 0.25, 0.05
 HALF_TRACK_M = 0.80
+FRONT_M, REAR_M = 1.45, -1.45
+BODY_ROLL_DEG = 1.5     # right side down at full cornering
+BODY_PITCH_DEG = 0.5    # nose up
 KERB_LAT_M = 5.5
 TRACK_EDGE_M = 6.0
 SPEED_MS = 40.0
@@ -171,10 +180,31 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
     fwd = _unit(vel_dir)
     up = _unit(np.cross(t_s, t_l))
     left = np.cross(fwd, up)
-    M = np.stack([left, up, -fwd], axis=2)          # columns: left, up, rear
     speed = np.linalg.norm(vel_dir, axis=1) * sdot
     heading = np.unwrap(np.arctan2(fwd[:, 2], fwd[:, 0]))
     yaw_rate = np.gradient(heading, t)
+
+    # Chassis = surface frame + body roll (right side down in the left-hand
+    # corners, eased in over ~0.5 s) + constant nose-up pitch.
+    corner = np.clip(yaw_rate / (SPEED_MS / RADIUS_M), -1.0, 1.0)
+    corner = np.convolve(np.pad(corner, 25, mode="edge"), np.ones(51) / 51, mode="valid")
+    roll = np.radians(BODY_ROLL_DEG) * corner[:, None]
+    pitch = math.radians(BODY_PITCH_DEG)
+    c_left = left * np.cos(roll) + up * np.sin(roll)        # left side up = right down
+    c_up = up * np.cos(roll) - left * np.sin(roll)
+    c_fwd = fwd * math.cos(pitch) + c_up * math.sin(pitch)  # nose up
+    c_up = c_up * math.cos(pitch) - fwd * math.sin(pitch)
+    M = np.stack([c_left, c_up, -c_fwd], axis=2)      # columns: left, up, rear
+
+    # Ride height per wheel: chassis corner height above the ground plane
+    # (normal `up`) straight below it. Pos Y puts the reference point
+    # CG_M + RIDE_M above the ground, so a level chassis reads RIDE_M.
+    ride = np.empty((n, 4))
+    for j, (along, lfac) in enumerate(((FRONT_M, HALF_TRACK_M), (FRONT_M, -HALF_TRACK_M),
+                                       (REAR_M, HALF_TRACK_M), (REAR_M, -HALF_TRACK_M))):
+        o = c_fwd * along + c_left * lfac
+        plane_dy = -(up[:, 0] * o[:, 0] + up[:, 2] * o[:, 2]) / up[:, 1]
+        ride[:, j] = RIDE_M + o[:, 1] - plane_dy
 
     wheel_lat = np.stack([lat - HALF_TRACK_M, lat + HALF_TRACK_M,
                           lat - HALF_TRACK_M, lat + HALF_TRACK_M], axis=1)
@@ -232,7 +262,7 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
         for r in range(3):
             for c, a in enumerate("XYZ"):
                 scalar(f"Ori R{r}{a}", M[:, r, c], hz)
-        wheel("Ride Height", np.full((n, 4), RIDE_M), hz, "m")
+        wheel("Ride Height", ride, hz, "m")
     if with_surface:
         wheel("Surface Type", surface, hz, "0=dry 1=wet 2=grass 3=dirt 4=gravel 5=kerb 6=special")
 
