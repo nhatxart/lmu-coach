@@ -708,10 +708,13 @@ class SessionBuffer:
     # ── Per-sample recording ─────────────────────────────────────────────────
 
     def add_sample(self, telem, wheels, player_scor, current_et: float,
-                   poll_time: float = 0.0, session_meta: dict | None = None) -> None:
+                   poll_time: float = 0.0, session_meta: dict | None = None,
+                   others: list | None = None) -> None:
         """Record one sample.  current_et = telem.mElapsedTime; poll_time =
         wall-clock seconds since this session started (when we read it);
-        session_meta = extra static facts (see _session_meta), taken once."""
+        session_meta = extra static facts (see _session_meta), taken once;
+        others = scoring structs of the NON-player cars, read only on 10 Hz
+        gate ticks (the caller builds the list every sample, so keep it cheap)."""
         s   = self.s                       # alias
 
         if not self.meta:
@@ -723,6 +726,9 @@ class SessionBuffer:
                 "TyreCompoundFront": _safe_decode(telem.mFrontTireCompoundName),
                 "TyreCompoundRear":  _safe_decode(telem.mRearTireCompoundName),
                 "VehicleModel":      _safe_decode(telem.mVehicleModel),
+                # Marks files that carry Pos Y / Ori R* / Other Cars (the
+                # track-topography inputs); older files simply lack the key.
+                "PoseChannels":      "1",
             })
 
         # ── HF extras, every sample ───────────────────────────────────────
@@ -743,6 +749,13 @@ class SessionBuffer:
         s["Steering Shaft Torque"].append(telem.mSteeringShaftTorque)
         for ch, attr in HF_WHEEL_FIELDS:
             s[ch].append(tuple(getattr(w, attr) for w in wheels))
+        # Orientation matrix rows (mOri[r] = local axes in world), raw like
+        # the rest: the chase view decides the axis convention, not the file.
+        for r in range(3):
+            row = telem.mOri[r]
+            s[f"Ori R{r}X"].append(row.x)
+            s[f"Ori R{r}Y"].append(row.y)
+            s[f"Ori R{r}Z"].append(row.z)
 
         # ── 100 Hz: telemetry-sourced continuous ──────────────────────────
         # GPS Time matches LMU's own convention: absolute session ET in seconds
@@ -750,6 +763,7 @@ class SessionBuffer:
 
         # Pos X/Z: world metres (recorder-specific extension; backend handles both)
         s["Pos X"].append(telem.mPos.x)
+        s["Pos Y"].append(telem.mPos.y)      # height: the track-elevation source
         s["Pos Z"].append(telem.mPos.z)
 
         spd = math.sqrt(telem.mLocalVel.x**2 +
@@ -822,6 +836,12 @@ class SessionBuffer:
             s["Path Lateral"].append(player_scor.mPathLateral)
             s["Track Edge"].append(player_scor.mTrackEdge)
             s["Lap Dist"].append(player_scor.mLapDist)
+            # Other cars: one row per car per gate tick, stamped with the
+            # player's clock so the backend can join them to this lap.
+            for o in others or ():
+                s["Other Cars"].append(
+                    (current_et, int(o.mID), o.mPos.x, o.mPos.y, o.mPos.z,
+                     o.mLapDist, o.mPathLateral, int(o.mInPits)))
             # Tyre temperature: mean of 3-zone array, Kelvin→Celsius
             s["TyresRubberTemp"].append(
                 (sum(wheels[0].mTemperature) / 3.0 - 273.15,
@@ -992,6 +1012,17 @@ def write_session(buf: SessionBuffer, output_dir: Path) -> Path:
             if vals:
                 _bulk(ch, [vals])
 
+        def _write_rows(ch: str, columns_sql: str, rows: list,
+                        freq: float, unit: str) -> None:
+            """Write a multi-column row table (e.g. Other Cars) through the same
+            CSV + COPY path as _bulk. columns_sql is the CREATE TABLE column
+            list; rows are equal-length tuples in that order. An empty list
+            still creates the table, so readers need no existence check."""
+            con.execute("INSERT INTO channelsList VALUES (?,?,?)", [ch, freq, unit])
+            con.execute(f'CREATE TABLE "{ch}" ({columns_sql})')
+            if rows:
+                _bulk(ch, [list(c) for c in zip(*rows)])
+
         def _write_wheel(ch: str, freq: float, unit: str) -> None:
             """Write a per-wheel (value1..value4) continuous channel."""
             rows = buf.s.get(ch, [])
@@ -1029,6 +1060,7 @@ def write_session(buf: SessionBuffer, output_dir: Path) -> Path:
         # ── 100 Hz scalar channels ────────────────────────────────────────────
         _write_scalar("GPS Time",     hz,  "s")
         _write_scalar("Pos X",        hz,  "m")
+        _write_scalar("Pos Y",        hz,  "m")   # no detect_empty: 0 is a real height
         _write_scalar("Pos Z",        hz,  "m")
         _write_scalar("Ground Speed", hz,  "km/h")
         _write_scalar("Steering Pos", hz,  "%")
@@ -1061,6 +1093,10 @@ def write_session(buf: SessionBuffer, output_dir: Path) -> Path:
         _write_scalar("Front Ride Height",     hz, "m",      detect_empty=True)
         _write_scalar("Rear Ride Height",      hz, "m",      detect_empty=True)
         _write_scalar("Steering Shaft Torque", hz, "Nm",     detect_empty=True)
+        # Raw orientation matrix; like Pos Y, never flagged unpopulated.
+        for _r in range(3):
+            for _a in "XYZ":
+                _write_scalar(f"Ori R{_r}{_a}", hz, "")
         for _ch, _ in HF_WHEEL_FIELDS:
             _write_wheel(_ch, hz, HF_WHEEL_UNITS[_ch])
         _write_wheel("TyresWear",        shz, "fraction")
@@ -1081,6 +1117,12 @@ def write_session(buf: SessionBuffer, output_dir: Path) -> Path:
         # ── 10 Hz wheel channels ──────────────────────────────────────────────
         _write_wheel("TyresRubberTemp", shz, "C")
         _write_wheel("TyresPressure",   shz, "kPa")
+
+        # ── Other cars' poses (10 Hz gate ticks) ──────────────────────────────
+        _write_rows("Other Cars",
+                    "ts DOUBLE, slot INTEGER, pos_x DOUBLE, pos_y DOUBLE, "
+                    "pos_z DOUBLE, lap_dist DOUBLE, path_lateral DOUBLE, in_pits INTEGER",
+                    buf.s.get("Other Cars", []), shz, "pose_rows")
 
         # ── Event channels ────────────────────────────────────────────────────
         # "Lap" table: (ts=mCurrentET, value=lap_number)
@@ -1554,8 +1596,15 @@ def run_recorder(output_dir: Path, poll_hz: float | None, every_poll: bool = Fal
                 last_sig = sig
                 buf.update_official_lap_time(float(pscor.mLastLapTime), current_et)
                 if every_poll or current_et != last_sample_et:
+                    # Other cars are only read on the 10 Hz gate ticks, so only
+                    # build the list then (100 Hz x 60 struct views is waste).
+                    scor  = data.scoring.vehScoringInfo
+                    num_v = data.scoring.scoringInfo.mNumVehicles
                     buf.add_sample(telem, telem.mWheels, pscor, current_et,
                                    poll_time=time.perf_counter() - stats_t0,
+                                   others=(
+                                       [scor[i] for i in range(num_v) if i != si]
+                                       if current_et >= buf._next_slow_et else None),
                                    # Only the first sample uses it; skip the work after.
                                    session_meta=None if buf.meta
                                    else _session_meta(data, pscor))
@@ -1680,7 +1729,7 @@ def selftest(minutes: float) -> None:
     _probe_methods()
     print(f"Self-test: synthetic {minutes:g}-minute session ({n:,} samples)", flush=True)
     s = defaultdict(list)
-    for c in ("GPS Time", "Pos X", "Pos Z", "Ground Speed", "Steering Pos", "Throttle Pos",
+    for c in ("GPS Time", "Pos X", "Pos Y", "Pos Z", "Ground Speed", "Steering Pos", "Throttle Pos",
               "Brake Pos", "Yaw Rate", "Engine RPM", "G Force Lat", "G Force Long", "G Force Vert"):
         s[c] = [random.random() for _ in range(n)]
     for c in ("Wheel Speed", "Slip Angle", "Susp Pos"):

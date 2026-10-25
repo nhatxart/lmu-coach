@@ -104,7 +104,9 @@ def fake_telem(et=100.0, lap=0, pos_x=0.0, **over):
     t = dict(
         mID=3, mDeltaTime=0.01, mElapsedTime=et, mLapNumber=lap,
         mVehicleName=b"Test Car #1", mTrackName=b"Test Track",
-        mPos=_vec(pos_x, 0.0, 5.0), mLocalVel=_vec(0.8, 0.0, -50.0),
+        mPos=_vec(pos_x, 12.5, 5.0),
+        mOri=[_vec(1.0, 0.0, 0.0), _vec(0.0, 1.0, 0.0), _vec(0.0, 0.0, 1.0)],
+        mLocalVel=_vec(0.8, 0.0, -50.0),
         mLocalAccel=_vec(9.81, 0.0, 0.0), mLocalRot=_vec(0.0, 0.2, 0.0),
         mLocalRotAccel=_vec(0.0, 0.05, 0.0), mGear=4, mEngineRPM=7000.0,
         mUnfilteredThrottle=0.5, mUnfilteredBrake=0.0, mUnfilteredSteering=0.1,
@@ -122,7 +124,8 @@ def fake_telem(et=100.0, lap=0, pos_x=0.0, **over):
 def fake_scor(**over):
     s = dict(mID=3, mIsPlayer=True, mDriverName=b"Tester", mInPits=False,
              mInGarageStall=False, mPathLateral=0.5, mTrackEdge=6.0,
-             mLapDist=1234.0, mLastLapTime=-1.0, mVehicleClass=b"LMGT3")
+             mLapDist=1234.0, mLastLapTime=-1.0, mVehicleClass=b"LMGT3",
+             mPos=_vec(0.0, 0.0, 0.0))
     s.update(over)
     return SimpleNamespace(**s)
 
@@ -135,7 +138,9 @@ def new_buffer(et=100.0):
 
 NEW_SCALAR = ["Poll Time", "Local Vel X", "Local Vel Y", "Local Vel Z", "Yaw Accel",
               "Front Downforce", "Rear Downforce", "Drag", "Front Ride Height",
-              "Rear Ride Height", "Steering Shaft Torque"]
+              "Rear Ride Height", "Steering Shaft Torque", "Pos Y",
+              "Ori R0X", "Ori R0Y", "Ori R0Z", "Ori R1X", "Ori R1Y", "Ori R1Z",
+              "Ori R2X", "Ori R2Y", "Ori R2Z"]
 NEW_WHEEL = ["Susp Force", "Ride Height", "Camber", "Toe", "Lateral Patch Vel",
              "Longitudinal Patch Vel", "Lateral Ground Vel", "Longitudinal Ground Vel",
              "Tire Deflection", "Surface Type"]
@@ -292,6 +297,14 @@ class WriteSessionTest(unittest.TestCase):
 
                 self.assertEqual(rows("Local Vel X"), 300)
                 self.assertEqual(rows("Susp Force"), 300)
+                self.assertEqual(rows("Pos Y"), 300)
+                self.assertEqual(
+                    con.execute('select min(value), max(value) from "Pos Y"').fetchone(),
+                    (12.5, 12.5))
+                # Pose is never flagged empty: 0 is a real height / matrix entry.
+                self.assertNotEqual(units["Pos Y"], "unpopulated_by_lmu")
+                self.assertEqual(freqs["Ori R2Z"], freqs["Pos X"])
+                self.assertEqual(meta["PoseChannels"], "1")
                 self.assertEqual(rows("TyresWear"), len(buf.s["TyresWear"]))
                 # Fake car reports zero downforce: flagged, not written as data.
                 self.assertEqual(units["Front Downforce"], "unpopulated_by_lmu")
@@ -306,6 +319,42 @@ class WriteSessionTest(unittest.TestCase):
                 self.assertEqual(meta["Polls"], "3000")
                 self.assertEqual(meta["TyreRadiusCm"], "34,34,34,34")
                 self.assertAlmostEqual(float(meta["EffectiveHz"]), 100.0, places=2)
+            finally:
+                con.close()
+
+    def test_other_cars_written(self):
+        buf = new_buffer(et=100.0)
+        scor = fake_scor()
+        other = fake_scor(mID=7, mPos=_vec(1.0, 2.0, 3.0), mLapDist=55.0,
+                          mPathLateral=-1.2, mInPits=0)
+        for i in range(300):
+            t = fake_telem(et=100.0 + i * 0.01)
+            buf.add_sample(t, t.mWheels, scor, t.mElapsedTime, others=[other])
+        with tempfile.TemporaryDirectory() as d:
+            out = hf.write_session(buf, Path(d))
+            con = duckdb.connect(str(out), read_only=True)
+            try:
+                n_slow = con.execute('select count(*) from "Lap Dist"').fetchone()[0]
+                got = con.execute(
+                    'select slot, pos_x, pos_y, pos_z, lap_dist, path_lateral, in_pits, ts '
+                    'from "Other Cars" order by ts').fetchall()
+                self.assertEqual(len(got), n_slow)
+                self.assertEqual(got[0][:7], (7, 1.0, 2.0, 3.0, 55.0, -1.2, 0))
+                self.assertEqual(got[0][7], 100.0)
+                freqs = dict(con.execute(
+                    "select channelName, unit from channelsList").fetchall())
+                self.assertEqual(freqs["Other Cars"], "pose_rows")
+            finally:
+                con.close()
+
+    def test_other_cars_absent_is_empty_table(self):
+        buf = self._recorded_buffer(n=50)       # add_sample without `others`
+        with tempfile.TemporaryDirectory() as d:
+            out = hf.write_session(buf, Path(d))
+            con = duckdb.connect(str(out), read_only=True)
+            try:
+                self.assertEqual(
+                    con.execute('select count(*) from "Other Cars"').fetchone()[0], 0)
             finally:
                 con.close()
 
