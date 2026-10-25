@@ -7,6 +7,8 @@ Build the track reference (corners, straights, names) for LMU tracks. No LLM inv
                                                                      # for tracks not cached yet
     python -I backend/tools/build_track_reference.py --refetch       # download again even if cached
     python -I backend/tools/build_track_reference.py --details       # print every corner
+    python -I backend/tools/build_track_reference.py --topography-only   # only height/banking/kerb grid
+    python -I backend/tools/build_track_reference.py --no-topography     # corners only, as before
 
 When to run it: when LMU adds a track (add one entry to backend/app/track_catalog.py, record 10+
 clean laps, then run with --fetch), or after recording more laps (the alignment improves).
@@ -16,6 +18,12 @@ closed loops, extracts corners on the true centerline, aligns them with your rec
 (sequence alignment, see backend/app/track_reference.py), adds LMU/track_db names, and writes
 data/track_reference/<slug>.json. Outside services are only used by --fetch/--refetch;
 the app itself never calls them. Recordings are opened read-only.
+
+Topography (3D chase view): for every track with recordings it also writes
+data/track_reference/<slug>.topography.json (ground height, banking, kerb/grass/gravel paint per
+2 m of lap distance, per layout). Height needs recordings that carry pose channels (Pos Y,
+orientation, Ride Height; recorder from 10/25/2026 on); older recordings give paint only.
+--topography-only rebuilds just that file and leaves <slug>.json untouched.
 """
 from __future__ import annotations
 
@@ -35,6 +43,7 @@ import numpy as np  # noqa: E402
 from app import osm_source as osm_src  # noqa: E402
 from app import track_corners as tc  # noqa: E402
 from app import track_reference as tr  # noqa: E402
+from app import track_topography as tt  # noqa: E402
 from app.track_catalog import CATALOG, find_entry  # noqa: E402
 from app.track_centerline import loops_from_osm  # noqa: E402
 from app.track_db import corner_index_for  # noqa: E402
@@ -134,6 +143,23 @@ def build_one(entry: dict, files: list[str], do_fetch: bool, refetch: bool, deta
             + _details(best, details))
 
 
+def build_topography_for(entry: dict, files: list[str]) -> str:
+    """Height / banking / kerb-paint grid of the track for the 3D chase view
+    (app/track_topography.py), written next to the reference JSON."""
+    slug = entry["slug"]
+    topo = tt.build_topography([Path(f) for f in files], slug, entry["registry"] or slug)
+    if topo is None:
+        return f"topography: {slug} nothing built (no usable laps, heights or paint)"
+    tt.save_topography(topo)
+    lays = topo["layouts"]
+    best = max(lays, key=lambda l: l["coverage"])
+    return (f"topography: {slug} layouts={len(lays)} coverage={best['coverage']:.2f} "
+            f"files={sum(l['sources']['files'] for l in lays)} "
+            f"({sum(l['pose']['files_with_pose'] for l in lays)} with pose) "
+            f"laps={sum(l['sources']['laps'] for l in lays)}"
+            + ("" if any(l["has_heights"] for l in lays) else "  paint only (no pose recordings yet)"))
+
+
 def _details(layout: dict, details: bool) -> str:
     if not details:
         return ""
@@ -152,6 +178,9 @@ def main() -> int:
     ap.add_argument("--fetch", action="store_true", help="download OSM/Wikipedia for tracks not cached yet")
     ap.add_argument("--refetch", action="store_true", help="download again even if cached")
     ap.add_argument("--details", action="store_true")
+    ap.add_argument("--topography-only", action="store_true",
+                    help="only (re)build <slug>.topography.json from the recordings; skip OSM/corner work")
+    ap.add_argument("--no-topography", action="store_true", help="skip the topography build")
     ap.add_argument("--sessions", default=str(REPO / "data" / "sessions"))
     a = ap.parse_args()
     recs = recordings_by_slug(a.sessions)
@@ -160,10 +189,16 @@ def main() -> int:
         print(f"unknown track '{a.track}'. Known: {', '.join(e['slug'] for e in CATALOG)}")
         return 1
     for e in entries:
-        try:
-            print(build_one(e, recs.get(e["slug"], []), a.fetch, a.refetch, a.details), flush=True)
-        except Exception as ex:                       # one bad track must not stop the rest
-            print(f"{e['slug']:12s} FAILED: {type(ex).__name__}: {ex}", flush=True)
+        if not a.topography_only:
+            try:
+                print(build_one(e, recs.get(e["slug"], []), a.fetch, a.refetch, a.details), flush=True)
+            except Exception as ex:                   # one bad track must not stop the rest
+                print(f"{e['slug']:12s} FAILED: {type(ex).__name__}: {ex}", flush=True)
+        if not a.no_topography and recs.get(e["slug"]):
+            try:
+                print(build_topography_for(e, recs[e["slug"]]), flush=True)
+            except Exception as ex:
+                print(f"topography: {e['slug']} FAILED: {type(ex).__name__}: {ex}", flush=True)
     return 0
 
 

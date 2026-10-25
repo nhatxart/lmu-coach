@@ -28,9 +28,12 @@ before pose channels existed), so old recordings still give kerbs.
 
 from __future__ import annotations
 
+import json
 import math
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
@@ -167,7 +170,15 @@ def lap_probes(lap, lap_dist_offset: float = 0.0, lateral_sign: int = 1,
     Type and is collected either way.
     """
     ch = lap.channels
-    ld = ch.get("Lap Dist")
+    # BUG FIX / PREVIOUSLY: ld was channels["Lap Dist"], re-zeroed at the lap
+    # start with up to one 10 Hz step (4-8 m) lost to the unwrap, so probes sat
+    # metres from the game's lap distance that /trackmap looks up with. Fix:
+    # use the game's own value (LapTelemetry.lap_dist_raw) when telemetry has
+    # it; lap_dist_offset only serves laps built without it.
+    raw = getattr(lap, "lap_dist_raw", None)
+    ld = raw if raw is not None else ch.get("Lap Dist")
+    if raw is not None:
+        lap_dist_offset = 0.0
     if ld is None or len(ld) == 0:
         return _probe_set([], [])
     ld = np.asarray(ld, dtype=float)
@@ -180,7 +191,9 @@ def lap_probes(lap, lap_dist_offset: float = 0.0, lateral_sign: int = 1,
     # last 10 Hz value flat across the start/finish wrap (the final ~0.1 s of
     # every lap reads up to one 10 Hz step short), and pit/reset glitches can
     # run it backwards; probes there would land metres from where they belong.
-    advancing = np.diff(ld, prepend=-np.inf) > 0
+    # (prepend=+inf drops sample 0: with the game's raw value it still reads the
+    # pre-wrap end of the previous lap, a few metres from where the car is)
+    advancing = np.diff(ld, prepend=np.inf) > 0
     keep = np.isfinite(ld) & np.isfinite(path_lat) & (speed > MIN_SPEED_MS) & advancing
     s_ref = ld + float(lap_dist_offset)
     lat_ref = lateral_sign * path_lat
@@ -415,3 +428,174 @@ def paint_at(layout: dict, s: np.ndarray, lat: np.ndarray) -> np.ndarray:
     cells = np.round(np.asarray(lat, dtype=float) / cell_m).astype(int)
     return np.array([table.get((r, c), 0) for r, c in zip(rows.tolist(), cells.tolist())],
                     dtype=int)
+
+
+# ── Per-track build, files, loader ───────────────────────────────────────────
+
+TOPOGRAPHY_SCHEMA = 1
+LAYOUT_TOLERANCE = 0.03          # laps this close in length share a layout
+# The plan said 40 s; the 1200 m synthetic ring laps in 30 s and no LMU circuit
+# has a lap under a minute, so 25 s still rejects only fragments.
+MIN_LAP_S, MAX_LAP_S = 25.0, 600.0
+TOPOGRAPHY_GRID_HZ = 50.0
+
+
+def topography_path(slug: str) -> Path:
+    from .track_reference import _reference_dir
+    return _reference_dir() / f"{slug}.topography.json"
+
+
+def slug_for_track(track_name: str) -> str | None:
+    from .track_catalog import find_entry
+    entry = find_entry(track_name)
+    return entry["slug"] if entry else None
+
+
+def _lap_length_m(lap) -> float | None:
+    """Lap length from the game's Lap Dist. Its last pre-wrap 10 Hz row is
+    0-0.1 s short of the line (half a step on average), so add that."""
+    raw = getattr(lap, "lap_dist_raw", None)
+    if raw is None or len(raw) == 0 or not np.isfinite(raw).any():
+        return None
+    gs = lap.channels.get("Ground Speed")
+    v_ms = float(np.nanmean(np.asarray(gs, float)[-10:])) / 3.6 if gs is not None else 0.0
+    return float(np.nanmax(raw)) + 0.05 * v_ms
+
+
+def _group_by_length(lengths: list[float]) -> list[list[int]]:
+    """Indices grouped so every member is within LAYOUT_TOLERANCE of the
+    group's shortest."""
+    groups: list[list[int]] = []
+    for i in sorted(range(len(lengths)), key=lambda k: lengths[k]):
+        if groups and lengths[i] <= lengths[groups[-1][0]] * (1 + LAYOUT_TOLERANCE):
+            groups[-1].append(i)
+        else:
+            groups.append([i])
+    return groups
+
+
+def _read_other_cars(path: Path) -> np.ndarray:
+    import duckdb
+    con = duckdb.connect(str(path), read_only=True)
+    try:
+        rows = con.execute('SELECT ts, slot, pos_x, pos_y, pos_z, lap_dist, path_lateral, '
+                           'in_pits FROM "Other Cars" ORDER BY ts, slot').fetchall()
+    except Exception:
+        return np.zeros((0, 8))          # legacy file: no table
+    finally:
+        con.close()
+    return np.asarray(rows, dtype=float).reshape(-1, 8)
+
+
+def build_topography(files: list[Path], slug: str, display_name: str) -> dict | None:
+    """Fit every layout of one track from all its recordings (see the plan,
+    Task 4). None when nothing gave heights or paint."""
+    from .telemetry import load_telemetry_file
+    laps_info = []                    # dicts: lap, file index, basis, length
+    other_by_file: dict[int, np.ndarray] = {}
+    pose_ok: dict[int, bool] = {}
+    for fi, f in enumerate(files):
+        f = Path(f)
+        try:
+            laps = load_telemetry_file(f, grid_hz=TOPOGRAPHY_GRID_HZ)
+        except Exception as e:                    # one damaged file must not stop the track
+            print(f"  {f.name}: skipped ({type(e).__name__}: {e})")
+            continue
+        usable = [l for l in laps if l.is_complete and MIN_LAP_S <= l.lap_time_s <= MAX_LAP_S
+                  and _lap_length_m(l)]
+        basis, had_matrix = None, False
+        for lap in usable:
+            had_matrix = had_matrix or ("Ori R0X" in lap.channels)
+            basis = lap_pose_basis(lap)
+            if basis is not None:
+                break
+        pose_ok[fi] = basis is not None
+        if basis is not None:
+            print(f"  {f.name}: pose: {basis.axis_kind}s, fwd alignment {basis.fwd_alignment:.2f}")
+        else:
+            why = ("orientation matrix does not follow the direction of travel" if had_matrix
+                   else "no orientation channels (recorded before pose)")
+            print(f"  {f.name}: pose refused: {why}")
+        for lap in usable:
+            laps_info.append({"lap": lap, "file": fi, "basis": basis, "length": _lap_length_m(lap)})
+        if usable:
+            other_by_file[fi] = _read_other_cars(f)
+
+    if not laps_info:
+        return None
+    layouts = []
+    for group in _group_by_length([li["length"] for li in laps_info]):
+        members = [laps_info[i] for i in group]
+        length_m = float(np.median([m["length"] for m in members]))
+
+        def cat(name):
+            parts = [np.asarray(m["lap"].channels.get(name, []), float) for m in members]
+            return np.concatenate(parts) if parts else np.zeros(0)
+        surface = {w: cat(f"Surface Type {w}") for w in WHEELS}
+        pl, te = cat("Path Lateral"), cat("Track Edge")
+        if len(te) != len(pl):
+            te = np.full(len(pl), np.nan)           # file without Track Edge: no evidence
+        sign, conf, evidence = detect_lateral_sign(pl, te, surface)
+
+        probes = [lap_probes(m["lap"], 0.0, sign, basis=m["basis"]) for m in members]
+        files_here = sorted({m["file"] for m in members})
+        other_n = 0
+        for fi in files_here:
+            rows = other_by_file.get(fi)
+            if rows is not None and len(rows):
+                op = other_car_probes(rows, length_m, sign)
+                other_n += len(op.s)
+                probes.append(op)
+        lay = build_layout_topography(probes, length_m)
+        if lay is None:
+            continue
+        lay["lateral_sign"] = {"value": sign, "confidence": conf, "evidence": evidence}
+        lay["pose"] = {"files_with_pose": sum(pose_ok[fi] for fi in files_here),
+                       "files_refused": sum(not pose_ok[fi] for fi in files_here)}
+        lay["sources"] = {"files": len(files_here), "laps": len(members),
+                          "other_car_samples": other_n}
+        layouts.append(lay)
+    if not layouts:
+        return None
+    heights = [min(l["h"]) for l in layouts if l["has_heights"]]
+    return {"schema": TOPOGRAPHY_SCHEMA, "slug": slug, "display_name": display_name,
+            "built": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "datum_m": round(float(min(heights)), 3) if heights else 0.0,
+            "layouts": layouts}
+
+
+def save_topography(topo: dict) -> Path:
+    p = topography_path(topo["slug"])
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(topo, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
+    return p
+
+
+_CACHE: dict[str, tuple[int, dict]] = {}
+
+
+def load_topography(track_name: str, lap_length_m: float | None) -> tuple[dict, dict] | None:
+    """(topography, layout) for an analysed lap, or None: unknown track, no
+    file, or no layout within 3 % of the lap length (a different layout or a
+    partial lap must not borrow another layout's heights). Cached by mtime."""
+    slug = slug_for_track(track_name)
+    if not slug:
+        return None
+    p = topography_path(slug)
+    try:
+        mtime = p.stat().st_mtime_ns
+    except OSError:
+        return None
+    hit = _CACHE.get(str(p))
+    if hit is None or hit[0] != mtime:
+        hit = (mtime, json.loads(p.read_text(encoding="utf-8")))
+        _CACHE[str(p)] = hit
+    topo = hit[1]
+    layouts = topo.get("layouts") or []
+    if lap_length_m:
+        near = [l for l in layouts
+                if abs(l["length_m"] - lap_length_m) <= LAYOUT_TOLERANCE * l["length_m"]]
+        near.sort(key=lambda l: abs(l["length_m"] - lap_length_m))
+    else:
+        near = sorted(layouts, key=lambda l: -l.get("coverage", 0.0))
+    return (topo, near[0]) if near else None

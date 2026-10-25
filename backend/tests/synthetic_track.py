@@ -139,7 +139,12 @@ def _unit(v):
 
 def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True,
                         with_surface=True, other_cars=0,
-                        track_name="Synthetic Hill Ring") -> Path:
+                        track_name="Synthetic Hill Ring",
+                        cross_offset_ticks=0) -> Path:
+    """cross_offset_ticks moves every crossing but the first off its 10 Hz row
+    (-8: the first 10 Hz row after it reads ~3 m), like the real game, where
+    the line falls anywhere between two rows. Default 0 keeps the crossings
+    on rows with Lap Dist exactly 0."""
     path = Path(path)
     offsets = tuple(float(o) for o in lap_offsets)
     n_laps = len(offsets)
@@ -151,6 +156,7 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
     # crossings on gate ticks, so Lap Dist is exactly 0 there
     cross = [int(gate_arr[np.argmin(np.abs(gate_arr - i * ticks_per_lap))])
              for i in range(n_laps + 1)]
+    cross = [cross[0]] + [c + int(cross_offset_ticks) for c in cross[1:]]
     n = cross[-1] + 1
     t = np.asarray(all_t[:n])
     slow = [i for i in gate if i < n]

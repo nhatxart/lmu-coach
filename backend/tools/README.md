@@ -10,7 +10,7 @@ The first run downloads the packages, and later runs use uv's cache.
 | `VALIDATE_TIRE_MODEL.ps1` | nothing | Checks how accurate one car's tyre model is and prints a scorecard row |
 | `LIST_LAPS.ps1` | nothing | Shows each file's laps as the backend sees them |
 | `DETECT_TRACK_CORNERS.ps1` | corner maps (only with `--save`) | Finds each track's corners from curvature and compares them with the official turn count |
-| `BUILD_TRACK_REFERENCE.ps1` | `data/track_reference/*.json` | Builds each track's reference (corners, complexes, names) from OpenStreetMap + LMU names + your laps; `--fetch` downloads OSM once for a new track |
+| `BUILD_TRACK_REFERENCE.ps1` | `data/track_reference/*.json`, `*.topography.json` | Builds each track's reference (corners, complexes, names) from OpenStreetMap + LMU names + your laps; `--fetch` downloads OSM once for a new track. Also builds the track's topography (height, banking, kerb/grass/gravel paint for the 3D chase view) from the recordings; `--topography-only` does just that, `--no-topography` skips it. Height needs recordings made with the recorder from 10/25/2026 on (pose channels); older ones give paint only |
 | `CHECK_TIRE_FORCES.ps1` | nothing | Checks whether a recording has usable tyre-force channels |
 | `COMPARE_LOAD_SOURCES.ps1` | nothing | Pilot: does Susp Force give the same grip numbers as the game's Tire Load? (needs a car that has both) |
 | `MF_EXPERIMENT.ps1` | nothing | Tyre model v3 experiment: which state factors (load, temp, pressure, wear, camber) improve held-out prediction of the game's true mu? |

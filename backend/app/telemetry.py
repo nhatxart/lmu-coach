@@ -42,6 +42,7 @@ CONTINUOUS_CHANNELS = [
     "Ground Speed",
     "Lap Dist",
     "Path Lateral",
+    "Track Edge",  # signed like Path Lateral; track_topography.detect_lateral_sign
     "Gear",  # not in channelsList but present as a plain table; handled defensively
     "Yaw Accel",  # rad/s^2, HF1 files only - tire model's steady-state filter
     # rad/s, recorder files only. vehicle_dynamics.compute_slip_trace and
@@ -129,6 +130,11 @@ class LapTelemetry:
     # wherever the recording stopped (a 1.4 s "lap" was seen). Callers that
     # pick a "fastest" lap must skip these (see reference_lap_time).
     is_complete: bool = True
+    # The game's own Lap Dist on the same grid (what /trackmap and the
+    # per-track topography look up with). channels["Lap Dist"] is re-zeroed
+    # at the lap start and the unwrap across start/finish drops up to one
+    # 10 Hz step (4-8 m), so it is not the same number. None without Lap Dist.
+    lap_dist_raw: np.ndarray | None = None
 
 
 def _read_channel_frequencies(con: duckdb.DuckDBPyConnection) -> dict[str, float]:
@@ -442,6 +448,7 @@ def load_telemetry_file(
     # Build full-session time series for every channel first (game time, the
     # same clock as the Lap event timestamps), then slice per lap.
     session_channels: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    wrap_added: tuple[np.ndarray, np.ndarray] | None = None
 
     for ch in CONTINUOUS_CHANNELS:
         if ch in unpopulated:
@@ -456,7 +463,11 @@ def load_telemetry_file(
                 # unwrap it into a monotonically increasing "total distance
                 # traveled" signal before resampling, then re-wrap per lap
                 # later using the known lap length.
+                raw_v = v
                 v = _unwrap_lap_distance(v)
+                # what the unwrap added to each row; subtracting it again
+                # gives the game's own Lap Dist back (see lap_dist_raw)
+                wrap_added = (t, v - raw_v)
             session_channels[ch] = (t, v)
         except duckdb.CatalogException:
             continue  # channel not present in this file; skip gracefully
@@ -516,7 +527,16 @@ def load_telemetry_file(
         # can be negative or an arbitrary offset at the start of any given lap.
         # Normalize to 0 at lap start so distance values are actually usable
         # for mapping events to a position on track.
+        lap_dist_raw = None
         if "Lap Dist" in channels:
+            if wrap_added is not None:
+                # The unwrapped signal is raw + a step offset that changes only
+                # at a wrap row, so holding that offset (not interpolating it)
+                # recovers the raw value between rows. The interval containing
+                # the wrap stays at the last pre-wrap value (flat), like the
+                # unwrapped signal itself.
+                lap_dist_raw = channels["Lap Dist"] - _resample_to_grid(
+                    wrap_added[0], wrap_added[1], abs_grid_t, forward_fill=True)
             channels["Lap Dist"] = channels["Lap Dist"] - channels["Lap Dist"][0]
 
         for ch, (t, per_wheel) in wheel_series.items():
@@ -541,6 +561,7 @@ def load_telemetry_file(
                 channels=channels,
                 meta=meta,
                 is_complete=is_complete,
+                lap_dist_raw=lap_dist_raw,
             )
         )
 
