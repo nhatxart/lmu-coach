@@ -83,6 +83,24 @@ def test_detect_refuses_garbage():
     assert vp.detect_pose_basis(matrix([left, up, -fwd]), vx, vz, slow) is None
 
 
+def test_zero_velocity_samples_do_not_poison_detection():
+    # Duplicate Pos ticks give velocity (0, 0) while speed is still > 15 m/s.
+    fwd, left, up, vx, vz, sp = make_car()
+    M = matrix([left, up, -fwd])
+    vx, vz = vx.copy(), vz.copy()
+    vx[::10] = 0.0
+    vz[::10] = 0.0
+    basis = vp.detect_pose_basis(M, vx, vz, sp)
+    assert basis is not None
+    for v in (basis.fwd_alignment, basis.up_mean_y):
+        assert np.isfinite(v)
+    # too few good samples left -> refuse, not NaN
+    vx2, vz2 = vx.copy(), vz.copy()
+    vx2[30:] = 0.0
+    vz2[30:] = 0.0
+    assert vp.detect_pose_basis(M, vx2, vz2, sp) is None
+
+
 def test_ori_matrices_missing_channel():
     n = 10
     rows = {name: np.arange(n, dtype=float) for name in vp.ORI_CHANNELS}

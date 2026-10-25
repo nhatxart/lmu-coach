@@ -78,7 +78,12 @@ def detect_pose_basis(M: np.ndarray, vel_x: np.ndarray, vel_z: np.ndarray,
     sp = np.asarray(speed_ms, float)
     if M.ndim != 3 or M.shape[1:] != (3, 3) or not (len(M) == len(vx) == len(vz) == len(sp)):
         return None
-    fast = (sp > FAST_SPEED_MS) & np.isfinite(M).all(axis=(1, 2)) & np.isfinite(vx) & np.isfinite(vz)
+    # BUG FIX / PREVIOUSLY: only speed was checked, so a sample with speed > 15
+    # but world velocity (0, 0) (duplicate Pos ticks) divided by zero, every
+    # mean became NaN and `nan < 0.95` is False -> a NaN basis was returned.
+    # Fix: require a usable velocity direction and reject non-finite results.
+    fast = ((sp > FAST_SPEED_MS) & np.isfinite(M).all(axis=(1, 2))
+            & np.isfinite(vx) & np.isfinite(vz) & (np.hypot(vx, vz) > 1e-6))
     if int(fast.sum()) < MIN_FAST_SAMPLES:
         return None
     M = M[fast]
@@ -107,6 +112,11 @@ def detect_pose_basis(M: np.ndarray, vel_x: np.ndarray, vel_z: np.ndarray,
             best = (cand, abs(lal))
 
     cand, left_align = best
+    # Handedness is not enforced: the left sign is chosen to match world-left,
+    # which is all pitch/roll need (fwd_y, left_y); a mirrored matrix still
+    # yields correct angles because fwd and left are each checked against motion.
+    if not np.isfinite([cand.fwd_alignment, cand.up_mean_y, left_align]).all():
+        return None
     if (cand.fwd_alignment < MIN_FWD_ALIGNMENT or cand.up_mean_y < MIN_UP_MEAN_Y
             or left_align < MIN_LEFT_ALIGNMENT):
         return None
