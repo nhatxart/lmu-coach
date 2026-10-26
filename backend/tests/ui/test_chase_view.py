@@ -130,6 +130,62 @@ def test_chase_falls_back_without_webgl(page, server):
     assert page.evaluate("S.view") == "top"
 
 
+def test_build_failure_falls_back_once(page, server):
+    """A malformed surface must cost the chase view once (message, back to
+    top-down), not throw on every frame."""
+    def corrupt(route):
+        resp = route.fetch()
+        body = resp.json()
+        body["surface"]["x"] = None
+        route.fulfill(response=resp, json=body)
+    page.route("**/trackmap*", corrupt)
+    _open_session(page, server, HILLY, lap=1)
+    _radio(page, "Chase").click()
+    page.wait_for_function("() => document.getElementById('view-top').getAttribute('aria-checked') === 'true'"
+                           " && document.getElementById('chase-msg').classList.contains('on')")
+    assert "Showing top-down" in page.locator("#chase-msg").inner_text()
+    for v in (100, 300, 500, 700):              # frames after the failure
+        page.evaluate("v => onScrub(v)", v)
+    page.wait_for_timeout(200)
+    assert page.evaluate("Chase.state().built") is False
+    assert len(page.errors) <= 1, page.errors
+    # the user's choice survives a failure of this one lap
+    assert page.evaluate("localStorage.getItem('lmu-coach.view')") == "chase"
+
+
+def test_persisted_chase_view_on_reload(page, server):
+    page.add_init_script("localStorage.setItem('lmu-coach.view', 'chase')")
+    _open_session(page, server, HILLY, lap=1)
+    _wait_built(page)
+    assert page.evaluate("Chase.state().mix") == 1
+    assert _radio(page, "Chase").get_attribute("aria-checked") == "true"
+    assert page.errors == []
+
+
+def test_fallback_keeps_saved_preference(page, server):
+    page.add_init_script("""
+      localStorage.setItem('lmu-coach.view', 'chase');
+      const orig = HTMLCanvasElement.prototype.getContext;
+      HTMLCanvasElement.prototype.getContext = function (kind, ...rest) {
+        return /webgl/i.test(kind) ? null : orig.call(this, kind, ...rest);
+      };""")
+    page.goto(server + "/")
+    page.wait_for_function("() => window.Chase && Chase.state().failed"
+                           " && document.getElementById('view-top').getAttribute('aria-checked') === 'true'")
+    assert page.evaluate("localStorage.getItem('lmu-coach.view')") == "chase"
+
+
+def test_context_loss_falls_back(page, server):
+    _open_session(page, server, HILLY, lap=1)
+    _radio(page, "Chase").click()
+    _wait_built(page)
+    page.evaluate("document.getElementById('chase-canvas').getContext('webgl2')"
+                  ".getExtension('WEBGL_lose_context').loseContext()")
+    page.wait_for_function("() => document.getElementById('view-top').getAttribute('aria-checked') === 'true'"
+                           " && document.getElementById('chase-msg').classList.contains('on')")
+    assert page.evaluate("S.view") == "top"
+
+
 def test_legacy_session_chase_shows_flat_note(page, server):
     _open_session(page, server, LEGACY)
     _radio(page, "Chase").click()

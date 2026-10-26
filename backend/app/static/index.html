@@ -2033,10 +2033,13 @@ function onModeChange(){updateLegend();if(window.Chase)Chase.setOverlayColors();
 // A radiogroup with roving tabindex (arrow keys move and select, like the
 // panel tabs), plus V anywhere outside a text field. The 3D work itself lives
 // in window.Chase (module script at the end); this only records the choice.
-function setView(v){
+// opts.persist=false: a fallback (no WebGL, lost context, a lap the 3D view
+// cannot draw) switches back for now without overwriting the user's saved
+// choice, so a transient failure does not reset it.
+function setView(v,opts){
   v=v==='chase'?'chase':'top';
   S.view=v;
-  try{localStorage.setItem('lmu-coach.view',v);}catch(e){}
+  if(!opts||opts.persist!==false){try{localStorage.setItem('lmu-coach.view',v);}catch(e){}}
   ['top','chase'].forEach(k=>{
     const b=document.getElementById('view-'+k),on=k===v;
     b.setAttribute('aria-checked',on?'true':'false');b.tabIndex=on?0:-1;
@@ -2051,7 +2054,7 @@ function setView(v){
 }
 (function initViewSwitch(){
   const views=['top','chase'];
-  setView(S.view);
+  setView(S.view,{persist:false});
   document.getElementById('view-switch').addEventListener('keydown',e=>{
     const cur=views.indexOf(S.view);let next=-1;
     if(e.key==='ArrowRight'||e.key==='ArrowDown')next=(cur+1)%views.length;
@@ -2442,19 +2445,29 @@ new ResizeObserver(()=>{if(window.Chase)Chase.resize();if(S.mapData)resizeDraw()
 // ════════════════════════════════════════════════════════════════════════════
 const VENDOR='/static/vendor/';
 // Canvas rule (DESIGN.md): colours are literals kept in sync with :root.
-const COL={bg:'#060912',road:'#151D31',grass:'#1E3527',dirt:'#3A3226',gravel:'#4A4232',
-           kerbRed:'#D9464E',kerbWhite:'#E6E9F0',edge:'#ffffff',outline:'#070B14'};
-// Surface Type codes (0 road, 2 grass, 3 dirt, 4 gravel, 5 kerb). Kerb cells
-// get the road colour here; the shader paints their red/white stripes.
-const KIND_COL={0:COL.road,2:COL.grass,3:COL.dirt,4:COL.gravel,5:COL.road};
+// road is the Lambert ALBEDO: under the scene's lights it renders as roadLit
+// (#1C2640, measured in a screenshot); #151D31 rendered as #0B1224, barely
+// apart from the ground. roadLit is what the translucent line colours are
+// composited over.
+const COL={bg:'#060912',road:'#2C3855',roadLit:'#1C2640',grass:'#1E3527',dirt:'#3A3226',gravel:'#4A4232',
+           kerbRed:'#D9464E',kerbWhite:'#E6E9F0',edge:'#ffffff',ground:'#0A1020'};
 const NO_WEBGL="Chase view needs WebGL, which isn't available here. Showing top-down.";
+const LOST_CTX="Chase view lost its graphics context. Showing top-down.";
+const BAD_LAP="Chase view can't draw this lap. Showing top-down.";
 // Chase pose (spec): 7.5 m behind and 2.6 m above the car, looking 12 m
-// ahead along the course. Task 7 adds smoothing, scrub snaps, the ground
-// clamp, zoom and the animated transition on top of chasePose().
-const CAM_BACK=7.5,CAM_UP=2.6,CAM_AHEAD=12;
-const CAR_LEN=4.7,CAR_W=2.0,CAR_H=0.45;     // chevron extruded to car size
+// ahead along the course, 55 deg vertical FOV. Task 7 adds smoothing, scrub
+// snaps, the ground clamp, zoom and the animated transition on chasePose().
+const CAM_BACK=7.5,CAM_UP=2.6,CAM_AHEAD=12,CAM_FOV=55;
+// Car marker: TRUE footprint (4.7 x 2.0 m, so the line can be judged against
+// edges and kerbs) but flat and see-through, so it never hides what is under it.
+const CAR_LEN=4.7,CAR_W=2.0,CAR_H=0.15,CAR_FILL_OPACITY=0.55,CAR_LIFT=0.03;
 const LINE_HALF_W=0.175;                     // driven line: 0.35 m ribbon
+const EDGE_HALF_W=0.04,EDGE_OPACITY=0.6;     // edge lines as 0.08 m ribbons: 1 px lines vanish at distance
 const MARK_EVERY_M=50,KERB_STRIPE_M=2;
+// Paint is looked up per 0.5 m lateral cell (track_topography.PAINT_CELL_M);
+// the payload samples it at the 11 surface columns only.
+const PAINT_CELL_M=0.5;
+const GROUND_DROP_M=0.3,GROUND_SIZE_M=8000; // dim floor under the whole track, faded by the fog
 const DEG=Math.PI/180;
 
 const mapBody=document.querySelector('.map-body');
@@ -2465,9 +2478,12 @@ const msgEl=document.getElementById('chase-msg');
 
 let T=null;                                  // the three.js module
 let renderer=null,scene=null,camera=null,world=null;
-let carRig=null,carMat=null,arrowRig=null,ribbon=null;
+let carRig=null,carMat=null,carEdgeMat=null,arrowRig=null,ribbon=null;
 let cornerPills=[],betaPill=null;
-const st={ready:false,built:false,failed:false,mix:0,builtFor:null,loading:null,msgTimer:null};
+// builtFor: the payload the scene was last built (or tried) for; buildFailed:
+// that try threw. Both are set BEFORE building, so a bad lap fails once
+// instead of on every frame. lost: the WebGL context is gone.
+const st={ready:false,built:false,failed:false,lost:false,mix:0,builtFor:null,buildFailed:false,loading:null,msgTimer:null};
 
 // ── loading ────────────────────────────────────────────────────────────────
 function webglAvailable(){
@@ -2501,6 +2517,15 @@ function ensure(){
       T=mod;
       renderer=new T.WebGLRenderer({canvas,antialias:true});
       renderer.setPixelRatio(Math.min(devicePixelRatio||1,2));
+      // A lost context (driver reset, GPU memory pressure) leaves a frozen or
+      // black canvas: say so and fall back. preventDefault lets the browser
+      // restore it; three re-creates its GPU state then, and the next
+      // activation rebuilds the scene.
+      canvas.addEventListener('webglcontextlost',e=>{
+        e.preventDefault();st.lost=true;
+        if(S.view==='chase'){showMsg(LOST_CTX);setView('top',{persist:false});}
+      });
+      canvas.addEventListener('webglcontextrestored',()=>{st.lost=false;st.builtFor=null;st.buildFailed=false;});
       initScene();
       st.ready=true;resize();
       return true;
@@ -2527,7 +2552,7 @@ function toLinear(rgb,out,k){
 }
 // lineColorAt() colour of point i over the road, alpha composited in sRGB,
 // the way the 2D canvas blends a translucent stroke over the track fill.
-const ROAD_RGB=hexRgb(COL.road);
+const ROAD_RGB=hexRgb(COL.roadLit);
 function lineRgbOverRoad(i){
   const[r,g,b,a]=parseCss(lineColorAt(i));
   return[r*a+ROAD_RGB[0]*(1-a),g*a+ROAD_RGB[1]*(1-a),b*a+ROAD_RGB[2]*(1-a)];
@@ -2538,7 +2563,7 @@ function initScene(){
   scene=new T.Scene();
   scene.background=new T.Color(COL.bg);
   scene.fog=new T.Fog(COL.bg,150,900);       // fades the far track into --map-bg
-  camera=new T.PerspectiveCamera(50,1,0.1,2000);
+  camera=new T.PerspectiveCamera(CAM_FOV,1,0.1,2000);
   scene.add(new T.HemisphereLight('#9FB3D9','#0A0F1C',1.1));
   const sun=new T.DirectionalLight('#ffffff',1.2);sun.position.set(-0.5,1,0.3);scene.add(sun);
 
@@ -2549,24 +2574,27 @@ function initScene(){
   shape.moveTo(fx,0);shape.lineTo(rx,-hw);shape.lineTo(nx,0);shape.lineTo(rx,hw);shape.closePath();
   const carGeo=new T.ExtrudeGeometry(shape,{depth:CAR_H,bevelEnabled:false});
   carGeo.rotateX(-Math.PI/2);                // shape plane -> ground, extrusion -> +Y
-  carMat=new T.MeshLambertMaterial({color:'#ffffff'});
+  // See-through fill (no depth write, so the line, kerbs and arrow under it
+  // stay visible) and an opaque outline in the same US/OS colour: the
+  // outline carries the rotation, the fill only tints.
+  carMat=new T.MeshBasicMaterial({color:'#ffffff',transparent:true,opacity:CAR_FILL_OPACITY,depthWrite:false});
+  carEdgeMat=new T.LineBasicMaterial({color:'#ffffff'});
   carRig=new T.Group();
   carRig.add(new T.Mesh(carGeo,carMat));
-  // Dark outline, like the 2D chevron's stroke, so it reads against the line.
-  carRig.add(new T.LineSegments(new T.EdgesGeometry(carGeo,30),
-    new T.LineBasicMaterial({color:COL.outline,transparent:true,opacity:0.55})));
+  carRig.add(new T.LineSegments(new T.EdgesGeometry(carGeo,30),carEdgeMat));
   carRig.rotation.order='YZX';
   scene.add(carRig);
 
   // Velocity arrow along the COURSE (white, flat just above the road, under
-  // the car body like in 2D): 1.7 car lengths, the 2D proportions.
+  // the car body like in 2D): 1.7 car lengths, the 2D proportions. Opaque,
+  // so it draws before the translucent car and shows through it.
   const VL=CAR_LEN*1.7,ah=1.0,sw=0.08;
   const a=new T.Shape();
   a.moveTo(0,-sw);a.lineTo(VL-ah,-sw);a.lineTo(VL-ah,-ah*0.6);a.lineTo(VL+0.3,0);
   a.lineTo(VL-ah,ah*0.6);a.lineTo(VL-ah,sw);a.lineTo(0,sw);a.closePath();
   const aGeo=new T.ShapeGeometry(a);aGeo.rotateX(-Math.PI/2);
   arrowRig=new T.Group();
-  arrowRig.add(new T.Mesh(aGeo,new T.MeshBasicMaterial({color:'#ffffff',transparent:true,opacity:0.95,
+  arrowRig.add(new T.Mesh(aGeo,new T.MeshBasicMaterial({color:'#F2F4F8',
     side:T.DoubleSide,polygonOffset:true,polygonOffsetFactor:-4,polygonOffsetUnits:-4})));
   arrowRig.rotation.order='YZX';
   scene.add(arrowRig);
@@ -2587,23 +2615,19 @@ function disposeWorld(){
 // ── per-lap scene ──────────────────────────────────────────────────────────
 function surfaceMesh(s){
   const R=s.rows,C=s.cols,N=R*C;
-  if(R<2||C<2||s.x.length!==N||s.y.length!==N||s.z.length!==N)return null;
-  const pos=new Float32Array(N*3),col=new Float32Array(N*3),kerb=new Float32Array(N),lapS=new Float32Array(N);
+  if(R<2||C<2||s.x.length!==N||s.y.length!==N||s.z.length!==N||s.kind.length!==N)return null;
+  const pos=new Float32Array(N*3),lapS=new Float32Array(N),lat=new Float32Array(N);
   // Lap distance per row along the middle column: the kerb stripes are every
   // 2 m of it, finer than the rows (~600 per lap), so the shader draws them.
   const mid=(C-1)>>1;let acc=0;
   for(let r=0;r<R;r++){
     if(r>0){const a=(r-1)*C+mid,b=r*C+mid;acc+=Math.hypot(s.x[b]-s.x[a],s.z[b]-s.z[a]);}
-    for(let c=0;c<C;c++){const k=r*C+c;lapS[k]=acc;}
+    // Lateral metres, right of travel positive: the columns span the edges
+    // evenly (trackmap_elevation: lat = -edge .. +edge), so it is linear.
+    const l=r*C,w=Math.hypot(s.x[l+C-1]-s.x[l],s.z[l+C-1]-s.z[l]);
+    for(let c=0;c<C;c++){const k=l+c;lapS[k]=acc;lat[k]=(c/(C-1)-0.5)*w;}
   }
-  const kindLin={};
-  Object.entries(KIND_COL).forEach(([k,h])=>{const o=[0,0,0];toLinear(hexRgb(h),o,0);kindLin[k]=o;});
-  for(let k=0;k<N;k++){
-    pos[3*k]=s.x[k];pos[3*k+1]=s.y[k];pos[3*k+2]=s.z[k];
-    const kind=s.kind[k],lc=kindLin[kind]||kindLin[0];
-    col[3*k]=lc[0];col[3*k+1]=lc[1];col[3*k+2]=lc[2];
-    kerb[k]=kind===5?1:0;
-  }
+  for(let k=0;k<N;k++){pos[3*k]=s.x[k];pos[3*k+1]=s.y[k];pos[3*k+2]=s.z[k];}
   // Two triangles per cell. Which winding faces up depends on the direction
   // of travel, so test one cell and flip all if its normal points down.
   const idx=[];let flip=null;
@@ -2617,38 +2641,97 @@ function surfaceMesh(s){
     idx.push(a,b,d,d,b,e);
   }
   if(flip)for(let i=0;i<idx.length;i+=3){const t=idx[i+1];idx[i+1]=idx[i+2];idx[i+2]=t;}
-  const g=new T.BufferGeometry();
-  g.setAttribute('position',new T.BufferAttribute(pos,3));
-  g.setAttribute('color',new T.BufferAttribute(col,3));
-  g.setAttribute('aKerb',new T.BufferAttribute(kerb,1));
-  g.setAttribute('aLapS',new T.BufferAttribute(lapS,1));
-  g.setIndex(idx);g.computeVertexNormals();
-  const mat=new T.MeshLambertMaterial({vertexColors:true});
+  // Smooth normals from the shared grid, then one copy of the vertices per
+  // cell (toNonIndexed keeps the index order: 6 vertices per cell), so each
+  // cell can carry its own corner paint without interpolating it.
+  const gi=new T.BufferGeometry();
+  gi.setAttribute('position',new T.BufferAttribute(pos,3));
+  gi.setAttribute('aLapS',new T.BufferAttribute(lapS,1));
+  gi.setAttribute('aLat',new T.BufferAttribute(lat,1));
+  gi.setIndex(idx);gi.computeVertexNormals();
+  const g=gi.toNonIndexed();gi.dispose();
+  // BUG FIX / PREVIOUSLY: paint was a vertex attribute interpolated across
+  // the 1.2 m columns, so a kerb sampled at one column bled over a whole
+  // column width. Fix: per cell, the shader gets the paint kind and the
+  // centre of the 0.5 m paint cell (track_topography.paint_at) each corner
+  // sampled, and paints only inside those cells (plus the span between two
+  // neighbouring columns of the same kind). The payload samples paint at the
+  // 11 columns only, so a kerb cell between two columns cannot be shown.
+  const V=idx.length,rowT=new Float32Array(V),kinds=new Float32Array(V*4),cents=new Float32Array(V*4);
+  const centre=k=>Math.round(lat[k]/PAINT_CELL_M)*PAINT_CELL_M;
+  for(let q=0;q<V/6;q++){
+    const r=Math.floor(q/(C-1)),c=q%(C-1),a=r*C+c,corners=[a,a+1,a+C,a+C+1];  // (r,c) (r,c+1) (r+1,c) (r+1,c+1)
+    for(let v=6*q;v<6*q+6;v++){
+      rowT[v]=Math.floor(idx[v]/C)-r;
+      corners.forEach((k,j)=>{kinds[4*v+j]=s.kind[k];cents[4*v+j]=centre(k);});
+    }
+  }
+  g.setAttribute('aRowT',new T.BufferAttribute(rowT,1));
+  g.setAttribute('aKind',new T.BufferAttribute(kinds,4));
+  g.setAttribute('aCent',new T.BufferAttribute(cents,4));
+  const mat=new T.MeshLambertMaterial({color:COL.road});
   mat.onBeforeCompile=sh=>{
-    sh.uniforms.kerbA={value:new T.Color(COL.kerbRed)};
-    sh.uniforms.kerbB={value:new T.Color(COL.kerbWhite)};
+    Object.assign(sh.uniforms,{kerbA:{value:new T.Color(COL.kerbRed)},kerbB:{value:new T.Color(COL.kerbWhite)},
+      grassC:{value:new T.Color(COL.grass)},dirtC:{value:new T.Color(COL.dirt)},gravelC:{value:new T.Color(COL.gravel)}});
+    const vary='varying float vLapS;\nvarying float vLat;\nvarying float vRowT;\nvarying vec4 vKind;\nvarying vec4 vCent;\n';
     sh.vertexShader=sh.vertexShader
-      .replace('#include <common>','#include <common>\nattribute float aKerb;\nattribute float aLapS;\nvarying float vKerb;\nvarying float vLapS;')
-      .replace('#include <begin_vertex>','#include <begin_vertex>\nvKerb=aKerb;vLapS=aLapS;');
+      .replace('#include <common>','#include <common>\nattribute float aLapS;\nattribute float aLat;\nattribute float aRowT;\nattribute vec4 aKind;\nattribute vec4 aCent;\n'+vary)
+      .replace('#include <begin_vertex>','#include <begin_vertex>\nvLapS=aLapS;vLat=aLat;vRowT=aRowT;vKind=aKind;vCent=aCent;');
     sh.fragmentShader=sh.fragmentShader
-      .replace('#include <common>','#include <common>\nuniform vec3 kerbA;\nuniform vec3 kerbB;\nvarying float vKerb;\nvarying float vLapS;')
-      .replace('#include <color_fragment>',
-        `#include <color_fragment>\nif(vKerb>0.5){diffuseColor.rgb=mod(floor(vLapS/${KERB_STRIPE_M.toFixed(1)}),2.0)<0.5?kerbA:kerbB;}`);
+      .replace('#include <common>','#include <common>\nuniform vec3 kerbA;\nuniform vec3 kerbB;\nuniform vec3 grassC;\nuniform vec3 dirtC;\nuniform vec3 gravelC;\n'+vary)
+      .replace('#include <color_fragment>',`#include <color_fragment>
+{
+  // nearest row's two corners (the cell is constant per vertex, so vKind/vCent do not blend)
+  float r0=step(vRowT,0.5);
+  vec2 k=mix(vKind.zw,vKind.xy,r0), cc=mix(vCent.zw,vCent.xy,r0);
+  float hw=${(PAINT_CELL_M/2).toFixed(3)}, kind=0.0;
+  if(k.x>0.5&&abs(vLat-cc.x)<=hw)kind=k.x;
+  else if(k.y>0.5&&abs(vLat-cc.y)<=hw)kind=k.y;
+  else if(k.x>0.5&&abs(k.x-k.y)<0.5)kind=k.x;
+  if(kind>4.5)diffuseColor.rgb=mod(floor(vLapS/${KERB_STRIPE_M.toFixed(1)}),2.0)<0.5?kerbA:kerbB;
+  else if(kind>3.5)diffuseColor.rgb=gravelC;
+  else if(kind>2.5)diffuseColor.rgb=dirtC;
+  else if(kind>1.5)diffuseColor.rgb=grassC;
+}`);
   };
   return{mesh:new T.Mesh(g,mat),lapS,R,C};
 }
 
-function edgeLines(tr){
-  const mat=new T.LineBasicMaterial({color:COL.edge,transparent:true,opacity:0.35});
+// Track edges as thin flat ribbons (0.08 m) just above the surface: 1 px
+// lines disappear at chase distance and do not scale with perspective.
+function edgeRibbons(tr){
+  const mat=new T.MeshBasicMaterial({color:COL.edge,transparent:true,opacity:EDGE_OPACITY,depthWrite:false,
+    side:T.DoubleSide,polygonOffset:true,polygonOffsetFactor:-2,polygonOffsetUnits:-2});
   const out=[];
   [[tr.left_x,tr.left_y,tr.left_z],[tr.right_x,tr.right_y,tr.right_z]].forEach(([xs,ys,zs])=>{
-    if(!xs||xs.length<2)return;
-    const p=new Float32Array(xs.length*3);
-    xs.forEach((x,i)=>{p[3*i]=x;p[3*i+1]=(ys&&ys.length===xs.length?ys[i]:0)+0.02;p[3*i+2]=zs[i];});
-    const g=new T.BufferGeometry();g.setAttribute('position',new T.BufferAttribute(p,3));
-    out.push(new T.Line(g,mat));
+    const n=xs?xs.length:0;if(n<2)return;
+    const hasY=ys&&ys.length===n,pos=new Float32Array(n*6),idx=[];
+    for(let i=0;i<n;i++){
+      const i0=Math.max(0,i-1),i1=Math.min(n-1,i+1);
+      let dx=xs[i1]-xs[i0],dz=zs[i1]-zs[i0];const L=Math.hypot(dx,dz)||1;dx/=L;dz/=L;
+      const ox=-dz*EDGE_HALF_W,oz=dx*EDGE_HALF_W,y=(hasY?ys[i]:0)+0.02;
+      pos.set([xs[i]+ox,y,zs[i]+oz,xs[i]-ox,y,zs[i]-oz],6*i);
+      if(i<n-1){const a=2*i;idx.push(a,a+1,a+2,a+2,a+1,a+3);}
+    }
+    const g=new T.BufferGeometry();g.setAttribute('position',new T.BufferAttribute(pos,3));g.setIndex(idx);
+    out.push(new T.Mesh(g,mat));
   });
   return out;
+}
+
+// A dim floor under everything, so the track reads as a surface in a space
+// rather than a ribbon in the void. Flat and below the lowest point of the
+// lap: a draped skirt could rise over a lower section running alongside.
+function groundPlane(s){
+  let x0=Infinity,x1=-Infinity,z0=Infinity,z1=-Infinity,y0=Infinity;
+  for(let k=0;k<s.x.length;k++){
+    x0=Math.min(x0,s.x[k]);x1=Math.max(x1,s.x[k]);z0=Math.min(z0,s.z[k]);z1=Math.max(z1,s.z[k]);y0=Math.min(y0,s.y[k]);
+  }
+  if(!isFinite(x0))return null;
+  const g=new T.PlaneGeometry(GROUND_SIZE_M,GROUND_SIZE_M);g.rotateX(-Math.PI/2);
+  const m=new T.Mesh(g,new T.MeshBasicMaterial({color:COL.ground}));
+  m.position.set((x0+x1)/2,y0-GROUND_DROP_M,(z0+z1)/2);
+  return m;
 }
 
 // Faint transverse marks every 50 m of lap distance, following the surface
@@ -2711,16 +2794,40 @@ function pill(cls,text){
   el.style.display='none';labelLayer.appendChild(el);return el;
 }
 
+// Build the scene for one lap payload. Returns false when it cannot (the
+// payload is malformed): then the message is shown and the page falls back
+// to top-down.
+// BUG FIX / PREVIOUSLY: builtFor was set only at the END of a build, and
+// render() rebuilt whenever builtFor !== S.mapData, so a payload that threw
+// was disposed, rebuilt and threw again on every frame (console spam, blank
+// stage, no message), with st.built still true from the previous lap. Fix:
+// record the payload and clear `built` BEFORE building; a failure is
+// remembered for that payload and reported once.
 function build(d){
-  if(!st.ready||!d)return;
+  if(!st.ready||!d)return false;
+  st.builtFor=d;st.built=false;st.buildFailed=false;
+  try{
+    buildScene(d);
+    st.built=true;
+    return true;
+  }catch(e){
+    console.warn('[chase] cannot build this lap:',e);
+    disposeWorld();noteEl.classList.remove('on');
+    st.buildFailed=true;
+    if(S.view==='chase'){showMsg(BAD_LAP);setView('top',{persist:false});}
+    return false;
+  }
+}
+function buildScene(d){
   disposeWorld();
   world=new T.Group();scene.add(world);
   const surf=d.surface?surfaceMesh(d.surface):null;
   if(surf){
     world.add(surf.mesh);
     const marks=distanceMarks(d.surface,surf);if(marks)world.add(marks);
+    const ground=groundPlane(d.surface);if(ground)world.add(ground);
   }
-  if(d.has_edges&&d.track)edgeLines(d.track).forEach(l=>world.add(l));
+  if(d.has_edges&&d.track)edgeRibbons(d.track).forEach(l=>world.add(l));
   ribbon=drivenRibbon(d.driven_line);
   if(ribbon){world.add(ribbon);colourRibbon();}
   // Corner pills, same short label as the 2D map ("T5 Esses" -> "T5").
@@ -2729,7 +2836,6 @@ function build(d){
   betaPill=pill('beta','');
   const note=(d.elevation&&d.elevation.note)||'';
   noteEl.textContent=note;noteEl.classList.toggle('on',!!note);
-  st.built=true;st.builtFor=d;
 }
 
 // ── per-frame ──────────────────────────────────────────────────────────────
@@ -2750,8 +2856,8 @@ function placePill(el,v,w,h,dx,dy,maxDist){
 }
 
 function render(){
-  if(!st.ready||!S.mapData)return;
-  if(st.builtFor!==S.mapData)build(S.mapData);
+  if(!st.ready||st.lost||!S.mapData)return;
+  if(st.builtFor!==S.mapData&&!build(S.mapData))return;   // one try per payload
   const dl=S.mapData.driven_line,n=dl.x.length;
   if(!st.built||!n)return;
   const f=clamp(S.playhead*(n-1),0,n-1);
@@ -2762,15 +2868,15 @@ function render(){
 
   // Attitude (plan, Euler 'YZX'): y = -(course + bodyOff), z = pitch (+ nose
   // up), x = roll (+ right side down). bodyOff is the 2D one (slip gain).
-  carRig.position.set(x,y+0.05,z);
+  carRig.position.set(x,y+CAR_LIFT,z);                  // just on the surface
   carRig.rotation.set(roll,-(m.ang+m.bodyOff),pitch,'YZX');
-  arrowRig.position.set(x,y+0.08,z);
+  arrowRig.position.set(x,y+0.06,z);                    // inside the see-through body
   arrowRig.rotation.set(roll,-m.ang,pitch,'YZX');
   const[r,g,b]=parseCss(m.col);
+  // Unlit fill + outline in the 2D marker's US/OS colour, so it reads the
+  // same in shade and in light.
   carMat.color.setRGB(r/255,g/255,b/255,T.SRGBColorSpace);
-  // A little self-light, like the 2D marker's glow, so the US/OS colour
-  // stays readable on the shaded side.
-  carMat.emissive.copy(carMat.color).multiplyScalar(0.35);
+  carEdgeMat.color.copy(carMat.color);
 
   const pose=chasePose(x,y,z,m.ang);
   camera.position.set(...pose.pos);camera.lookAt(...pose.target);
@@ -2810,8 +2916,13 @@ function resize(){
 async function activate(){
   const ok=await ensure();
   if(S.view!=='chase')return;              // switched back while loading
-  if(!ok){setView('top');return;}
-  if(S.mapData&&st.builtFor!==S.mapData)build(S.mapData);
+  // Fallbacks switch back without saving 'top': the user's choice stays.
+  if(!ok){setView('top',{persist:false});return;}
+  if(st.lost){showMsg(LOST_CTX);setView('top',{persist:false});return;}
+  if(S.mapData){
+    if(st.builtFor!==S.mapData){if(!build(S.mapData))return;}         // build() reported it
+    else if(st.buildFailed){showMsg(BAD_LAP);setView('top',{persist:false});return;}
+  }
   st.mix=1;mapBody.dataset.view='chase';
   resize();
   if(S.mapData)render();

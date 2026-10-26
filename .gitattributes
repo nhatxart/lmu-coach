@@ -1,0 +1,3 @@
+# Vendored libraries stay byte-identical to their npm packages (no CRLF
+# conversion on checkout), so their hashes can be checked against npm.
+backend/app/static/vendor/** -text
