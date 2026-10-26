@@ -142,3 +142,68 @@ def test_surface_kind_has_kerb(tmp_path, monkeypatch):
     # kerbs are on the right of travel only
     assert (kind[:, : s["cols"] // 2] == 5).sum() == 0
     assert (kind[:, -3:] == 5).any()
+
+
+def test_failing_elevation_step_is_fail_closed(tmp_path, monkeypatch):
+    """A bug or a bad topography file must not turn a working /trackmap into a 500."""
+    f = write_hilly_session(sess(tmp_path) / "Hill-boom.duckdb")
+
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(track_topography, "load_topography", boom)
+    monkeypatch.setattr(track_topography, "build_topography", boom)
+    d = _trackmap(f, monkeypatch)
+    assert d["elevation"]["source"] == "none" and d["elevation"]["orientation"] == "none"
+    _check_lengths(d)
+    assert set(d["driven_line"]["y"]) == {0.0} and set(d["surface"]["y"]) == {0.0}
+    assert len(d["corner_labels"]) == 0 or all(c["y"] == 0.0 for c in d["corner_labels"])
+
+
+def test_failing_elevation_inside_payload_is_fail_closed(tmp_path, monkeypatch):
+    f = write_hilly_session(sess(tmp_path) / "Hill-boom2.duckdb")
+
+    def boom(*a, **k):
+        raise ValueError("bad")
+    monkeypatch.setattr(trackmap_elevation, "elevation_payload", boom)
+    d = _trackmap(f, monkeypatch)
+    assert d["elevation"]["source"] == "none"
+    _check_lengths(d)
+
+
+def test_corrupt_topography_file_is_fail_closed(tmp_path, monkeypatch, reference_dir):
+    f = write_hilly_session(sess(tmp_path) / "Hill-corrupt.duckdb")
+    (reference_dir / f"{SLUG}.topography.json").write_text('{"schema":1,"layouts":[{"len', encoding="utf-8")
+    d = _trackmap(f, monkeypatch)
+    assert d["elevation"]["source"] == "none"
+    _check_lengths(d)
+
+
+def test_later_laps_do_not_drift_when_lap_dist_ends_short(tmp_path, monkeypatch):
+    """The last 10 Hz Lap Dist row before each wrap sits up to 4 m short of the
+    line. The first version unwrapped the whole session by adding that short
+    value at every wrap, so lap 3's lap distance was ~7 m off."""
+    f = write_hilly_session(sess(tmp_path) / "Hill-short.duckdb", cross_offset_ticks=9)
+    errs = {}
+    for lap in (0, 2):
+        d = _trackmap(f, monkeypatch, lap=lap)
+        assert d["elevation"]["source"] == "lap"
+        s = d["surface"]
+        mid = np.array(s["y"]).reshape(s["rows"], s["cols"])[:, 5]     # lat 0 column
+        s_est = np.linspace(0.0, RING_LENGTH_M, s["rows"], endpoint=False)
+        errs[lap] = float(np.median(np.abs(mid - (truth(s_est, 0.0) - d["elevation"]["datum_m"]))))
+        # kerb paint sits where the kerb is, not 7 m away
+        # (the layout is shared by all laps, so every lap shows lap 1's kerb)
+        kerb_s = s_est[(np.array(s["kind"]).reshape(s["rows"], s["cols"]) == 5).any(axis=1)]
+        assert len(kerb_s) and kerb_s.min() > 520 and kerb_s.max() < 720, (kerb_s.min(), kerb_s.max())
+    assert errs[0] < 0.1
+    # s_est is only an even-spacing estimate (~0.05 m of its own error), so
+    # compare the last lap with the first instead of with zero
+    assert errs[2] < 0.1 and errs[2] < errs[0] + 0.02, errs
+
+
+def test_lap_dist_rows_keeps_raw_values_and_bridges_the_wrap():
+    raw = [1190.0, 1196.0, 2.0, 8.0]          # wraps between the 2nd and 3rd sample
+    out = trackmap_elevation.lap_dist_rows(raw, np.array([0.0, 1.0, 1.5, 2.0, 3.0]))
+    assert out[0] == 1190.0 and out[1] == 1196.0 and out[3] == 2.0 and out[4] == 8.0
+    # the row between them stays next to the line, not at half a lap
+    assert 1196.0 <= out[2] <= 1200.0

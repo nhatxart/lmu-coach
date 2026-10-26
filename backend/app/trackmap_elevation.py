@@ -32,19 +32,47 @@ LAP_NOTE = "Elevation from this session only"
 
 # (path, mtime_ns) -> topography built from that one file (None: nothing usable)
 _LAP_CACHE: dict[tuple[str, int], dict | None] = {}
+LAP_CACHE_MAX = 4
 
 
-def unwrap_lap_dist(ld: list | np.ndarray) -> np.ndarray:
-    """Lap Dist without the start/finish wrap: add the pre-wrap value after
-    every big drop. Interpolating the raw value across a wrap would put a
-    sample or two at half a lap (a height from the other side of the track);
-    unwrapped first, the interpolation is smooth and lookups take it modulo
-    the layout length."""
-    a = np.asarray(ld, dtype=float)
-    out = a.copy()
-    for w in np.where(np.diff(a) < -500.0)[0]:
-        out[w + 1:] += a[w]
+def lap_dist_rows(raw: list | np.ndarray, xp: np.ndarray) -> np.ndarray:
+    """The game's Lap Dist at fractional source positions `xp`, wrap-safe.
+
+    BUG FIX / PREVIOUSLY: the whole session was unwrapped by adding the
+    pre-wrap sample at every start/finish wrap. That sample is up to one 10 Hz
+    step (~4 m) short of the line, so the error added up lap after lap and
+    later laps looked up heights, kerbs and labels metres away. Fix: use the
+    game's value per sample (lookups take it modulo the layout length) and
+    treat a wrap only where interpolation would cross it: between the last
+    sample before it and the first after, interpolate towards the post-wrap
+    value plus the pre-wrap one, so those rows stay near the line instead of
+    landing at half a lap. The seam rows are off by the 10 Hz shortfall at
+    most, and nothing accumulates.
+    """
+    a = np.asarray(raw, dtype=float)
+    xp = np.asarray(xp, dtype=float)
+    out = np.interp(xp, np.arange(len(a)), a)
+    if len(a) < 2:
+        return out
+    lo = np.clip(np.floor(xp).astype(int), 0, len(a) - 2)
+    seam = (a[lo + 1] - a[lo] < -500.0) & (xp > lo)
+    if seam.any():
+        frac = xp[seam] - lo[seam]
+        # from a[lo] to a[lo+1] + a[lo] (the post-wrap value on the unwrapped axis)
+        out[seam] = a[lo[seam]] + frac * a[lo[seam] + 1]
     return out
+
+
+def source_positions(n_src: int, target: int, native_x: np.ndarray | None,
+                     n_fast: int | None) -> np.ndarray:
+    """Fractional source index of each of `target` rows: the same mapping as
+    main._interp_to_length uses (game-time based for 100 Hz sources, else
+    index fraction), so Lap Dist lines up with the other channels."""
+    if n_src == target:
+        return np.arange(target, dtype=float)
+    if native_x is not None and target == len(native_x) and n_src == n_fast:
+        return np.asarray(native_x, dtype=float)
+    return np.linspace(0, n_src - 1, target)
 
 
 def lap_topography(path: Path, track_name: str) -> dict | None:
@@ -56,6 +84,8 @@ def lap_topography(path: Path, track_name: str) -> dict | None:
     except OSError:
         return None
     if key not in _LAP_CACHE:
+        while len(_LAP_CACHE) >= LAP_CACHE_MAX:     # a topography is ~100 kB; keep a few
+            _LAP_CACHE.pop(next(iter(_LAP_CACHE)))
         try:
             topo = tt.build_topography([path], tt.slug_for_track(track_name) or "", track_name)
         except Exception as e:                         # elevation is optional
@@ -92,6 +122,39 @@ def attitude_deg(px: np.ndarray, pz: np.ndarray, speed_kmh: np.ndarray | None,
         return None
     fwd, left, _ = basis_vectors(M, basis)
     return pitch_roll_deg(fwd, left)
+
+
+def _ribbon_xz(edge_idx, left_x, left_z, right_x, right_z):
+    ei = np.asarray(edge_idx, dtype=int)
+    t = np.linspace(0.0, 1.0, SURFACE_COLS)
+    sx = (np.asarray(left_x, float)[ei][:, None] * (1 - t)[None, :]
+          + np.asarray(right_x, float)[ei][:, None] * t[None, :]).ravel()
+    sz = (np.asarray(left_z, float)[ei][:, None] * (1 - t)[None, :]
+          + np.asarray(right_z, float)[ei][:, None] * t[None, :]).ravel()
+    return sx, sz
+
+
+def flat_payload(*, edge_idx, line_idx, n_labels: int, left_x, left_z, right_x, right_z,
+                 note: str = FLAT_NOTE) -> dict:
+    """The "none"-shaped payload with correct lengths: what /trackmap returns
+    when the elevation step fails (it must never cost the map). Only the
+    flat ribbon geometry is computed, from arrays that already worked."""
+    R, C = len(edge_idx), SURFACE_COLS
+    try:
+        sx, sz = _ribbon_xz(edge_idx, left_x, left_z, right_x, right_z)
+        sx, sz = np.round(sx, 2).tolist(), np.round(sz, 2).tolist()
+    except Exception:
+        sx = sz = [0.0] * (R * C)
+    nl = len(line_idx)
+    return {
+        "elevation": {"source": "none", "orientation": "none", "datum_m": 0.0,
+                      "note": note, "topography": None},
+        "y": [0.0] * nl, "pitch_deg": [0.0] * nl, "roll_deg": [0.0] * nl,
+        "left_y": [0.0] * R, "right_y": [0.0] * R,
+        "surface": {"rows": R, "cols": C, "x": sx, "y": [0.0] * (R * C),
+                    "z": sz, "kind": [0] * (R * C)},
+        "label_y": [0.0] * n_labels,
+    }
 
 
 def _info(topo: dict, lay: dict) -> dict:
@@ -173,10 +236,7 @@ def elevation_payload(*, path: Path, track_name: str, lap_len_m: float | None,
     else:
         left_y, right_y, sy = np.zeros(R), np.zeros(R), np.zeros(R * C)
     kind = tt.paint_at(lay_p, sr, lat_r) if lay_p is not None else np.zeros(R * C, dtype=int)
-    sx = (np.asarray(left_x, float)[ei][:, None] * (1 - t)[None, :]
-          + np.asarray(right_x, float)[ei][:, None] * t[None, :]).ravel()
-    sz = (np.asarray(left_z, float)[ei][:, None] * (1 - t)[None, :]
-          + np.asarray(right_z, float)[ei][:, None] * t[None, :]).ravel()
+    sx, sz = _ribbon_xz(edge_idx, left_x, left_z, right_x, right_z)
 
     # ── corner labels ──
     if lay_h is not None and labels:
