@@ -37,6 +37,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import trackmap_elevation
 from .coach import LLMError, ask_followup, get_coaching_analysis
 from .track_db import find_track_in_registry, find_layout_in_track, annotate_report_with_corners
 from .grip_analysis import build_grip_report
@@ -912,6 +913,7 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
                                     "z": pz_lap[best_i],
                                     "label": label,
                                     "dist": target_dist,
+                                    "_row": best_i,   # popped below; heights need it
                                 })
     except Exception as _e:
         pass  # corner labels are non-critical
@@ -929,9 +931,68 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
     line_idx = [int(i * (lap_len - 1) / (LINE_PTS - 1)) for i in range(LINE_PTS)] \
                if lap_len >= LINE_PTS else list(range(lap_len))
 
+    # ── 8. Elevation, attitude, 3D surface (chase view) ───────────────────────
+    # Full-length first, slice last (HANDOFF §8): every 100 Hz channel goes
+    # through _interp_lap / _interp_to_length like the channels above.
+    edge_idx = (list(range(lap_len)) if lap_len <= EDGE_PTS
+                else [int(i * (lap_len / EDGE_PTS)) for i in range(EDGE_PTS)])   # == _ds
+    try:
+        track_name_el = (dict(con.execute("SELECT key, value FROM metadata").fetchall())
+                         .get("TrackName", "") if "metadata" in tables else "")
+    except Exception:
+        track_name_el = ""
+
+    ld_raw = _col("Lap Dist")
+    s_lap = lap_len_m = None
+    if ld_raw:
+        ld_lap = np.asarray(_interp_to_length(ld_raw, full_len)[s_idx : e_idx + 1], float)
+        lap_len_m = float(ld_lap.max() - ld_lap.min())
+        s_lap = np.asarray(
+            _interp_to_length(trackmap_elevation.unwrap_lap_dist(ld_raw).tolist(), full_len)
+            [s_idx : e_idx + 1], float)
+
+    ground_rec = None
+    py_raw = _col("Pos Y")
+    if py_raw:
+        rh = _cols4("Ride Height")
+        rh_mean = np.nanmean(np.array(rh, dtype=float), axis=1) if rh else np.zeros(len(py_raw))
+        ground_rec = (np.asarray(_interp_lap(py_raw), float)
+                      - np.asarray(_interp_lap(np.nan_to_num(rh_mean).tolist()), float)
+                      - trackmap_elevation.tt.DEFAULT_GEOMETRY.cg_height_m)
+
+    attitude = None
+    ori = {nm: _col(nm) for nm in trackmap_elevation.ORI_CHANNELS} \
+          if all(nm in tables for nm in trackmap_elevation.ORI_CHANNELS) else {}
+    raw_x, raw_z = _col("Pos X"), _col("Pos Z")
+    if ori and t_fast is not None and len(raw_x) == len(t_fast) == len(raw_z):
+        f0 = int(native_x[s_idx]) if native_x is not None else 0
+        f1 = int(math.ceil(native_x[e_idx])) + 1 if native_x is not None else len(t_fast)
+        att = trackmap_elevation.attitude_deg(
+            np.asarray(raw_x, float), np.asarray(raw_z, float),
+            np.asarray(speed_raw_full, float) if speed_raw_full else None,
+            {k: np.asarray(v, float) for k, v in ori.items()}, np.asarray(t_fast, float), f0, f1)
+        if att is not None:
+            attitude = (np.asarray(_interp_lap(att[0].tolist()), float),
+                        np.asarray(_interp_lap(att[1].tolist()), float))
+
+    te_lap = (np.abs(np.asarray(track_edge, float)) if has_edges
+              else np.full(lap_len, 7.5))          # same fallback as the edges above
+    elev = trackmap_elevation.elevation_payload(
+        path=path, track_name=track_name_el, lap_len_m=lap_len_m, s_lap=s_lap,
+        path_lat=np.asarray(path_lat, float), ground_rec=ground_rec, attitude=attitude,
+        edge_idx=edge_idx, track_edge=te_lap,
+        left_x=np.asarray(left_x), left_z=np.asarray(left_z),
+        right_x=np.asarray(right_x), right_z=np.asarray(right_z),
+        labels=[(c["_row"], 0.0) for c in corner_labels], line_idx=line_idx)
+    for c, ly in zip(corner_labels, elev["label_y"]):
+        c.pop("_row", None)
+        c["y"] = ly
+
     con.close()
 
     return {
+        "elevation": elev["elevation"],
+        "surface":   elev["surface"],
         "coordinate_system": "gps_projected" if use_gps else "world_metres",
         "lap_number":  lap_number,
         "has_edges":   has_edges,
@@ -941,6 +1002,8 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
             "left_z":  _ds(left_z,  EDGE_PTS),
             "right_x": _ds(right_x, EDGE_PTS),
             "right_z": _ds(right_z, EDGE_PTS),
+            "left_y":  elev["left_y"],
+            "right_y": elev["right_y"],
         },
         "driven_line": {
             "x":        [px_lap[i]   for i in line_idx],
@@ -958,6 +1021,9 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
             "body_slip_deg": [body_slip[i] for i in line_idx] if body_slip else [],
             "abs_active": [abs_active[i] for i in line_idx] if abs_active else [],
             "tc_active":  [tc_active[i]  for i in line_idx] if tc_active  else [],
+            "y":          elev["y"],
+            "pitch_deg":  elev["pitch_deg"],
+            "roll_deg":   elev["roll_deg"],
         },
         "susp": {
             "fl": _ds(susp_fl, LINE_PTS) if susp_fl else [],

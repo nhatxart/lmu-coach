@@ -590,12 +590,21 @@ def load_topography(track_name: str, lap_length_m: float | None) -> tuple[dict, 
     if hit is None or hit[0] != mtime:
         hit = (mtime, json.loads(p.read_text(encoding="utf-8")))
         _CACHE[str(p)] = hit
-    topo = hit[1]
+    layout = pick_layout(hit[1], lap_length_m)
+    return (hit[1], layout) if layout else None
+
+
+def pick_layout(topo: dict, lap_length_m: float | None,
+                tolerance: float | None = LAYOUT_TOLERANCE) -> dict | None:
+    """The layout of `topo` closest in length to the lap, within `tolerance`
+    (relative; None = no limit, for a partial lap of a file's own track).
+    Without a length: the best covered layout."""
     layouts = topo.get("layouts") or []
     if lap_length_m:
         near = [l for l in layouts
-                if abs(l["length_m"] - lap_length_m) <= LAYOUT_TOLERANCE * l["length_m"]]
+                if tolerance is None
+                or abs(l["length_m"] - lap_length_m) <= tolerance * l["length_m"]]
         near.sort(key=lambda l: abs(l["length_m"] - lap_length_m))
     else:
         near = sorted(layouts, key=lambda l: -l.get("coverage", 0.0))
-    return (topo, near[0]) if near else None
+    return near[0] if near else None
