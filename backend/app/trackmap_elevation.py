@@ -29,6 +29,12 @@ from .vehicle_pose import ORI_CHANNELS, basis_vectors, detect_pose_basis, ori_ma
 SURFACE_COLS = 11
 FLAT_NOTE = "Flat: no elevation recorded for this track yet"
 LAP_NOTE = "Elevation from this session only"
+PARTIAL_NOTE = "Partial lap: no topography match for this lap"
+# Paint cells go out as the topography's own cells (see _lap_paint).
+PAINT_CELL = {"along_m": tt.ROW_STEP_M, "across_m": tt.PAINT_CELL_M}
+# Consecutive Lap Dist rows further apart than this are a jump (reset,
+# teleport to the pits), not driven track: the rows between are not filled.
+PAINT_GAP_MAX_M = 100.0
 
 # (path, mtime_ns) -> topography built from that one file (None: nothing usable)
 _LAP_CACHE: dict[tuple[str, int], dict | None] = {}
@@ -152,9 +158,47 @@ def flat_payload(*, edge_idx, line_idx, n_labels: int, left_x, left_z, right_x, 
         "y": [0.0] * nl, "pitch_deg": [0.0] * nl, "roll_deg": [0.0] * nl,
         "left_y": [0.0] * R, "right_y": [0.0] * R,
         "surface": {"rows": R, "cols": C, "x": sx, "y": [0.0] * (R * C),
-                    "z": sz, "kind": [0] * (R * C)},
+                    "z": sz, "kind": [0] * (R * C), "s": [0.0] * R, "length_m": 0.0},
+        "paint": [], "paint_cell": dict(PAINT_CELL),
         "label_y": [0.0] * n_labels,
     }
+
+
+def _lap_paint(lay: dict | None, s_lap: np.ndarray | None, sign: int) -> list:
+    """The layout's paint cells along the part of the track this lap drove,
+    as [[s_m, g_m, kind], ...]: s = cell centre in lap distance (row*2 + 1),
+    g = cell centre across in the RIBBON's frame (sign * topography lat, see
+    elevation_payload), kind as in track_topography.PAINT_KINDS.
+
+    BUG FIX / PREVIOUSLY: paint reached the chase view only as `surface.kind`,
+    the cells re-sampled at the ribbon's 600 rows x 11 columns (rows ~6.8 m
+    apart at Road Atlanta, ~22.7 m at Le Mans; columns 1.2-1.5 m). Kerbs
+    snapped to row blocks, short ones vanished, and the car looked on or off
+    a kerb by metres. Fix: send the 2 m x 0.5 m cells themselves; the UI
+    places each at its true (s, g) on the ribbon.
+    """
+    if lay is None or not lay.get("paint") or s_lap is None:
+        return []
+    L = float(lay["length_m"])
+    step = float(lay["row_step_m"])
+    N = int(lay["rows"])
+    cell = float(lay["paint_cell_m"])
+    s = np.asarray(s_lap, dtype=float)
+    s = np.mod(s[np.isfinite(s)], L)
+    if len(s) == 0:
+        return []
+    covered = np.zeros(N, dtype=bool)
+    covered[np.minimum((s // step).astype(int), N - 1)] = True
+    # 10 Hz rows at speed are 4-9 m apart: fill the rows between two
+    # consecutive samples (across the start/finish wrap too)
+    d = np.mod(np.diff(s), L)
+    for i in np.nonzero((d >= step) & (d < PAINT_GAP_MAX_M))[0]:
+        covered[np.arange(int(s[i] // step), int((s[i] + d[i]) // step) + 1) % N] = True
+    # one row either side: the wheels run 1.45 m ahead of / behind the
+    # reference point whose Lap Dist this is
+    covered = covered | np.roll(covered, 1) | np.roll(covered, -1)
+    return [[round(r * step + step / 2, 2), round(sign * c * cell, 2), int(k)]
+            for r, c, k in lay["paint"] if 0 <= int(r) < N and covered[int(r)]]
 
 
 def _info(topo: dict, lay: dict) -> dict:
@@ -185,7 +229,12 @@ def elevation_payload(*, path: Path, track_name: str, lap_len_m: float | None,
     n = len(path_lat)
     built = None
     if s_lap is not None and track_name and lap_len_m:
-        built = tt.load_topography(track_name, lap_len_m)
+        # lap_max_s: the furthest Lap Dist reached, so a partial lap can still
+        # find its layout (track_topography.load_topography)
+        s_fin = np.asarray(s_lap, float)
+        s_fin = s_fin[np.isfinite(s_fin)]
+        built = tt.load_topography(track_name, lap_len_m,
+                                   lap_max_s=float(s_fin.max()) if len(s_fin) else None)
 
     chosen, source = None, "none"          # chosen = (topo, layout) that gives heights
     if s_lap is not None:
@@ -222,20 +271,39 @@ def elevation_payload(*, path: Path, track_name: str, lap_len_m: float | None,
         pitch, roll, orientation = np.zeros(n), np.zeros(n), "none"
 
     # ── edges and the surface ribbon (same rows as track.*) ──
+    # Two lateral frames meet here. The ribbon's columns run from the left
+    # edge to the right edge as main.py built them, and main.py treats Path
+    # Lateral as right-positive: column offset g = -te .. +te in that frame.
+    # The topography's lat is lateral_sign * Path Lateral (right of travel
+    # when the sign detection is right). A ribbon point at g is where the car
+    # would be drawn with Path Lateral = g, so its topography lat is sign * g,
+    # the same mapping as lat_car above; a paint cell at topography lat sits at
+    # g = sign * lat.
+    # BUG FIX / PREVIOUSLY: the columns, the edge heights and the paint used
+    # g directly as the topography lat while the car used sign * Path
+    # Lateral, so with a detected sign of -1 the bank and the kerbs would have
+    # been mirrored against the edges and the car.
     ei = np.asarray(edge_idx, dtype=int)
     te = np.asarray(track_edge, float)[ei]
     s_e = np.asarray(s_lap, float)[ei] if s_lap is not None else np.zeros(len(ei))
     R, C = len(ei), SURFACE_COLS
     t = np.linspace(0.0, 1.0, C)
     sr = np.repeat(s_e, C)
-    lat_r = (-te[:, None] + 2.0 * te[:, None] * t[None, :]).ravel()
+    g_r = (-te[:, None] + 2.0 * te[:, None] * t[None, :]).ravel()
+    lat_r = sign * g_r
     if lay_h is not None:
-        left_y = tt.lookup_height(lay_h, s_e, -te) - datum
-        right_y = tt.lookup_height(lay_h, s_e, te) - datum
+        left_y = tt.lookup_height(lay_h, s_e, sign * -te) - datum
+        right_y = tt.lookup_height(lay_h, s_e, sign * te) - datum
         sy = tt.lookup_height(lay_h, sr, lat_r) - datum
     else:
         left_y, right_y, sy = np.zeros(R), np.zeros(R), np.zeros(R * C)
+    # `kind` (paint sampled at the columns) stays for older pages; the chase
+    # view draws `paint` (true cells) when it is there
     kind = tt.paint_at(lay_p, sr, lat_r) if lay_p is not None else np.zeros(R * C, dtype=int)
+    paint = _lap_paint(lay_p, s_lap, sign)
+    # lap distance per ribbon row, as the topography indexes it (modulo the
+    # layout length); the raw value without a layout
+    s_rows = np.mod(s_e, float(lay_p["length_m"])) if lay_p is not None else s_e
     sx, sz = _ribbon_xz(edge_idx, left_x, left_z, right_x, right_z)
 
     # ── corner labels ──
@@ -246,6 +314,11 @@ def elevation_payload(*, path: Path, track_name: str, lap_len_m: float | None,
         label_y = np.zeros(len(labels))
 
     note = {"recorded": "", "topography": "", "lap": LAP_NOTE}.get(source, FLAT_NOTE)
+    if source == "none" and shown is None and s_lap is not None and track_name \
+            and (tt.load_track_topography(track_name) or {}).get("layouts"):
+        # the track has a topography, this lap just fits none of its layouts:
+        # "no elevation recorded for this track" would be false
+        note = PARTIAL_NOTE
     if source == "none" and lay_p is not None and lay_p.get("paint"):
         note += " (kerbs from earlier laps)"
 
@@ -261,6 +334,10 @@ def elevation_payload(*, path: Path, track_name: str, lap_len_m: float | None,
         "left_y": r3(left_y), "right_y": r3(right_y),
         "surface": {"rows": R, "cols": C,
                     "x": np.round(sx, 2).tolist(), "y": r3(sy),
-                    "z": np.round(sz, 2).tolist(), "kind": [int(k) for k in kind]},
+                    "z": np.round(sz, 2).tolist(), "kind": [int(k) for k in kind],
+                    "s": np.round(s_rows, 2).tolist(),
+                    # period of `s` (the layout length), 0 without a layout
+                    "length_m": round(float(lay_p["length_m"]), 3) if lay_p is not None else 0.0},
+        "paint": paint, "paint_cell": dict(PAINT_CELL),
         "label_y": r3(label_y),
     }

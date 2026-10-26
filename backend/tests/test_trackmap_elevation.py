@@ -1,6 +1,7 @@
 """/trackmap: elevation, attitude and the 3D surface ribbon (chase view)."""
 
 import math
+from pathlib import Path
 from urllib.parse import quote
 
 import numpy as np
@@ -199,6 +200,147 @@ def test_later_laps_do_not_drift_when_lap_dist_ends_short(tmp_path, monkeypatch)
     # s_est is only an even-spacing estimate (~0.05 m of its own error), so
     # compare the last lap with the first instead of with zero
     assert errs[2] < 0.1 and errs[2] < errs[0] + 0.02, errs
+
+
+def _true_kerb_s_range():
+    """Lap distance range of the synthetic kerb hits: lap 1 (offset 1.5)
+    puts its right wheels (lat + 0.8) beyond KERB_LAT_M, and the wheels sit
+    1.45 m ahead of / behind the reference point."""
+    from synthetic_track import FRONT_M, HALF_TRACK_M, KERB_LAT_M, _lap_lat
+    s = np.arange(0.0, RING_LENGTH_M, 0.05)
+    on = s[_lap_lat((0.0, 1.5, -1.5), 1, s) + HALF_TRACK_M > KERB_LAT_M]
+    return float(on.min()) - FRONT_M, float(on.max()) + FRONT_M
+
+
+def test_paint_cells_at_true_distance_and_width(tmp_path, monkeypatch):
+    """Important 1: paint is sent as the topography's own 2 m x 0.5 m cells,
+    not re-sampled onto the ~600-row x 11-column ribbon."""
+    f = write_hilly_session(sess(tmp_path) / "Hill-paint.duckdb")
+    _build_and_save(f)
+    d = _trackmap(f, monkeypatch, lap=1)
+    assert d["paint_cell"] == {"along_m": 2.0, "across_m": 0.5}
+    s = d["surface"]
+    assert len(s["s"]) == s["rows"]
+    # lap distance per row: monotone apart from the start/finish wrap (the
+    # first and the last row of a lap may each sit on the other side of it)
+    ds = np.diff(np.array(s["s"]))
+    assert (ds < -RING_LENGTH_M / 2).sum() <= 2 and (ds[ds > -RING_LENGTH_M / 2] >= 0).all()
+    assert min(s["s"]) >= 0 and max(s["s"]) < s["length_m"] <= RING_LENGTH_M + 1
+    kerb = np.array([c for c in d["paint"] if c[2] == 5], dtype=float)
+    assert len(kerb), d["paint"][:5]
+    assert all(c[2] in (2, 3, 4, 5) for c in d["paint"])
+    lo, hi = _true_kerb_s_range()
+    # cell centres (s = row*2 + 1) within one cell of the true hits, both ends
+    assert lo - 2.0 <= kerb[:, 0].min() <= lo + 2.0, (kerb[:, 0].min(), lo)
+    assert hi - 2.0 <= kerb[:, 0].max() <= hi + 2.0, (kerb[:, 0].max(), hi)
+    # across: only the right of travel, beyond the kerb line, at 0.5 m steps
+    assert (kerb[:, 1] > 5.0).all() and kerb[:, 1].max() < 7.0
+    assert np.allclose(kerb[:, 1] / 0.5, np.round(kerb[:, 1] / 0.5))
+    # the compatibility grid is still there
+    assert len(s["kind"]) == s["rows"] * s["cols"]
+
+
+def test_paint_empty_without_layout(tmp_path, monkeypatch):
+    legacy = write_hilly_session(sess(tmp_path) / "Hill-legacy.duckdb", with_pose=False,
+                                 with_surface=False)
+    d = _trackmap(legacy, monkeypatch)
+    assert d["paint"] == [] and d["paint_cell"] == {"along_m": 2.0, "across_m": 0.5}
+    assert len(d["surface"]["s"]) == d["surface"]["rows"]
+
+
+def _cut_lap(path, lap, frac):
+    """Add a Lap row part-way through `lap` (a reset / a session that ended
+    mid-lap): /trackmap's lap `lap` then covers only its first `frac`."""
+    import duckdb
+    con = duckdb.connect(str(path))
+    ts = [r[0] for r in con.execute('SELECT ts FROM "Lap" ORDER BY ts').fetchall()]
+    cut = ts[lap] + frac * (ts[lap + 1] - ts[lap])
+    con.execute('INSERT INTO "Lap" VALUES (?, ?)', (cut, 99))
+    con.close()
+    return path
+
+
+def test_partial_lap_uses_built_topography(tmp_path, monkeypatch):
+    """Important 2: a partial lap's Lap Dist span (~half the ring) matches no
+    layout length, but all of it fits inside the one layout: use it."""
+    rich = write_hilly_session(sess(tmp_path) / "Hill-rich.duckdb")
+    topo = _build_and_save(rich)
+    legacy = _cut_lap(write_hilly_session(sess(tmp_path) / "Hill-part.duckdb", with_pose=False,
+                                          lap_offsets=(0.5, 0.5, 0.5)), 1, 0.5)
+    d = _trackmap(legacy, monkeypatch, lap=1)
+    el = d["elevation"]
+    assert el["source"] == "topography", el
+    assert el["note"] == ""
+    y = np.array(d["driven_line"]["y"])
+    s = np.linspace(0, RING_LENGTH_M / 2, len(y))      # first half of the lap, evenly timed
+    err = np.abs(y[5:-5] - (truth(s[5:-5], 0.5) - topo["datum_m"]))
+    assert np.median(err) < 0.15, np.median(err)
+    # pose file, partial lap: the built topography too ("recorded")
+    rec = _cut_lap(write_hilly_session(sess(tmp_path) / "Hill-part-rec.duckdb"), 1, 0.4)
+    assert _trackmap(rec, monkeypatch, lap=1)["elevation"]["source"] == "recorded"
+
+
+def test_partial_lap_without_matching_layout_says_so(tmp_path, monkeypatch, reference_dir):
+    rich = write_hilly_session(sess(tmp_path) / "Hill-rich.duckdb")
+    topo = track_topography.build_topography([rich], SLUG, "Synthetic Hill Ring")
+    lay = topo["layouts"][0]
+    # a layout far shorter than the part of the lap driven: nothing fits
+    lay["length_m"] = 300.0
+    track_topography.save_topography(topo)
+    legacy = _cut_lap(write_hilly_session(sess(tmp_path) / "Hill-part.duckdb", with_pose=False), 1, 0.5)
+    d = _trackmap(legacy, monkeypatch, lap=1)
+    assert d["elevation"]["source"] == "none"
+    assert d["elevation"]["note"] == trackmap_elevation.PARTIAL_NOTE
+    assert not d["elevation"]["note"].startswith(FLAT_NOTE)
+
+
+def test_pick_layout_for_partial_lap():
+    topo = {"layouts": [{"length_m": 4000.0}, {"length_m": 5000.0}]}
+    pick = track_topography.pick_layout_partial
+    assert pick(topo, 3500.0)["length_m"] == 4000.0     # fits both: the closest
+    assert pick(topo, 4100.0)["length_m"] == 4000.0     # within 3 % of 4000
+    assert pick(topo, 4500.0)["length_m"] == 5000.0
+    assert pick(topo, 5200.0) is None
+    assert pick({"layouts": []}, 100.0) is None
+
+
+def test_lateral_sign_minus_one_is_applied_to_surface_and_paint(monkeypatch):
+    """Minor 1: the ribbon's columns run from the left edge (-te) to the right
+    edge (+te) in main.py's frame, which treats Path Lateral as right-positive.
+    The topography's frame is lateral_sign * Path Lateral, so a column at
+    ribbon offset g looks up lat = sign * g, and a paint cell at topography
+    lat sits at ribbon offset sign * lat."""
+    L, N = 1200.0, 600
+    h = [0.0] * N
+    bank = [0.1] * N                                   # rises 0.1 m/m to the topography's right
+    lay = {"length_m": L, "row_step_m": 2.0, "rows": N, "h": h, "bank": bank,
+           "n": [1] * N, "lat_min": [0.0] * N, "lat_max": [0.0] * N, "paint_cell_m": 0.5,
+           "paint": [[100, 12, 5]], "has_heights": True, "coverage": 1.0,
+           "lateral_sign": {"value": -1, "confidence": 1.0, "evidence": "test"},
+           "sources": {"files": 1, "laps": 1}}
+    topo = {"datum_m": 0.0, "built": "", "layouts": [lay]}
+    n = 1200
+    s_lap = np.linspace(0.0, L - 1.0, n)
+    te = np.full(n, 6.0)
+    zeros = np.zeros(n)
+    monkeypatch.setattr(track_topography, "load_topography", lambda name, length, **k: (topo, lay))
+    out = trackmap_elevation.elevation_payload(
+        path=Path("unused.duckdb"), track_name="Synthetic Hill Ring",
+        lap_len_m=L - 1.0, s_lap=s_lap, path_lat=zeros, ground_rec=None, attitude=None,
+        edge_idx=list(range(n)), track_edge=te,
+        left_x=zeros, left_z=zeros, right_x=zeros, right_z=zeros,
+        labels=[], line_idx=list(range(n)))
+    assert out["elevation"]["source"] == "topography"
+    # right edge (ribbon +te) = topography lat -te: 0.1 * -6 = -0.6
+    assert np.allclose(out["right_y"], -0.6, atol=1e-6)
+    assert np.allclose(out["left_y"], 0.6, atol=1e-6)
+    sy = np.array(out["surface"]["y"]).reshape(out["surface"]["rows"], out["surface"]["cols"])
+    assert np.allclose(sy[:, -1], -0.6, atol=1e-6) and np.allclose(sy[:, 0], 0.6, atol=1e-6)
+    # the kerb cell at topography lat +6 (right) sits on the ribbon's left (-6)
+    assert out["paint"] == [[201.0, -6.0, 5]]
+    kind = np.array(out["surface"]["kind"]).reshape(sy.shape)
+    assert (kind[:, -1] == 0).all()
+    assert (kind[:, 0] == 5).any()
 
 
 def test_lap_dist_rows_keeps_raw_values_and_bridges_the_wrap():

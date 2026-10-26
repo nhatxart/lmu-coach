@@ -574,10 +574,9 @@ def save_topography(topo: dict) -> Path:
 _CACHE: dict[str, tuple[int, dict]] = {}
 
 
-def load_topography(track_name: str, lap_length_m: float | None) -> tuple[dict, dict] | None:
-    """(topography, layout) for an analysed lap, or None: unknown track, no
-    file, or no layout within 3 % of the lap length (a different layout or a
-    partial lap must not borrow another layout's heights). Cached by mtime."""
+def load_track_topography(track_name: str) -> dict | None:
+    """The built topography file of this track (any layout), or None:
+    unknown track or no file. Cached by mtime."""
     slug = slug_for_track(track_name)
     if not slug:
         return None
@@ -590,8 +589,47 @@ def load_topography(track_name: str, lap_length_m: float | None) -> tuple[dict, 
     if hit is None or hit[0] != mtime:
         hit = (mtime, json.loads(p.read_text(encoding="utf-8")))
         _CACHE[str(p)] = hit
-    layout = pick_layout(hit[1], lap_length_m)
-    return (hit[1], layout) if layout else None
+    return hit[1]
+
+
+def load_topography(track_name: str, lap_length_m: float | None,
+                    lap_max_s: float | None = None) -> tuple[dict, dict] | None:
+    """(topography, layout) for an analysed lap, or None: unknown track, no
+    file, or no layout fits the lap.
+
+    A layout fits when its length is within 3 % of the lap's Lap Dist span (a
+    different layout must not borrow another layout's heights) or, failing
+    that, when the lap is partial and every Lap Dist it reached fits inside
+    the layout (`lap_max_s`, see pick_layout_partial).
+    BUG FIX / PREVIOUSLY: only the span was compared, so a partial lap (out-
+    lap, in-lap, the session's last lap: often the lap /trackmap auto-picks)
+    never matched and the chase view said "no elevation recorded for this
+    track yet" on a track that had one (Sarthe lap 8, 131 s).
+    """
+    topo = load_track_topography(track_name)
+    if topo is None:
+        return None
+    layout = pick_layout(topo, lap_length_m)
+    if layout is None and lap_max_s is not None:
+        layout = pick_layout_partial(topo, lap_max_s)
+    return (topo, layout) if layout else None
+
+
+def pick_layout_partial(topo: dict, lap_max_s: float) -> dict | None:
+    """The layout a partial lap belongs to: every layout whose length (plus
+    the 3 % tolerance) holds the furthest Lap Dist the lap reached is a
+    candidate; the shortest of them is the closest. None when none holds it.
+
+    Two layouts of one track that both hold the lap (a short and a long
+    variant, the lap ended before they part) are told apart by nothing in
+    Lap Dist; the closest is the better guess, and the same paint and heights
+    sit under both where they share the track.
+    """
+    if not lap_max_s or not math.isfinite(lap_max_s):
+        return None
+    fits = [l for l in (topo.get("layouts") or [])
+            if lap_max_s <= float(l["length_m"]) * (1 + LAYOUT_TOLERANCE)]
+    return min(fits, key=lambda l: float(l["length_m"])) if fits else None
 
 
 def pick_layout(topo: dict, lap_length_m: float | None,

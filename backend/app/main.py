@@ -1006,6 +1006,8 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
     return {
         "elevation": elev["elevation"],
         "surface":   elev["surface"],
+        "paint":     elev["paint"],
+        "paint_cell": elev["paint_cell"],
         "coordinate_system": "gps_projected" if use_gps else "world_metres",
         "lap_number":  lap_number,
         "has_edges":   has_edges,
