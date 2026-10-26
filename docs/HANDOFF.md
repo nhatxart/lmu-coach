@@ -132,6 +132,12 @@ Analyze flow: UI "Analyze" → (if auto_start) host agent `/llm/ensure` → poll
 ### 4.6 DuckDB schema
 Recorder file tables: `metadata`, `channelsList`, `eventsList`, `GPS Time`, `Pos X`, `Pos Z`, `Ground Speed`, `Yaw Rate`, `Slip Angle` (value1..4), `Wheel Speed`, `Susp Pos`, `G Force Lat/Long/Vert`, `Throttle Pos`, `Brake Pos`, `Steering Pos`, `Lap Dist`, `Path Lateral`, `Track Edge`, `TyresPressure`, `TyresRubberTemp`, `Gear`, `In Pits`, `ABS`, `TC`, `Lap` (ts,value), `Lap Time` (ts,value). Scalar tables are `(value)` per sample with frequency in `channelsList`; wheel tables `(value1..value4)` = FL, FR, RL, RR; event tables `(ts, value)`.
 Known zeroed/unpopulated: Tire Load, Tire Lateral Force, Tire Longitudinal Force, Grip Fraction (see 4.1). Native files lack Slip Angle, Yaw Rate and those four.
+Pose channels (recordings from 10/25/2026 on, for the chase view's track topography; older files and native files have none of them):
+- `Pos Y` — `(value)`, world height in m, same rate/rows as `Pos X`/`Pos Z`. Never flagged unpopulated (0 is a real height).
+- `Ori R0X` … `Ori R2Z` — nine scalar tables `(value)`, the raw `mOri` matrix row by row (`Ori R<k><X|Y|Z>` = row k), same rate as `Pos X`. The layout is not documented by the game: `vehicle_pose.py` detects the convention from data (forward axis vs. velocity on straights) and refuses rather than guesses; `BUILD_TRACK_REFERENCE` prints what it detected per file.
+- `Other Cars` — `(ts, slot, pos_x, pos_y, pos_z, lap_dist, path_lateral, in_pits)`, one row per non-player car per 10 Hz gate tick (`ts` = the player's `mElapsedTime`); `channelsList` unit `pose_rows`. Unverified in game (may be empty outside race/AI sessions).
+- `metadata` key `PoseChannels` = `"1"` marks files that carry the above.
+Derived per track (not in the session files): `data/track_reference/<slug>.topography.json` (rows every 2 m of lap distance, height + bank per row, kerb/grass/gravel paint), built by `BUILD_TRACK_REFERENCE.ps1` (`--topography-only` for just that).
 
 ---
 
@@ -223,12 +229,18 @@ Backend (`backend/`)
 - `app/grip_analysis.py` — ABS/TC events, wheel slip, combined G, understeer signatures, report builder.
 - `app/coach.py` — LLM client (OpenAI-compatible; llama.cpp), system prompt, follow-up messages, `LLMError/LLMUnavailable`.
 - `app/track_db.py` — track/layout registry + corner reference points.
-- `app/static/index.html` — whole UI (redesigned): map, HUD, traction circle, graphs, Coach/Record/Settings, lap chips, β chevron, slip-gain selector.
+- `app/static/index.html` — whole UI (redesigned): map, HUD, traction circle, graphs, Coach/Record/Settings, lap chips, β chevron, slip-gain selector; since 10/25/2026 also the Top-down/Chase view switch and the chase view (inline `<script type="module">`, `window.Chase`).
 - `app/static/fonts/*` + `LICENSES.txt` — bundled Fira Sans/Code (OFL).
+- `app/static/vendor/` (10/25/2026) — three.js 0.186.1 (`three/three.module.js`, `three/three.core.js`, `LICENSE`) and GSAP 3.15.0 (`gsap/gsap.min.js`, `LICENSE` notice), byte-exact from npm, loaded only when the chase view is opened. `.gitattributes` (root) keeps them `-text` so git does not rewrite their line endings.
+- `app/vehicle_pose.py` (10/25/2026) — detects the `Ori R..` convention from data; pitch/roll and the body basis per sample.
+- `app/track_topography.py` (10/25/2026) — ground probes (pose + ride height per wheel), per-track grid fit (height, bank, paint), lookup, build/save/load of `*.topography.json`.
+- `app/trackmap_elevation.py` (10/25/2026) — the `/trackmap` elevation block: `driven_line.y/pitch_deg/roll_deg`, edge heights, the 3D `surface` ribbon, `elevation.source/note`.
+- `tests/synthetic_track.py` (10/25/2026) — a hilly, banked synthetic ring written as a recorder file with known ground truth (used by the topography, `/trackmap` and UI tests).
+- `tests/ui/` (10/25/2026) — Playwright browser tests of the chase view (`conftest.py` starts the backend on synthetic sessions, `serve_for_ui.py`, `test_chase_view.py`); skip cleanly without Playwright/Chromium.
 - `requirements.txt`, `Dockerfile` — python:3.12-slim, uvicorn on 8000.
 
 Recorder (`recorder/`)
-- `recorder.py` — THE recorder (HF1 format; merged from the old v4 `recorder.py` and `recorder_hf.py` on 2026-10-19). Records every session it finds by itself, saves on garage/quit/freeze and picks up the next one. follows the game's updates (tick-synced, ~100 Hz, ~1 % CPU; `--poll-hz N` polls at a fixed rate instead) with one sample per game tick, extra tyre-model channels, official lap times, full-session DuckDB via CSV+COPY, .tmp/.spool recovery (a leftover `.spool_hf` is still recovered), stop file `.stop_requested`, `--probe`, `--selftest`, `--recover`.
+- `recorder.py` — THE recorder (HF1 format; merged from the old v4 `recorder.py` and `recorder_hf.py` on 2026-10-19). Records every session it finds by itself, saves on garage/quit/freeze and picks up the next one. follows the game's updates (tick-synced, ~100 Hz, ~1 % CPU; `--poll-hz N` polls at a fixed rate instead) with one sample per game tick, extra tyre-model channels, official lap times, full-session DuckDB via CSV+COPY, .tmp/.spool recovery (a leftover `.spool_hf` is still recovered), stop file `.stop_requested`, `--probe`, `--selftest`, `--recover`. Since 10/25/2026 also the pose channels `Pos Y`, `Ori R0X..R2Z` and `Other Cars` (§4.6).
 - `recorder_control.py` — host agent (port 8420): recorder subprocess, SSE logs, config, path checks, LLM health/auto-start, GuardMiddleware.
 - `START_RECORDER.ps1` — `uv sync; uv run recorder.py` (standalone launch; passes arguments through, e.g. `--probe 30`, `--poll-hz 1000`).
 - `START_RECORDER_CONTROL.ps1` — launches the host agent.
@@ -242,6 +254,8 @@ Root
 - `DESIGN.md` — design tokens/layout/accessibility reference for the redesign.
 - `DevNotes.md` — user's own dev log (not ours; contains the 9/18–9/19 notes on zeroed tables and the viewer error).
 - `data/grip_profiles/*.json` — accumulated profiles (Akkodis ASP #78, Proton #88).
+- `data/track_reference/*.topography.json` (10/25/2026) — per-track topography for the chase view, built by `backend/tools/BUILD_TRACK_REFERENCE.ps1`; read-only at run time. The ones committed so far are paint-only (no recording with `Pos Y` existed yet).
+- `.gitattributes` (10/25/2026) — `backend/app/static/vendor/** -text`.
 - `docs/HANDOFF.md` — this file.
 
 Delivered zips in the chat (date order, layer with `unzip -o`): `lmu-coach-updated`, `recorder-fixed`, `backend-fixed`, `fixes-round3`, `lowpass-filter-fix`, `dynamic-range-fix`, `speed-abs-tc-graphs`, `balance-fix-and-ui-changes`, `tire-model-grip-utilization-traction-circle`, `recorder-overhaul`, `recorder-save-fix`, `-v2`, `-v3`, `recorder-py-v3.1`, `lmu-coach-settings-v1`, `lmu-coach-redesign-v1`, `lmu-coach-bodyslip-v1`. The repo snapshot delivered with this handoff already has all of them applied.

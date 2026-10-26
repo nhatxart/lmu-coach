@@ -188,11 +188,13 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;bac
 .view-switch button:active{transform:none;}
 
 /* Chase view: a second canvas over the map, under the HUDs (z 20). The 2D
-   canvas stays in place (opacity 0) so hold-to-pause still reaches it. */
+   canvas stays in place (opacity 0) so hold-to-pause still reaches it.
+   data-view=trans: the camera transition is running; the 2D map stays
+   visible underneath and the chase canvas/labels fade with the camera
+   (their opacity is set inline from the transition's mix). */
 #chase-canvas{position:absolute;inset:0;width:100%;height:100%;display:block;opacity:0;pointer-events:none;z-index:1;}
 #chase-labels{position:absolute;inset:0;pointer-events:none;z-index:2;overflow:hidden;display:none;}
-.map-body[data-view=chase] #chase-canvas{opacity:1;}
-.map-body[data-view=chase] #chase-labels{display:block;}
+.map-body[data-view=chase] #chase-labels,.map-body[data-view=trans] #chase-labels{display:block;}
 .map-body[data-view=chase] #map-canvas{opacity:0;cursor:default;}
 .chase-pill{position:absolute;left:0;top:0;white-space:nowrap;padding:1px 6px;border-radius:4px;background:rgba(7,11,20,.85);
   font:600 13px var(--font-data);font-variant-numeric:tabular-nums;will-change:transform;}
@@ -201,7 +203,7 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;bac
 #chase-note{position:absolute;left:var(--sp-4);top:var(--sp-4);z-index:22;display:none;max-width:calc(100% - 140px);
   padding:6px 12px;border-radius:999px;background:rgba(13,19,34,.93);border:1px solid var(--line-strong);
   font-size:13px;color:var(--text-2);box-shadow:var(--shadow-1);}
-.map-body[data-view=chase] #chase-note.on{display:block;}
+.map-body[data-view=chase] #chase-note.on,.map-body[data-view=trans] #chase-note.on{display:block;}
 #chase-msg{position:absolute;left:50%;top:var(--sp-4);transform:translateX(-50%);z-index:26;display:none;max-width:calc(100% - 48px);
   padding:10px 16px;border-radius:var(--r-md);background:rgba(13,19,34,.95);border:1px solid var(--line-strong);
   font-size:15px;color:var(--text);box-shadow:var(--shadow-2);text-align:center;}
@@ -719,7 +721,12 @@ const S={
   // 'top' (2D map) | 'chase' (3D, behind the car). The chase code is the
   // <script type="module"> at the end of the page (window.Chase).
   view:(()=>{try{return localStorage.getItem('lmu-coach.view')==='chase'?'chase':'top';}catch(e){return 'top';}})(),
+  // Chase camera distance behind the car (m). The zoom controls drive it in
+  // the chase view and S.zoom/panX/panY in the top-down view, so each view
+  // keeps its own framing.
+  chaseDist:7.5,
 };
+const CHASE_DIST_DEFAULT=7.5,CHASE_DIST_MIN=4,CHASE_DIST_MAX=30;
 let mapCtx=null,mapW=0,mapH=0;
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1254,7 +1261,7 @@ async function loadMap(){
     if(!r.ok){setOverlay(`<span style="color:var(--warn)">Map error: ${await r.text()}</span>`);return;}
     S.mapData=await r.json();
     S.zoom=1;S.panX=0;S.panY=0;
-    document.getElementById('zoom-slider').value=1;
+    syncZoomSlider();                  // the chase distance carries over to the new lap
     S.playhead=0;
     setScrub(0);
     const lapObj=S.laps.find(l=>l.lap_number===S.lap);
@@ -1289,8 +1296,25 @@ function toScreen(x,z){
   const sc=S.fitSc*S.zoom;
   return[(x-S.fitCxW)*sc+W/2+S.panX,(z-S.fitCzW)*sc+H/2+S.panY];
 }
-function fitMap(){S.zoom=1;S.panX=0;S.panY=0;document.getElementById('zoom-slider').value=1;if(S.mapData)drawMap();}
-function onZoom(val){S.zoom=parseFloat(val);if(S.mapData)drawMap();}
+// Zoom controls per view. Chase: the slider's zoom z (0.5-10) maps to the
+// camera distance D = clamp(7.5/z, 4, 30); the wheel/pinch scale D directly
+// (so it can reach 30 m, beyond the slider's 0.5 end). The 2D zoom and pan
+// are left alone there and are what the top-down view shows on return.
+function chaseZoomOn(){return S.view==='chase';}
+function syncZoomSlider(){
+  document.getElementById('zoom-slider').value=chaseZoomOn()?clamp(CHASE_DIST_DEFAULT/S.chaseDist,0.5,10):S.zoom;
+}
+function setChaseDist(d){
+  S.chaseDist=clamp(d,CHASE_DIST_MIN,CHASE_DIST_MAX);syncZoomSlider();if(S.mapData)drawMap();
+}
+function fitMap(){
+  if(chaseZoomOn()){setChaseDist(CHASE_DIST_DEFAULT);return;}
+  S.zoom=1;S.panX=0;S.panY=0;document.getElementById('zoom-slider').value=1;if(S.mapData)drawMap();
+}
+function onZoom(val){
+  if(chaseZoomOn()){S.chaseDist=clamp(CHASE_DIST_DEFAULT/parseFloat(val),CHASE_DIST_MIN,CHASE_DIST_MAX);if(S.mapData)drawMap();return;}
+  S.zoom=parseFloat(val);if(S.mapData)drawMap();
+}
 
 function resizeDraw(){
   const cv=document.getElementById('map-canvas');
@@ -1306,7 +1330,8 @@ function drawMap(){
   if(!mapCtx||!S.mapData)return;
   // Chase view on screen: every caller of drawMap (playback, scrub, overlay,
   // slip gain, resize) redraws the 3D view instead; the 2D canvas is hidden.
-  if(S.view==='chase'&&window.Chase&&Chase.state().mix>=1){Chase.render();return;}
+  // During the transition (mix < 1) the 2D map keeps drawing underneath.
+  if(S.view==='chase'&&window.Chase&&Chase.covers()){Chase.render();return;}
   const dpr=devicePixelRatio||1;
   const{track:tr,driven_line:dl}=S.mapData;
   const W=mapW/dpr,H=mapH/dpr;
@@ -1559,6 +1584,7 @@ cv.addEventListener('wheel',e=>{
   const mx=e.clientX-r.left,mz=e.clientY-r.top;
   const dpr=devicePixelRatio||1;const W=mapW/dpr,H=mapH/dpr;
   const factor=e.deltaY>0?0.91:1.10;
+  if(chaseZoomOn()){setChaseDist(S.chaseDist/factor);return;}   // wheel up = closer
   const newZoom=clamp(S.zoom*factor,0.5,10);
   S.panX=(mx-W/2)-((mx-W/2-S.panX)*newZoom/S.zoom);
   S.panY=(mz-H/2)-((mz-H/2-S.panY)*newZoom/S.zoom);
@@ -1570,6 +1596,7 @@ cv.addEventListener('touchstart',e=>{if(e.touches.length===2){const a=e.touches[
 cv.addEventListener('touchmove',e=>{
   if(e.touches.length===2&&_pinchDist){
     const a=e.touches[0],b=e.touches[1];const d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);
+    if(chaseZoomOn()){setChaseDist(S.chaseDist*(_pinchDist/d));_pinchDist=d;return;}   // spread = closer
     S.zoom=clamp(S.zoom*(d/_pinchDist),0.5,10);document.getElementById('zoom-slider').value=S.zoom;_pinchDist=d;if(S.mapData)drawMap();
   }
 },{passive:true});
@@ -2044,6 +2071,7 @@ function setView(v,opts){
     const b=document.getElementById('view-'+k),on=k===v;
     b.setAttribute('aria-checked',on?'true':'false');b.tabIndex=on?0:-1;
   });
+  syncZoomSlider();                    // the slider shows this view's own zoom
   if(v==='chase'){
     S.hoverIdx=null;S.isPanning=false;document.getElementById('map-tooltip').style.display='none';
     if(window.Chase)Chase.activate();   // else the module activates itself on load
@@ -2454,10 +2482,20 @@ const COL={bg:'#060912',road:'#2C3855',roadLit:'#1C2640',grass:'#1E3527',dirt:'#
 const NO_WEBGL="Chase view needs WebGL, which isn't available here. Showing top-down.";
 const LOST_CTX="Chase view lost its graphics context. Showing top-down.";
 const BAD_LAP="Chase view can't draw this lap. Showing top-down.";
-// Chase pose (spec): 7.5 m behind and 2.6 m above the car, looking 12 m
-// ahead along the course, 55 deg vertical FOV. Task 7 adds smoothing, scrub
-// snaps, the ground clamp, zoom and the animated transition on chasePose().
-const CAM_BACK=7.5,CAM_UP=2.6,CAM_AHEAD=12,CAM_FOV=55;
+// Chase pose (spec): S.chaseDist (default 7.5 m) behind and 2.6 m above the
+// car, looking 12 m ahead along the course and 0.8 m up, 55 deg vertical FOV.
+const CAM_UP=2.6,CAM_AHEAD=12,CAM_LOOK_UP=0.8,CAM_FOV=55,CAM_NEAR=0.1,CAM_FAR=2000;
+const FOG_NEAR=150,FOG_FAR=900;
+// Smoothing time constants (s). The camera follows the COURSE (direction of
+// travel), not the heading, so body slip shows as the chevron turning away
+// from the camera's line; smoothing keeps 10 Hz kinks in the course from
+// shaking it. CAM_CLEAR: never closer than this to the ground under it.
+const TAU_COURSE=0.35,TAU_HEIGHT=0.5,DT_MAX=0.1,CAM_CLEAR=1.0;
+const SNAP_FRAC=0.02;                          // playhead jump (fraction of the lap) that resets the smoothing
+const SETTLE_RAD=0.001,SETTLE_M=0.005;         // paused: keep drawing until this close to target
+// Top-down <-> chase transition (s, GSAP power2.inOut) and the part of the
+// mix over which the chase canvas fades in/out over the 2D map.
+const TRANS_IN_S=1.1,TRANS_OUT_S=0.8,FADE_MIX=0.15;
 // Car marker: TRUE footprint (4.7 x 2.0 m, so the line can be judged against
 // edges and kerbs) but flat and see-through, so it never hides what is under it.
 const CAR_LEN=4.7,CAR_W=2.0,CAR_H=0.15,CAR_FILL_OPACITY=0.55,CAR_LIFT=0.03;
@@ -2483,7 +2521,17 @@ let cornerPills=[],betaPill=null;
 // builtFor: the payload the scene was last built (or tried) for; buildFailed:
 // that try threw. Both are set BEFORE building, so a bad lap fails once
 // instead of on every frame. lost: the WebGL context is gone.
-const st={ready:false,built:false,failed:false,lost:false,mix:0,builtFor:null,buildFailed:false,loading:null,msgTimer:null};
+const st={ready:false,built:false,failed:false,lost:false,mix:0,builtFor:null,buildFailed:false,loading:null,msgTimer:null,renders:0};
+// Smoothed camera state. course: smoothed course angle (rad), null = snap on
+// the next frame; h: smoothed camera height (m, world); lastF/lastData: the
+// playhead point and payload of the previous frame (scrub/lap-change snaps);
+// lastT: performance.now() of the previous frame.
+const cam={course:null,h:0,target:0,hTarget:0,lastF:0,lastData:null,lastT:0,car:{x:0,y:0,z:0}};
+let lineS=null;                              // cumulative horizontal distance along the driven line (per build)
+let tween=null,settleH=null;
+// Scratch objects for the per-frame path (created with the scene): no
+// allocation per frame.
+let _eye,_look,_top,_topT,_pill,_q0,_q1,_m4,_upY,_upMap;
 
 // ── loading ────────────────────────────────────────────────────────────────
 function webglAvailable(){
@@ -2562,8 +2610,12 @@ function lineRgbOverRoad(i){
 function initScene(){
   scene=new T.Scene();
   scene.background=new T.Color(COL.bg);
-  scene.fog=new T.Fog(COL.bg,150,900);       // fades the far track into --map-bg
-  camera=new T.PerspectiveCamera(CAM_FOV,1,0.1,2000);
+  scene.fog=new T.Fog(COL.bg,FOG_NEAR,FOG_FAR);   // fades the far track into --map-bg
+  camera=new T.PerspectiveCamera(CAM_FOV,1,CAM_NEAR,CAM_FAR);
+  _eye=new T.Vector3();_look=new T.Vector3();_top=new T.Vector3();_topT=new T.Vector3();_pill=new T.Vector3();
+  _q0=new T.Quaternion();_q1=new T.Quaternion();_m4=new T.Matrix4();
+  _upY=new T.Vector3(0,1,0);
+  _upMap=new T.Vector3(0,0,-1);   // seen from +Y with this up, Three draws the canvas picture (x right, z down)
   scene.add(new T.HemisphereLight('#9FB3D9','#0A0F1C',1.1));
   const sun=new T.DirectionalLight('#ffffff',1.2);sun.position.set(-0.5,1,0.3);scene.add(sun);
 
@@ -2830,6 +2882,12 @@ function buildScene(d){
   if(d.has_edges&&d.track)edgeRibbons(d.track).forEach(l=>world.add(l));
   ribbon=drivenRibbon(d.driven_line);
   if(ribbon){world.add(ribbon);colourRibbon();}
+  // Distance along the line, for the camera's ground clamp (the ground D m
+  // back along the line); once per lap so the per-frame path only searches.
+  const dl=d.driven_line,n=dl.x.length;
+  lineS=new Float64Array(n);
+  for(let i=1;i<n;i++)lineS[i]=lineS[i-1]+Math.hypot(dl.x[i]-dl.x[i-1],dl.z[i]-dl.z[i-1]);
+  cam.course=null;                            // new lap: snap
   // Corner pills, same short label as the 2D map ("T5 Esses" -> "T5").
   cornerPills=(d.corner_labels||[]).map(c=>({el:pill('corner',c.label.replace(/^(T\d+)\s.*$/,'$1').substring(0,8)),
     v:new T.Vector3(c.x,(c.y||0)+1.6,c.z)}));
@@ -2839,16 +2897,96 @@ function buildScene(d){
 }
 
 // ── per-frame ──────────────────────────────────────────────────────────────
-// Camera from the car pose: behind and above along the course. Task 7 wraps
-// this with smoothing and the transition.
-function chasePose(x,y,z,course){
-  const cx=Math.cos(course),cz=Math.sin(course);
-  return{pos:[x-cx*CAM_BACK,y+CAM_UP,z-cz*CAM_BACK],target:[x+cx*CAM_AHEAD,y,z+cz*CAM_AHEAD]};
+const wrapAng=a=>Math.atan2(Math.sin(a),Math.cos(a));
+// Height of the driven line `back` metres (horizontal) behind point f, by
+// cumulative distance: the ground under the chase camera, to first order.
+function groundBehind(dl,f,back){
+  const n=lineS.length;
+  if(!dl.y||dl.y.length!==n)return 0;
+  const s=Math.max(0,lerpAt(lineS,f)-back);
+  let lo=0,hi=n-1;                            // last i with lineS[i] <= s
+  while(hi-lo>1){const m=(lo+hi)>>1;if(lineS[m]<=s)lo=m;else hi=m;}
+  const span=lineS[hi]-lineS[lo];
+  return span>0?lerp(dl.y[lo],dl.y[hi],clamp((s-lineS[lo])/span,0,1)):dl.y[lo];
 }
-const _v=()=>new T.Vector3();
+
+// Chase camera for this frame: course and height smoothed in time
+// (alpha = 1 - exp(-dt/tau), frame-rate independent; dt clamped so a stalled
+// tab does not jump), snapped on scrub jumps / lap changes. Writes the eye to
+// _eye and the look-at point to _look. Returns true when converged.
+function chaseCamera(dl,f,n,x,y,z,course){
+  const now=performance.now();
+  const dt=cam.lastT?clamp((now-cam.lastT)/1000,0,DT_MAX):0;
+  cam.lastT=now;
+  cam.target=course;cam.hTarget=y+CAM_UP;
+  // BUG GUARD: without the snap, dragging the scrubber from one straight to
+  // the opposite one swings the camera 180 deg across the track over ~1 s.
+  if(cam.course===null||cam.lastData!==S.mapData||Math.abs(f-cam.lastF)>SNAP_FRAC*(n-1)){
+    cam.course=course;cam.h=cam.hTarget;
+  }else{
+    cam.course=wrapAng(cam.course+wrapAng(course-cam.course)*(1-Math.exp(-dt/TAU_COURSE)));
+    cam.h+=(cam.hTarget-cam.h)*(1-Math.exp(-dt/TAU_HEIGHT));
+  }
+  cam.lastF=f;cam.lastData=S.mapData;
+  const D=S.chaseDist,cx=Math.cos(cam.course),cz=Math.sin(cam.course);
+  // The smoothed height lags a crest; the clamp keeps the camera out of the
+  // hill behind the car (ground D m back along the line + 1 m).
+  const camY=Math.max(cam.h,groundBehind(dl,f,D)+CAM_CLEAR);
+  _eye.set(x-cx*D,camY,z-cz*D);
+  _look.set(x+cx*CAM_AHEAD,y+CAM_LOOK_UP,z+cz*CAM_AHEAD);
+  return Math.abs(wrapAng(course-cam.course))<SETTLE_RAD&&Math.abs(cam.hTarget-cam.h)<SETTLE_M;
+}
+
+// Place the camera between the top-down pose (mix 0) and the chase pose in
+// _eye/_look (mix 1). The top-down pose is the CURRENT 2D framing: centre
+// and scale from toScreen(), height so the vertical FOV spans the canvas
+// height at the car's ground height, looking straight down with up = -Z.
+// Orientation is slerped (q0 -> q1); the distance from the camera to the
+// point it looks at is interpolated in log space (a linear lerp from ~1 km
+// spends the whole move far up and then drops onto the car).
+// BUG FIX / PREVIOUSLY: the eye's horizontal position was lerped from the
+// map centre to the chase eye. With the slerped tilt, the camera then
+// looked along the course from a point still ~100 m to the side of the car
+// for most of the move: the middle frames showed empty track, no car. Fix:
+// move the point looked at (F) instead, as a zoom ABOUT THE CAR: F starts
+// at the map centre and its offset from the car shrinks with the distance
+// (k = (r-r1)/(r0-r1)), so the car keeps its 2D screen position while the
+// camera closes in and tilts, then settles into the chase framing. The eye
+// is F minus the view direction times that distance; both ends are exact.
+function poseCamera(x,y,z){
+  const m=st.mix;
+  let near=CAM_NEAR,far=CAM_FAR,fogN=FOG_NEAR,fogF=FOG_FAR;
+  if(m>=1){
+    camera.position.copy(_eye);
+    _m4.lookAt(_eye,_look,_upY);camera.quaternion.setFromRotationMatrix(_m4);
+  }else{
+    const H=canvas.clientHeight||1,sc=S.fitSc*S.zoom;
+    const cx0=-S.panX/sc+S.fitCxW,cz0=-S.panY/sc+S.fitCzW;
+    const r0=(H/sc/2)/Math.tan(CAM_FOV*DEG/2);
+    _top.set(cx0,y+r0,cz0);_topT.set(cx0,y,cz0);
+    _m4.lookAt(_top,_topT,_upMap);_q0.setFromRotationMatrix(_m4);
+    _m4.lookAt(_eye,_look,_upY);_q1.setFromRotationMatrix(_m4);
+    camera.quaternion.slerpQuaternions(_q0,_q1,m);
+    const r1=Math.max(_eye.distanceTo(_look),0.1);
+    const r=Math.exp(lerp(Math.log(Math.max(r0,r1)),Math.log(r1),m));
+    const k=r0>r1?(r-r1)/(r0-r1):0;
+    _top.set(lerp(x,_look.x,m)+(cx0-x)*k,lerp(y,_look.y,m),lerp(z,_look.z,m)+(cz0-z)*k);   // F
+    _topT.set(0,0,-1).applyQuaternion(camera.quaternion);                                  // view direction
+    camera.position.copy(_top).addScaledVector(_topT,-r);
+    // High up, the chase fog/far plane would hide the whole track: push
+    // them out by the extra distance, and the near plane with it (depth
+    // precision at ~1 km). All back to the chase values at mix 1.
+    const extra=Math.max(0,r-r1);
+    near=Math.max(CAM_NEAR,extra*0.005);far=CAM_FAR+extra*2;
+    fogN=FOG_NEAR+extra*1.2;fogF=FOG_FAR+extra*1.5;
+  }
+  if(camera.near!==near||camera.far!==far){camera.near=near;camera.far=far;camera.updateProjectionMatrix();}
+  scene.fog.near=fogN;scene.fog.far=fogF;
+}
+
 function placePill(el,v,w,h,dx,dy,maxDist){
   const d=v.distanceTo(camera.position);
-  const p=v.clone().project(camera);
+  const p=_pill.copy(v).project(camera);
   if(p.z>1||p.z<-1||d>maxDist||Math.abs(p.x)>1.2||Math.abs(p.y)>1.2){el.style.display='none';return;}
   el.style.display='block';
   el.style.opacity=String(clamp(1-(d-maxDist*0.6)/(maxDist*0.4),0,1));
@@ -2856,11 +2994,14 @@ function placePill(el,v,w,h,dx,dy,maxDist){
 }
 
 function render(){
-  if(!st.ready||st.lost||!S.mapData)return;
+  // mix 0: the chase canvas is invisible (top-down, or the transition back
+  // has finished), so there is nothing to draw.
+  if(!st.ready||st.lost||!S.mapData||st.mix<=0)return;
   if(st.builtFor!==S.mapData&&!build(S.mapData))return;   // one try per payload
   const dl=S.mapData.driven_line,n=dl.x.length;
   if(!st.built||!n)return;
-  const f=clamp(S.playhead*(n-1),0,n-1);
+  // Same fractional point as the 2D map's dotF (hover is off in chase).
+  const f=(S.hoverIdx!=null)?S.hoverIdx:clamp(S.playhead*(n-1),0,n-1);
   const m=carMarkerAt(f);
   const at=arr=>arr&&arr.length===n?lerpAt(arr,f):0;
   const x=lerpAt(dl.x,f),z=lerpAt(dl.z,f),y=at(dl.y);
@@ -2878,9 +3019,15 @@ function render(){
   carMat.color.setRGB(r/255,g/255,b/255,T.SRGBColorSpace);
   carEdgeMat.color.copy(carMat.color);
 
-  const pose=chasePose(x,y,z,m.ang);
-  camera.position.set(...pose.pos);camera.lookAt(...pose.target);
-  renderer.render(scene,camera);
+  cam.car.x=x;cam.car.y=y;cam.car.z=z;
+  const settled=chaseCamera(dl,f,n,x,y,z,m.ang);
+  poseCamera(x,y,z);
+  renderer.render(scene,camera);st.renders++;
+  // Paused (or held), nothing else asks for frames: keep drawing until the
+  // smoothed camera reaches its target, then stop (one pending rAF at most,
+  // none once settled). Playback and the transition tween drive their own.
+  if(!settled&&!(S.playing&&!S.holdPause)&&!tween&&settleH===null)
+    settleH=requestAnimationFrame(()=>{settleH=null;render();});
 
   const w=canvas.clientWidth,h=canvas.clientHeight;
   cornerPills.forEach(p=>placePill(p.el,p.v,w,h,0,-4,600));
@@ -2892,7 +3039,7 @@ function render(){
       // and stays clear of the HUD panels in the bottom corners.
       const back=-CAR_LEN*0.45;
       betaPill.textContent=betaLabel(m.beta);
-      placePill(betaPill,_v().set(x+Math.cos(m.ang)*back,y,z+Math.sin(m.ang)*back),w,h,0,0,1e9);
+      placePill(betaPill,_look.set(x+Math.cos(m.ang)*back,y,z+Math.sin(m.ang)*back),w,h,0,0,1e9);   // _look is free once the camera is posed
       betaPill.style.transform+=' translate(0,calc(100% + 10px))';   // top edge 10 px below the anchor
     }
   }
@@ -2911,8 +3058,42 @@ function resize(){
   camera.aspect=r.width/r.height;camera.updateProjectionMatrix();
 }
 
-// Open / close the view. This task cuts straight to the chase pose (mix 0 or
-// 1); Task 7 replaces the cut with the GSAP camera transition.
+// ── transition ─────────────────────────────────────────────────────────────
+// The canvas opacity is a function of mix alone (fade over the first 15 % of
+// it), so a reversal mid-way continues from where it is, with no jump.
+function applyMix(v){
+  st.mix=v;
+  const op=String(clamp(v/FADE_MIX,0,1));
+  canvas.style.opacity=op;labelLayer.style.opacity=op;
+}
+function endMix(v){
+  tween=null;applyMix(v);
+  mapBody.dataset.view=v>=1?'chase':'top';
+  if(v>=1)render();
+  else if(S.mapData)drawMap();               // 2D resumes on its own canvas
+}
+// Tween the camera to mix 0 or 1 (GSAP on a plain object, power2.inOut). A
+// new call kills the running tween and starts from the current mix; its
+// duration is the full one scaled by the distance left. Instant without
+// GSAP, under prefers-reduced-motion, or when there is nothing to show.
+function runMix(target,instant){
+  if(tween){tween.kill();tween=null;}
+  const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const dur=(target>=1?TRANS_IN_S:TRANS_OUT_S)*Math.abs(target-st.mix);
+  if(instant||reduce||!window.gsap||!st.built||dur<=0){endMix(target);return;}
+  // While it runs, the 2D map keeps drawing underneath (drawMap draws 2D
+  // until mix reaches 1) and the car keeps moving: render() reads the live
+  // playhead for the chase end of the move on every tick.
+  mapBody.dataset.view='trans';
+  cam.lastT=0;
+  const o={mix:st.mix};
+  tween=window.gsap.to(o,{mix:target,duration:dur,ease:'power2.inOut',
+    onUpdate:()=>{applyMix(o.mix);render();},
+    onComplete:()=>endMix(target)});
+}
+
+// Open / close the view: the animated camera move between the current 2D
+// framing and the chase pose.
 async function activate(){
   const ok=await ensure();
   if(S.view!=='chase')return;              // switched back while loading
@@ -2923,18 +3104,24 @@ async function activate(){
     if(st.builtFor!==S.mapData){if(!build(S.mapData))return;}         // build() reported it
     else if(st.buildFailed){showMsg(BAD_LAP);setView('top',{persist:false});return;}
   }
-  st.mix=1;mapBody.dataset.view='chase';
   resize();
-  if(S.mapData)render();
+  if(st.mix<=0)cam.course=null;               // coming from top-down: start from the target, no swing
+  runMix(1);
 }
-function deactivate(){st.mix=0;mapBody.dataset.view='top';}
+// Fallbacks (lost context, a lap that cannot be drawn) cut straight back:
+// there is no valid 3D picture to animate from.
+function deactivate(){runMix(0,st.lost||st.buildFailed);}
 
 function state(){
   const c=camera?camera.position:{x:0,y:0,z:0};
-  return{ready:st.ready,built:st.built,failed:st.failed,mix:st.mix,view:S.view,cam:{x:c.x,y:c.y,z:c.z}};
+  return{ready:st.ready,built:st.built,failed:st.failed,mix:st.mix,view:S.view,cam:{x:c.x,y:c.y,z:c.z},
+    car:{...cam.car},course:cam.course,courseTarget:cam.target,dist:S.chaseDist,
+    settling:settleH!==null,renders:st.renders};
 }
 
-window.Chase={ensure,build,render,setOverlayColors,resize,state,lineColorAt,activate,deactivate};
+// covers(): the chase canvas fully covers the 2D map (cheap, per frame).
+const covers=()=>st.mix>=1;
+window.Chase={ensure,build,render,setOverlayColors,resize,state,covers,lineColorAt,activate,deactivate};
 if(S.view==='chase')activate();               // the view was remembered from last time
 </script>
 </body>

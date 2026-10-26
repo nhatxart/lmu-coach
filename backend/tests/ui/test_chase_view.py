@@ -1,5 +1,6 @@
-"""Chase view (Task 6): vendored three.js, the Top-down/Chase switch, the 3D
-scene for a static frame, the no-WebGL fallback and the flat-track note."""
+"""Chase view: vendored three.js, the Top-down/Chase switch, the 3D scene,
+the no-WebGL fallback and the flat-track note (Task 6); the smoothed chase
+camera, scrub snaps, the animated transition and chase zoom (Task 7)."""
 
 import struct
 import urllib.request
@@ -206,3 +207,127 @@ def test_view_switch_keyboard(page, server):
     assert _radio(page, "Top-down").get_attribute("aria-checked") == "true"
     assert page.evaluate("S.view") == "top"
     assert page.evaluate("localStorage.getItem('lmu-coach.view')") == "top"
+
+
+# ── Task 7: chase camera, transition, zoom ─────────────────────────────────
+
+def _cam_to_car(page):
+    """Horizontal camera-to-car distance (m), the smoothed course's error
+    against its target (rad, shortest arc) and the chase distance D."""
+    return page.evaluate("""() => {
+      const s = Chase.state(), dx = s.car.x - s.cam.x, dz = s.car.z - s.cam.z;
+      const e = s.courseTarget - s.course;
+      return {d: Math.hypot(dx, dz), err: Math.abs(Math.atan2(Math.sin(e), Math.cos(e))), D: s.dist};
+    }""")
+
+
+def _to_chase(page):
+    _radio(page, "Chase").click()
+    _wait_built(page)
+    page.wait_for_function("() => Chase.state().mix === 1", timeout=10000)
+
+
+def test_transition_animates(page, server, shot_dir):
+    _open_session(page, server, HILLY, lap=1)
+    _radio(page, "Chase").click()
+    _wait_built(page)
+    page.wait_for_timeout(300)
+    mix = page.evaluate("Chase.state().mix")
+    if shot_dir:
+        page.screenshot(path=str(shot_dir / "transition-mid.png"))
+    assert 0 < mix < 1, mix
+    page.wait_for_timeout(1500)
+    assert page.evaluate("Chase.state().mix") == 1
+    c = _cam_to_car(page)
+    assert c["d"] < 15, c
+    assert page.errors == []
+
+
+def test_reduced_motion_is_instant(browser, server):
+    ctx = browser.new_context(viewport={"width": 1600, "height": 1000}, reduced_motion="reduce")
+    try:
+        page = ctx.new_page()
+        _open_session(page, server, HILLY, lap=1)
+        _radio(page, "Chase").click()
+        _wait_built(page)
+        mix = page.evaluate("() => new Promise(r => requestAnimationFrame(() => r(Chase.state().mix)))")
+        assert mix == 1
+    finally:
+        ctx.close()
+
+
+def test_switch_back_restores_top_down(page, server):
+    _open_session(page, server, HILLY, lap=1)
+    page.evaluate("zoomStep(1)")                 # a non-default 2D framing to restore
+    page.evaluate("S.panX = 37; S.panY = -21; drawMap()")
+    before = page.evaluate("[S.zoom, S.panX, S.panY]")
+    _to_chase(page)
+    page.locator("#map-canvas").hover()
+    page.mouse.wheel(0, 300)                      # chase zoom: must not touch the 2D framing
+    _radio(page, "Top-down").click()
+    page.wait_for_timeout(1200)
+    assert page.evaluate("Chase.state().mix") == 0
+    op = page.evaluate("getComputedStyle(document.getElementById('chase-canvas')).opacity")
+    assert float(op) == 0
+    assert page.evaluate("[S.zoom, S.panX, S.panY]") == before
+    assert float(page.locator("#zoom-slider").input_value()) == pytest.approx(before[0])
+    assert page.errors == []
+
+
+def test_scrub_jump_snaps_camera(page, server):
+    _open_session(page, server, HILLY, lap=1)
+    _to_chase(page)
+    page.evaluate("onScrub(100)")
+    page.evaluate("onScrub(600)")                # front straight -> back straight: 180 deg
+    c = _cam_to_car(page)
+    assert abs(c["d"] - c["D"]) < 1, c
+    assert c["err"] < 0.01, c                    # no swing across the track
+    assert page.errors == []
+
+
+def test_lap_change_in_chase_view(page, server):
+    _open_session(page, server, HILLY, lap=1)
+    _to_chase(page)
+    page.evaluate("onScrub(500)")
+    page.locator('.lap-chip[data-lap="2"]').click()
+    page.wait_for_function("() => S.lap === 2 && S.mapData && "
+                           "document.getElementById('map-overlay').classList.contains('hidden')")
+    page.wait_for_timeout(200)
+    assert page.evaluate("Chase.state().built") is True
+    c = _cam_to_car(page)
+    assert c["d"] < 15 and c["err"] < 0.01, c
+    assert page.errors == []
+
+
+def test_chase_zoom_independent(page, server):
+    _open_session(page, server, HILLY, lap=1)
+    z0 = page.evaluate("[S.zoom, S.panX, S.panY]")
+    _to_chase(page)
+    plus = page.get_by_role("button", name="Zoom in")
+    plus.click()
+    plus.click()
+    d = page.evaluate("S.chaseDist")
+    assert d < 7.5
+    assert _cam_to_car(page)["D"] == pytest.approx(d)
+    page.locator("#map-canvas").hover()
+    page.mouse.wheel(0, -300)
+    assert page.evaluate("S.chaseDist") < d
+    page.get_by_role("button", name="Zoom to fit").click()
+    assert page.evaluate("S.chaseDist") == 7.5
+    _radio(page, "Top-down").click()
+    assert page.evaluate("[S.zoom, S.panX, S.panY]") == z0
+
+
+def test_settle_loop_stops_when_paused(page, server):
+    """Paused, the camera settles and then stops asking for frames: no
+    perpetual requestAnimationFrame."""
+    _open_session(page, server, HILLY, lap=1)
+    _to_chase(page)
+    page.evaluate("onScrub(330)")
+    page.evaluate("onScrub(345)")                # < 2 % jump into the corner: smoothed, not snapped
+    assert page.evaluate("Chase.state().settling") is True
+    page.wait_for_function("() => !Chase.state().settling", timeout=5000)
+    n = page.evaluate("Chase.state().renders")
+    page.wait_for_timeout(500)
+    assert page.evaluate("Chase.state().renders") == n
+    assert _cam_to_car(page)["err"] < 0.001
