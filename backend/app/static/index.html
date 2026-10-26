@@ -2502,9 +2502,12 @@ const CAR_LEN=4.7,CAR_W=2.0,CAR_H=0.15,CAR_FILL_OPACITY=0.55,CAR_LIFT=0.03;
 const LINE_HALF_W=0.175;                     // driven line: 0.35 m ribbon
 const EDGE_HALF_W=0.04,EDGE_OPACITY=0.6;     // edge lines as 0.08 m ribbons: 1 px lines vanish at distance
 const MARK_EVERY_M=50,KERB_STRIPE_M=2;
-// Paint is looked up per 0.5 m lateral cell (track_topography.PAINT_CELL_M);
-// the payload samples it at the 11 surface columns only.
+// Paint cells are 2 m along x 0.5 m across (track_topography; /trackmap
+// `paint_cell`). Current payloads send the cells themselves (`paint`, drawn
+// by paintMesh); older ones only `surface.kind`, sampled at the 11 surface
+// columns (drawn by the surfaceMesh shader, PAINT_CELL_M wide).
 const PAINT_CELL_M=0.5;
+const PAINT_LIFT_M=0.01;                     // paint quads sit this far above the road (plus polygon offset)
 const GROUND_DROP_M=0.3,GROUND_SIZE_M=8000; // dim floor under the whole track, faded by the fog
 const DEG=Math.PI/180;
 
@@ -2521,7 +2524,8 @@ let cornerPills=[],betaPill=null;
 // builtFor: the payload the scene was last built (or tried) for; buildFailed:
 // that try threw. Both are set BEFORE building, so a bad lap fails once
 // instead of on every frame. lost: the WebGL context is gone.
-const st={ready:false,built:false,failed:false,lost:false,mix:0,builtFor:null,buildFailed:false,loading:null,msgTimer:null,renders:0};
+const st={ready:false,built:false,failed:false,lost:false,mix:0,builtFor:null,buildFailed:false,loading:null,msgTimer:null,renders:0,
+          paintCells:0,paintVerts:0};
 // Smoothed camera state. course: smoothed course angle (rad), null = snap on
 // the next frame; h: smoothed camera height (m, world); lastF/lastData: the
 // playhead point and payload of the previous frame (scrub/lap-change snaps);
@@ -2665,7 +2669,8 @@ function disposeWorld(){
 }
 
 // ── per-lap scene ──────────────────────────────────────────────────────────
-function surfaceMesh(s){
+// usePaintCells: paintMesh draws the paint, so the shader paints nothing.
+function surfaceMesh(s,usePaintCells){
   const R=s.rows,C=s.cols,N=R*C;
   if(R<2||C<2||s.x.length!==N||s.y.length!==N||s.z.length!==N||s.kind.length!==N)return null;
   const pos=new Float32Array(N*3),lapS=new Float32Array(N),lat=new Float32Array(N);
@@ -2715,7 +2720,7 @@ function surfaceMesh(s){
     const r=Math.floor(q/(C-1)),c=q%(C-1),a=r*C+c,corners=[a,a+1,a+C,a+C+1];  // (r,c) (r,c+1) (r+1,c) (r+1,c+1)
     for(let v=6*q;v<6*q+6;v++){
       rowT[v]=Math.floor(idx[v]/C)-r;
-      corners.forEach((k,j)=>{kinds[4*v+j]=s.kind[k];cents[4*v+j]=centre(k);});
+      corners.forEach((k,j)=>{kinds[4*v+j]=usePaintCells?0:s.kind[k];cents[4*v+j]=centre(k);});
     }
   }
   g.setAttribute('aRowT',new T.BufferAttribute(rowT,1));
@@ -2747,6 +2752,76 @@ function surfaceMesh(s){
 }`);
   };
   return{mesh:new T.Mesh(g,mat),lapS,R,C};
+}
+
+// Paint cells (/trackmap `paint`: [s_m, g_m, kind], cell centres) as quads
+// at their true place on the surface ribbon, one merged geometry.
+// BUG FIX / PREVIOUSLY: paint came only as `surface.kind`, the 2 m x 0.5 m
+// cells re-sampled at the ribbon's ~600 rows x 11 columns (rows 6.8 m apart
+// at Road Atlanta, 22.7 m at Le Mans): kerbs snapped to row blocks, short
+// ones vanished, and the car looked on or off a kerb by metres. Fix: place
+// every cell by its lap distance s (between the two ribbon rows around it,
+// by `surface.s`) and its offset g across (between that row's left edge,
+// g = -edge, and right edge, +edge; the ribbon is linear across, so outside
+// the edges it extrapolates, for grass and gravel). Returns null when the
+// payload has no usable `paint` / `surface.s` (older payloads).
+function paintMesh(d){
+  const s=d.surface,P=d.paint;
+  if(!s||!Array.isArray(P)||!P.length||!Array.isArray(s.s))return null;
+  const R=s.rows,C=s.cols,Lp=+s.length_m||0;
+  if(R<2||C<2||s.s.length!==R||s.x.length!==R*C)return null;
+  const along=(d.paint_cell&&+d.paint_cell.along_m)||2,across=(d.paint_cell&&+d.paint_cell.across_m)||PAINT_CELL_M;
+  // Row lap distance unwrapped across start/finish (s is modulo the layout
+  // length), then made non-decreasing so it can be searched.
+  const u=new Float64Array(R);u[0]=s.s[0];
+  for(let r=1;r<R;r++){
+    let dd=s.s[r]-s.s[r-1];
+    if(Lp>0){if(dd<-Lp/2)dd+=Lp;else if(dd>Lp/2)dd-=Lp;}
+    u[r]=Math.max(u[r-1],u[r-1]+dd);
+  }
+  const u0=u[0],u1=u[R-1];
+  // world point of (lap distance uu on the unwrapped axis, offset g) -> out[o..o+2]
+  const P3=(r,t,ax)=>{const a=r*C,b=a+C-1,arr=ax===0?s.x:ax===1?s.y:s.z;return arr[a]+(arr[b]-arr[a])*t;};
+  const rowT=(r,g)=>{const a=r*C,b=a+C-1,w=Math.hypot(s.x[b]-s.x[a],s.z[b]-s.z[a]);return w>1e-6?(g+w/2)/w:null;};
+  function at(uu,g,out,o){
+    let lo=0,hi=R-1;                          // last row with u <= uu
+    while(hi-lo>1){const m=(lo+hi)>>1;if(u[m]<=uu)lo=m;else hi=m;}
+    const span=u[hi]-u[lo],f=span>0?clamp((uu-u[lo])/span,0,1):0;
+    const ta=rowT(lo,g),tb=rowT(hi,g);
+    if(ta===null||tb===null)return false;
+    for(let ax=0;ax<3;ax++)out[o+ax]=lerp(P3(lo,ta,ax),P3(hi,tb,ax),f)+(ax===1?PAINT_LIFT_M:0);
+    return true;
+  }
+  const rgb={2:hexRgb(COL.grass),3:hexRgb(COL.dirt),4:hexRgb(COL.gravel)},kA=hexRgb(COL.kerbRed),kB=hexRgb(COL.kerbWhite);
+  const pos=new Float32Array(P.length*18),col=new Float32Array(P.length*18),q=new Float32Array(12);
+  let n=0;
+  for(const[sc,g,kind]of P){
+    // the copy of this cell's s that falls inside the lap's span (the first
+    // one if the lap covers it twice around start/finish)
+    // (margin M: the backend adds a row either side of the rows the lap
+    // covered, for the wheelbase; beyond the ends `at` clamps to the end row)
+    let uu=null;const M=2*along;
+    if(Lp>0){for(let k=Math.floor((u0-M-sc)/Lp);sc+k*Lp<=u1+M;k++){const v=sc+k*Lp;if(v>=u0-M){uu=v;break;}}}
+    else if(sc>=u0-M&&sc<=u1+M)uu=sc;
+    if(uu===null)continue;
+    const c=kind===5?(Math.floor(sc/KERB_STRIPE_M)%2===0?kA:kB):rgb[kind];   // kerb stripes every 2 m of lap distance
+    if(!c)continue;
+    if(!(at(uu-along/2,g-across/2,q,0)&&at(uu+along/2,g-across/2,q,3)&&at(uu-along/2,g+across/2,q,6)&&at(uu+along/2,g+across/2,q,9)))continue;
+    const o=n*18;
+    [0,1,2,2,1,3].forEach((v,j)=>{pos[o+3*j]=q[3*v];pos[o+3*j+1]=q[3*v+1];pos[o+3*j+2]=q[3*v+2];toLinear(c,col,o+3*j);});
+    n++;
+  }
+  if(!n)return null;
+  const geo=new T.BufferGeometry();
+  geo.setAttribute('position',new T.BufferAttribute(pos.subarray(0,n*18),3));
+  geo.setAttribute('color',new T.BufferAttribute(col.subarray(0,n*18),3));
+  geo.computeVertexNormals();
+  // Lit like the road (its paint used to be part of the road's material);
+  // double-sided because the winding depends on the direction of travel.
+  // Offset under the edges and the driven line (-2), over the road (0).
+  const mesh=new T.Mesh(geo,new T.MeshLambertMaterial({vertexColors:true,side:T.DoubleSide,
+    polygonOffset:true,polygonOffsetFactor:-1,polygonOffsetUnits:-1}));
+  return{mesh,cells:n};
 }
 
 // Track edges as thin flat ribbons (0.08 m) just above the surface: 1 px
@@ -2873,7 +2948,11 @@ function build(d){
 function buildScene(d){
   disposeWorld();
   world=new T.Group();scene.add(world);
-  const surf=d.surface?surfaceMesh(d.surface):null;
+  // Paint first: when it is drawn as cells, the surface shader paints nothing.
+  const paint=d.surface?paintMesh(d):null;
+  st.paintCells=paint?paint.cells:0;st.paintVerts=paint?paint.mesh.geometry.getAttribute('position').count:0;
+  const surf=d.surface?surfaceMesh(d.surface,!!paint):null;
+  if(paint)world.add(paint.mesh);
   if(surf){
     world.add(surf.mesh);
     const marks=distanceMarks(d.surface,surf);if(marks)world.add(marks);
@@ -3116,7 +3195,7 @@ function state(){
   const c=camera?camera.position:{x:0,y:0,z:0};
   return{ready:st.ready,built:st.built,failed:st.failed,mix:st.mix,view:S.view,cam:{x:c.x,y:c.y,z:c.z},
     car:{...cam.car},course:cam.course,courseTarget:cam.target,dist:S.chaseDist,
-    settling:settleH!==null,renders:st.renders};
+    settling:settleH!==null,renders:st.renders,paintCells:st.paintCells,paintVerts:st.paintVerts};
 }
 
 // covers(): the chase canvas fully covers the 2D map (cheap, per frame).

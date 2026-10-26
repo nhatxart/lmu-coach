@@ -154,6 +154,43 @@ def test_build_failure_falls_back_once(page, server):
     assert page.evaluate("localStorage.getItem('lmu-coach.view')") == "chase"
 
 
+def test_paint_cells_drawn_at_true_size(page, server, shot_dir):
+    """Important 1: the kerb is drawn from /trackmap `paint` (2 m x 0.5 m
+    cells) as one merged mesh, not from the 11-column `surface.kind` grid."""
+    _open_session(page, server, HILLY, lap=1)
+    n_paint = page.evaluate("S.mapData.paint.length")
+    assert n_paint > 0
+    _radio(page, "Chase").click()
+    _wait_built(page)
+    st = page.evaluate("Chase.state()")
+    assert st["paintCells"] == n_paint, st
+    assert st["paintVerts"] == 6 * n_paint, st
+    page.wait_for_function("() => Chase.state().mix === 1", timeout=10000)
+    page.evaluate("onScrub(Math.round(1000 * 585 / 1200))")      # just before the kerb (s 587-653 m)
+    page.wait_for_function("() => !Chase.state().settling", timeout=5000)
+    if shot_dir:
+        page.screenshot(path=str(shot_dir / "kerb-cells.png"))
+    assert page.errors == []
+
+
+def test_old_payload_without_paint_uses_surface_kind(page, server):
+    """A payload from before `paint` existed still builds (kerbs from the
+    column grid, no paint mesh)."""
+    def strip(route):
+        resp = route.fetch()
+        body = resp.json()
+        body.pop("paint", None)
+        body.pop("paint_cell", None)
+        body["surface"].pop("s", None)
+        route.fulfill(response=resp, json=body)
+    page.route("**/trackmap*", strip)
+    _open_session(page, server, HILLY, lap=1)
+    _radio(page, "Chase").click()
+    _wait_built(page)
+    assert page.evaluate("Chase.state().paintCells") == 0
+    assert page.errors == []
+
+
 def test_persisted_chase_view_on_reload(page, server):
     page.add_init_script("localStorage.setItem('lmu-coach.view', 'chase')")
     _open_session(page, server, HILLY, lap=1)
