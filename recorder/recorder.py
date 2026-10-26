@@ -1740,6 +1740,17 @@ def selftest(minutes: float) -> None:
         s[c] = [random.random() for _ in range(n10)]
     for c in ("TyresRubberTemp", "TyresPressure"):
         s[c] = [tuple(random.random() for _ in range(4)) for _ in range(n10)]
+    # Pose channels (10/25/2026): the nine Ori R.. scalars at 100 Hz and a
+    # full grid of other cars at 10 Hz. PREVIOUSLY the selftest left them out,
+    # so a slow save caused by the new tables (Other Cars is the largest table
+    # in a race: 60 cars x 10 Hz x 8 columns) could not be measured with it.
+    for r in range(3):
+        for a in "XYZ":
+            s[f"Ori R{r}{a}"] = [random.random() for _ in range(n)]
+    n_other = 60
+    s["Other Cars"] = [(k / 10.0, slot, random.random(), random.random(), random.random(),
+                        random.random() * 5000.0, random.random(), 0)
+                       for k in range(n10) for slot in range(n_other)]
     laps = [(0.4, 0), (120.0, 1), (240.0, 2)]
     buf = types.SimpleNamespace(
         poll_hz=hz, start_wall=datetime.now(timezone.utc), track_name="Selftest Track",
@@ -1758,10 +1769,14 @@ def selftest(minutes: float) -> None:
         con = duckdb.connect(str(out), read_only=True)
         rows = con.execute('SELECT COUNT(*) FROM "Ground Speed"').fetchone()[0]
         laps_n = con.execute('SELECT COUNT(*) FROM "Lap"').fetchone()[0]
+        ori_n = con.execute('SELECT COUNT(*) FROM "Ori R2Z"').fetchone()[0]
+        other_n = con.execute('SELECT COUNT(*) FROM "Other Cars"').fetchone()[0]
         con.close()
-        ok = rows == n and laps_n == len(laps)
+        ok = (rows == n and laps_n == len(laps) and ori_n == n
+              and other_n == len(s["Other Cars"]))
         print(f"DuckDB write: {total:.1f}s total  |  rows={rows:,} (expected {n:,})  "
-              f"laps={laps_n}  ->  {'PASS' if ok else 'FAIL'}", flush=True)
+              f"laps={laps_n}  ori={ori_n:,}  other cars={other_n:,} "
+              f"(expected {len(s['Other Cars']):,})  ->  {'PASS' if ok else 'FAIL'}", flush=True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
