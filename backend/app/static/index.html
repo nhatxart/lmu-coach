@@ -168,12 +168,44 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;bac
 .map-body{flex:1;min-height:0;position:relative;overflow:hidden;background:var(--map-bg);}
 #map-canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:grab;}
 #map-canvas:active{cursor:grabbing;}
-.map-overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
+.map-overlay{position:absolute;inset:0;z-index:3;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
   pointer-events:none;color:var(--text-2);font-size:16px;text-align:center;padding:24px;}
 .map-overlay.hidden{display:none;}
 .map-overlay .empty-ico{width:56px;height:56px;color:var(--text-3);opacity:.7;}
 #map-tooltip{position:absolute;pointer-events:none;display:none;z-index:30;background:var(--surface-1);border:1px solid var(--line-strong);
   border-radius:var(--r-sm);padding:6px 10px;font:500 13px var(--font-data);color:var(--text);box-shadow:var(--shadow-2);white-space:nowrap;}
+
+/* View switch (Top-down / Chase): a segmented radiogroup sized like the
+   toolbar's selects. The buttons keep full 44px targets; the checked one is
+   drawn as an inset pill (box-shadow) so the group still reads as one control. */
+.view-switch{display:inline-flex;align-items:stretch;background:var(--surface-2);border:1px solid var(--line-strong);border-radius:var(--r-md);}
+.view-switch button{min-height:44px;padding:0 14px;border:none;border-radius:var(--r-md);background:transparent;color:var(--text-2);
+  font:500 15px var(--font-ui);}
+.view-switch button:hover{background:var(--surface-3);color:var(--text);}
+.view-switch button[aria-checked=true]{background:var(--accent-soft);color:var(--accent-strong);font-weight:600;
+  box-shadow:inset 0 0 0 1px var(--accent-line);}
+.view-switch button:focus-visible{outline-offset:-2px;}
+.view-switch button:active{transform:none;}
+
+/* Chase view: a second canvas over the map, under the HUDs (z 20). The 2D
+   canvas stays in place (opacity 0) so hold-to-pause still reaches it. */
+#chase-canvas{position:absolute;inset:0;width:100%;height:100%;display:block;opacity:0;pointer-events:none;z-index:1;}
+#chase-labels{position:absolute;inset:0;pointer-events:none;z-index:2;overflow:hidden;display:none;}
+.map-body[data-view=chase] #chase-canvas{opacity:1;}
+.map-body[data-view=chase] #chase-labels{display:block;}
+.map-body[data-view=chase] #map-canvas{opacity:0;cursor:default;}
+.chase-pill{position:absolute;left:0;top:0;white-space:nowrap;padding:1px 6px;border-radius:4px;background:rgba(7,11,20,.85);
+  font:600 13px var(--font-data);font-variant-numeric:tabular-nums;will-change:transform;}
+.chase-pill.corner{color:var(--c-corner);}
+.chase-pill.beta{color:var(--text);}
+#chase-note{position:absolute;left:var(--sp-4);top:var(--sp-4);z-index:22;display:none;max-width:calc(100% - 140px);
+  padding:6px 12px;border-radius:999px;background:rgba(13,19,34,.93);border:1px solid var(--line-strong);
+  font-size:13px;color:var(--text-2);box-shadow:var(--shadow-1);}
+.map-body[data-view=chase] #chase-note.on{display:block;}
+#chase-msg{position:absolute;left:50%;top:var(--sp-4);transform:translateX(-50%);z-index:26;display:none;max-width:calc(100% - 48px);
+  padding:10px 16px;border-radius:var(--r-md);background:rgba(13,19,34,.95);border:1px solid var(--line-strong);
+  font-size:15px;color:var(--text);box-shadow:var(--shadow-2);text-align:center;}
+#chase-msg.on{display:block;}
 
 /* HUD — driver inputs (1.5× scale as requested; sized in CSS so canvases render crisp, no transform blur) */
 #hud-overlay{--s:var(--hud-scale);position:absolute;left:var(--sp-4);bottom:var(--sp-4);z-index:20;pointer-events:none;display:none;
@@ -430,11 +462,19 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
         <option value="5">×5</option>
         <option value="10">×10</option>
       </select>
+      <div class="view-switch" id="view-switch" role="radiogroup" aria-label="View" title="Switch view (V)">
+        <button type="button" id="view-top" role="radio" aria-checked="true" tabindex="0" aria-keyshortcuts="V" onclick="setView('top')">Top-down</button>
+        <button type="button" id="view-chase" role="radio" aria-checked="false" tabindex="-1" aria-keyshortcuts="V" onclick="setView('chase')">Chase</button>
+      </div>
       <div class="legend" aria-label="Overlay legend"><span id="leg-lo">Brake</span><span class="legend-bar" id="leg-bar"></span><span id="leg-hi">Throttle</span></div>
     </div>
 
     <div class="map-body">
       <canvas id="map-canvas" role="img" aria-label="Track map with the driven line for the selected lap"></canvas>
+      <canvas id="chase-canvas" role="img" aria-label="Chase view: the selected lap from behind the car, on the 3D track"></canvas>
+      <div id="chase-labels" aria-hidden="true"></div>
+      <div id="chase-note" role="note"></div>
+      <div id="chase-msg" role="status" aria-live="polite"></div>
 
       <!-- Driver inputs (1.5× scale) -->
       <div id="hud-overlay" aria-label="Driver inputs">
@@ -676,6 +716,9 @@ const S={
   HUD_WIN:100,
   lapDur:120,
   slipGain:(()=>{try{const v=+localStorage.getItem('lmu-coach.slipgain');return [1,3,5,10].includes(v)?v:5;}catch(e){return 5;}})(),
+  // 'top' (2D map) | 'chase' (3D, behind the car). The chase code is the
+  // <script type="module"> at the end of the page (window.Chase).
+  view:(()=>{try{return localStorage.getItem('lmu-coach.view')==='chase'?'chase':'top';}catch(e){return 'top';}})(),
 };
 let mapCtx=null,mapW=0,mapH=0;
 
@@ -756,6 +799,25 @@ function colBal(v,mx){
 }
 function colYaw(v,mx){return threshCol(v,mx,(_v,_mx,c)=>{const u=clamp(Math.abs(_v)/(_mx||1),0,1);return`rgb(${~~lerp(30,251,c*u)},${~~lerp(120,146,c*u)},${~~lerp(112,60,c*u)})`});}
 function colScalar(v,mx){return threshCol(v,mx,(_v,_mx,c)=>{const u=clamp(Math.abs(_v)/(_mx||1),0,1);return`rgb(${~~lerp(30,56,c*u)},${~~lerp(58,189,c*u)},${~~lerp(78,248,c*u)})`});}
+// Colour of driven-line segment i (point i -> i+1) in the active Overlay, as
+// a CSS colour string ('rgb(...)' or 'rgba(...)', exactly what the 2D map
+// strokes). Shared by the top-down map and the chase view so both colour the
+// line identically. The per-lap maxima the scales need are cached per
+// (lap payload, mode) instead of rescanned for every segment.
+let _lineColCache=null;
+function lineColorAt(i){
+  const d=S.mapData;if(!d)return'rgba(120,132,156,0.32)';
+  const dl=d.driven_line,mode=document.getElementById('heatmap-mode').value;
+  let c=_lineColCache;
+  if(!c||c.d!==d||c.mode!==mode){
+    const mx=arr=>{let m=1e-6;arr.forEach(v=>{if(Math.abs(v)>m)m=Math.abs(v);});return m;};
+    c=_lineColCache={d,mode,balMx:mx(dl.balance),yawMx:mx(dl.yaw),gMx:mx(dl.gflat)};
+  }
+  if     (mode==='throttle_brake')return colTB(dl.throttle[i],dl.brake[i]);
+  else if(mode==='balance')       return colBal(dl.balance[i],c.balMx);
+  else if(mode==='yaw')           return colYaw(dl.yaw[i],c.yawMx);
+  return colScalar(dl.gflat[i],c.gMx);
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Tab / Health
@@ -1198,6 +1260,9 @@ async function loadMap(){
     const lapObj=S.laps.find(l=>l.lap_number===S.lap);
     S.lapDur=lapObj?lapObj.lap_time_s:120;
     document.getElementById('pb-time').textContent='0:00.000';
+    // The chase scene is per lap: rebuild it now if that view is showing;
+    // otherwise Chase notices the new payload when the view is next opened.
+    if(S.view==='chase'&&window.Chase&&Chase.state().ready)Chase.build(S.mapData);
     hideOverlay();resizeDraw();updateBalance();showHud();drawHUD();
   }catch(e){setOverlay(`<span style="color:var(--warn)">${e.message}</span>`);}
 }
@@ -1239,15 +1304,12 @@ function resizeDraw(){
 // ════════════════════════════════════════════════════════════════════════════
 function drawMap(){
   if(!mapCtx||!S.mapData)return;
+  // Chase view on screen: every caller of drawMap (playback, scrub, overlay,
+  // slip gain, resize) redraws the 3D view instead; the 2D canvas is hidden.
+  if(S.view==='chase'&&window.Chase&&Chase.state().mix>=1){Chase.render();return;}
   const dpr=devicePixelRatio||1;
   const{track:tr,driven_line:dl}=S.mapData;
-  const mode=document.getElementById('heatmap-mode').value;
   const W=mapW/dpr,H=mapH/dpr;
-
-  let balMx=1e-6,yawMx=1e-6,gMx=1e-6;
-  dl.balance.forEach(v=>{if(Math.abs(v)>balMx)balMx=Math.abs(v);});
-  dl.yaw.forEach(v=>    {if(Math.abs(v)>yawMx)yawMx=Math.abs(v);});
-  dl.gflat.forEach(v=>  {if(Math.abs(v)>gMx)  gMx  =Math.abs(v);});
 
   mapCtx.save();
   mapCtx.scale(dpr,dpr);
@@ -1277,12 +1339,7 @@ function drawMap(){
   for(let i=0;i<n-1;i++){
     const[x1,z1]=toScreen(dl.x[i],dl.z[i]);
     const[x2,z2]=toScreen(dl.x[i+1],dl.z[i+1]);
-    let col;
-    if     (mode==='throttle_brake')col=colTB(dl.throttle[i],dl.brake[i]);
-    else if(mode==='balance')       col=colBal(dl.balance[i],balMx);
-    else if(mode==='yaw')           col=colYaw(dl.yaw[i],yawMx);
-    else                            col=colScalar(dl.gflat[i],gMx);
-    mapCtx.strokeStyle=col;
+    mapCtx.strokeStyle=lineColorAt(i);
     mapCtx.beginPath();mapCtx.moveTo(x1,z1);mapCtx.lineTo(x2,z2);mapCtx.stroke();
   }
 
@@ -1336,30 +1393,45 @@ function drawMap(){
   const dotF=(S.hoverIdx!=null)?S.hoverIdx:clamp(S.playhead*(n-1),0,n-1);
   if(n>0&&dotF>=0&&dotF<=n-1){
     const[hx,hz]=toScreen(lerpAt(dl.x,dotF),lerpAt(dl.z,dotF));
-    const ang=dl.heading?angleAt(dl.heading,dotF):0;
-    // slip_delta_deg = front minus rear tyre slip angle into the turn,
-    // DEGREES; 0 outside cornering (see backend handling_balance).
-    const sd=dl.slip_delta_deg?lerpAt(dl.slip_delta_deg,dotF):0;
-    // body_slip_deg = chassis angle relative to the velocity vector, DEGREES
-    // (empty for files without a Yaw Rate channel -> heading-only marker).
-    const hasB=dl.body_slip_deg&&dl.body_slip_deg.length===n;
-    const beta=hasB?lerpAt(dl.body_slip_deg,dotF):null;
-    // Colour: neutral white, blue = understeer (front slipping more), orange = oversteer
-    // Same neutral band as the US/Neu/OS bars (backend sends it).
-    const SD_THRESH=(S.mapData.handling&&S.mapData.handling.band_deg)||0.12; // degrees
-    let arrowCol='rgba(255,255,255,0.92)';
-    if(Math.abs(sd)>SD_THRESH){
-      const t=clamp(Math.abs(sd)/1.7,0,1);
-      if(sd>0)arrowCol=`rgba(${~~lerp(180,96,t)},${~~lerp(180,165,t)},${~~lerp(200,250,t)},0.95)`;
-      else    arrowCol=`rgba(${~~lerp(200,251,t)},${~~lerp(160,146,t)},${~~lerp(50,60,t)},0.95)`;
-    }
-    // Real body slip is only ~1-7 deg, so it is exaggerated on screen
-    // (S.slipGain, capped at +-60 deg); the label shows the true value.
-    const bodyOff=hasB?clamp(beta*S.slipGain,-60,60)*Math.PI/180:0;
-    drawChevronArrow(mapCtx,hx,hz,ang,arrowCol,bodyOff,beta);
+    const m=carMarkerAt(dotF);
+    drawChevronArrow(mapCtx,hx,hz,m.ang,m.col,m.bodyOff,m.beta);
   }
 
   mapCtx.restore();
+}
+
+// The car marker at fractional point f: course angle (canvas radians), the
+// US/OS colour (CSS rgba string), the drawn body offset (radians, exaggerated
+// by S.slipGain) and the TRUE body slip in degrees (null without Yaw Rate).
+// Shared by the 2D chevron and the chase view's 3D chevron.
+function carMarkerAt(f){
+  const dl=S.mapData.driven_line,n=dl.x.length;
+  const ang=dl.heading?angleAt(dl.heading,f):0;
+  // slip_delta_deg = front minus rear tyre slip angle into the turn,
+  // DEGREES; 0 outside cornering (see backend handling_balance).
+  const sd=dl.slip_delta_deg?lerpAt(dl.slip_delta_deg,f):0;
+  // body_slip_deg = chassis angle relative to the velocity vector, DEGREES
+  // (empty for files without a Yaw Rate channel -> heading-only marker).
+  const hasB=dl.body_slip_deg&&dl.body_slip_deg.length===n;
+  const beta=hasB?lerpAt(dl.body_slip_deg,f):null;
+  // Colour: neutral white, blue = understeer (front slipping more), orange = oversteer
+  // Same neutral band as the US/Neu/OS bars (backend sends it).
+  const SD_THRESH=(S.mapData.handling&&S.mapData.handling.band_deg)||0.12; // degrees
+  let col='rgba(255,255,255,0.92)';
+  if(Math.abs(sd)>SD_THRESH){
+    const t=clamp(Math.abs(sd)/1.7,0,1);
+    if(sd>0)col=`rgba(${~~lerp(180,96,t)},${~~lerp(180,165,t)},${~~lerp(200,250,t)},0.95)`;
+    else    col=`rgba(${~~lerp(200,251,t)},${~~lerp(160,146,t)},${~~lerp(50,60,t)},0.95)`;
+  }
+  // Real body slip is only ~1-7 deg, so it is exaggerated on screen
+  // (S.slipGain, capped at +-60 deg); the label shows the true value.
+  const bodyOff=hasB?clamp(beta*S.slipGain,-60,60)*Math.PI/180:0;
+  return{ang,col,bodyOff,beta};
+}
+// The β label text, shared by both views (true angle, plus the gain if any).
+function betaLabel(betaDeg){
+  const g=S.slipGain;
+  return`β ${betaDeg>=0?'+':'−'}${Math.abs(betaDeg).toFixed(1)}°`+(g>1?`  ×${g}`:'');
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1417,7 +1489,7 @@ function drawChevronArrow(ctx,cx,cy,courseAng,col,bodyOffRad,betaDeg){
 
   // True-angle label
   if(betaDeg!=null){
-    const g=S.slipGain, txt=`β ${betaDeg>=0?'+':'−'}${Math.abs(betaDeg).toFixed(1)}°`+(g>1?`  ×${g}`:'');
+    const txt=betaLabel(betaDeg);
     ctx.font=fontData(10,true);
     const tw=ctx.measureText(txt).width;
     ctx.fillStyle='rgba(7,11,20,0.85)';
@@ -1433,7 +1505,9 @@ function drawChevronArrow(ctx,cx,cy,courseAng,col,bodyOffRad,betaDeg){
 // ════════════════════════════════════════════════════════════════════════════
 const cv=document.getElementById('map-canvas');
 cv.addEventListener('mousedown',e=>{
-  if(e.button===2){
+  // Right-drag pans the 2D map only; in the chase view the camera follows
+  // the car, so a pan would move an invisible map.
+  if(e.button===2&&S.view!=='chase'){
     S.isPanning=true;S.panStart={x:e.clientX,y:e.clientY};S.panBase={x:S.panX,y:S.panY};e.preventDefault();
   }else if(e.button===0&&S.playing){
     // Hold-to-pause: freeze playback while the left button is down on the
@@ -1452,7 +1526,8 @@ cv.addEventListener('mousemove',e=>{
     S.panX=S.panBase.x+(e.clientX-S.panStart.x);S.panY=S.panBase.y+(e.clientY-S.panStart.y);
     if(S.mapData)drawMap();return;
   }
-  if(!S.mapData||S.playing)return;
+  // Hover tooltip / hover-scrub pick points in 2D screen space: off in chase.
+  if(!S.mapData||S.playing||S.view==='chase')return;
   const r=cv.getBoundingClientRect();
   const mx=e.clientX-r.left,mz=e.clientY-r.top;
   const dl=S.mapData.driven_line;
@@ -1952,7 +2027,50 @@ function redrawAbsTcTrace(id,absArr,tcArr,h,headFrac){
 // ════════════════════════════════════════════════════════════════════════════
 (function(){const e=document.getElementById('slip-gain');if(e)e.value=String(S.slipGain);})();
 function setSlipGain(v){S.slipGain=+v;try{localStorage.setItem('lmu-coach.slipgain',String(S.slipGain));}catch(e){}if(S.mapData)drawMap();}
-function onModeChange(){updateLegend();if(S.mapData)drawMap();}
+function onModeChange(){updateLegend();if(window.Chase)Chase.setOverlayColors();if(S.mapData)drawMap();}
+
+// ── View switch: Top-down / Chase ──────────────────────────────────────────
+// A radiogroup with roving tabindex (arrow keys move and select, like the
+// panel tabs), plus V anywhere outside a text field. The 3D work itself lives
+// in window.Chase (module script at the end); this only records the choice.
+function setView(v){
+  v=v==='chase'?'chase':'top';
+  S.view=v;
+  try{localStorage.setItem('lmu-coach.view',v);}catch(e){}
+  ['top','chase'].forEach(k=>{
+    const b=document.getElementById('view-'+k),on=k===v;
+    b.setAttribute('aria-checked',on?'true':'false');b.tabIndex=on?0:-1;
+  });
+  if(v==='chase'){
+    S.hoverIdx=null;S.isPanning=false;document.getElementById('map-tooltip').style.display='none';
+    if(window.Chase)Chase.activate();   // else the module activates itself on load
+  }else{
+    if(window.Chase)Chase.deactivate();
+    if(S.mapData)drawMap();
+  }
+}
+(function initViewSwitch(){
+  const views=['top','chase'];
+  setView(S.view);
+  document.getElementById('view-switch').addEventListener('keydown',e=>{
+    const cur=views.indexOf(S.view);let next=-1;
+    if(e.key==='ArrowRight'||e.key==='ArrowDown')next=(cur+1)%views.length;
+    else if(e.key==='ArrowLeft'||e.key==='ArrowUp')next=(cur+views.length-1)%views.length;
+    else if(e.key==='Home')next=0;else if(e.key==='End')next=views.length-1;
+    if(next<0)return;
+    e.preventDefault();setView(views[next]);document.getElementById('view-'+views[next]).focus();
+  });
+  document.addEventListener('keydown',e=>{
+    if((e.key!=='v'&&e.key!=='V')||e.ctrlKey||e.metaKey||e.altKey||e.repeat)return;
+    const t=e.target;
+    // Not while typing, and not on a select (V there jumps to an option).
+    if(t&&(t.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))&&t.type!=='range'&&t.type!=='checkbox')return;
+    e.preventDefault();
+    const was=document.activeElement&&document.activeElement.closest&&document.activeElement.closest('#view-switch');
+    setView(S.view==='chase'?'top':'chase');
+    if(was)document.getElementById('view-'+S.view).focus();   // keep roving focus on the checked radio
+  });
+})();
 function updateLegend(){
   const mode=document.getElementById('heatmap-mode').value;
   const lo=document.getElementById('leg-lo'),hi=document.getElementById('leg-hi'),bar=document.getElementById('leg-bar');
@@ -2303,11 +2421,410 @@ async function sendFollowup(e){
 // ════════════════════════════════════════════════════════════════════════════
 // Resize + Boot
 // ════════════════════════════════════════════════════════════════════════════
-new ResizeObserver(()=>{if(S.mapData)resizeDraw();}).observe(document.getElementById('map-canvas'));
+new ResizeObserver(()=>{if(window.Chase)Chase.resize();if(S.mapData)resizeDraw();}).observe(document.getElementById('map-canvas'));
 (async()=>{
   await loadConfigBoot();await ping();updateLegend();await loadSessions();
   if(document.fonts&&document.fonts.ready)document.fonts.ready.then(()=>{if(S.mapData){drawMap();drawHUD();updateBalance();}});setInterval(ping,15000);
 })();
+</script>
+<script type="module">
+// ════════════════════════════════════════════════════════════════════════════
+// Chase view: the same playback seen from behind the car, on the 3D track
+// (/trackmap `surface`, edges, heights, pitch/roll). window.Chase is the API
+// the page uses; it reads the classic script's globals (S, lerpAt,
+// carMarkerAt, lineColorAt, ...) by name.
+//
+// Three.js and GSAP are vendored (offline, pinned) and loaded only when the
+// chase view is first opened, so the 2D view pays nothing for them.
+// Frame (docs/superpowers/plans/2026-10-25-chase-view.md): Three (X,Y,Z) =
+// (map x, height, map z); course angle a -> direction (cos a, 0, sin a); a
+// model with its nose on +X gets rotation.y = -a. Do not negate anything else.
+// ════════════════════════════════════════════════════════════════════════════
+const VENDOR='/static/vendor/';
+// Canvas rule (DESIGN.md): colours are literals kept in sync with :root.
+const COL={bg:'#060912',road:'#151D31',grass:'#1E3527',dirt:'#3A3226',gravel:'#4A4232',
+           kerbRed:'#D9464E',kerbWhite:'#E6E9F0',edge:'#ffffff',outline:'#070B14'};
+// Surface Type codes (0 road, 2 grass, 3 dirt, 4 gravel, 5 kerb). Kerb cells
+// get the road colour here; the shader paints their red/white stripes.
+const KIND_COL={0:COL.road,2:COL.grass,3:COL.dirt,4:COL.gravel,5:COL.road};
+const NO_WEBGL="Chase view needs WebGL, which isn't available here. Showing top-down.";
+// Chase pose (spec): 7.5 m behind and 2.6 m above the car, looking 12 m
+// ahead along the course. Task 7 adds smoothing, scrub snaps, the ground
+// clamp, zoom and the animated transition on top of chasePose().
+const CAM_BACK=7.5,CAM_UP=2.6,CAM_AHEAD=12;
+const CAR_LEN=4.7,CAR_W=2.0,CAR_H=0.45;     // chevron extruded to car size
+const LINE_HALF_W=0.175;                     // driven line: 0.35 m ribbon
+const MARK_EVERY_M=50,KERB_STRIPE_M=2;
+const DEG=Math.PI/180;
+
+const mapBody=document.querySelector('.map-body');
+const canvas=document.getElementById('chase-canvas');
+const labelLayer=document.getElementById('chase-labels');
+const noteEl=document.getElementById('chase-note');
+const msgEl=document.getElementById('chase-msg');
+
+let T=null;                                  // the three.js module
+let renderer=null,scene=null,camera=null,world=null;
+let carRig=null,carMat=null,arrowRig=null,ribbon=null;
+let cornerPills=[],betaPill=null;
+const st={ready:false,built:false,failed:false,mix:0,builtFor:null,loading:null,msgTimer:null};
+
+// ── loading ────────────────────────────────────────────────────────────────
+function webglAvailable(){
+  // Probe a throwaway canvas: no point fetching ~2 MB of three.js without
+  // WebGL, and a failed getContext on the real canvas would pin it.
+  try{const c=document.createElement('canvas');return!!(c.getContext('webgl2')||c.getContext('webgl'));}
+  catch(e){return false;}
+}
+function loadGsap(){
+  // GSAP ships as UMD (sets window.gsap), so it is injected, not imported.
+  if(window.gsap)return Promise.resolve();
+  return new Promise((res,rej)=>{
+    const s=document.createElement('script');s.src=VENDOR+'gsap/gsap.min.js';
+    s.onload=()=>res();s.onerror=()=>rej(new Error('gsap.min.js did not load'));
+    document.head.appendChild(s);
+  });
+}
+function showMsg(text){
+  msgEl.textContent=text;msgEl.classList.add('on');
+  clearTimeout(st.msgTimer);st.msgTimer=setTimeout(()=>msgEl.classList.remove('on'),8000);
+}
+// Lazy-load three + gsap and create the renderer. Resolves false (and shows
+// the message) when WebGL or the import fails; the result is memoised.
+function ensure(){
+  if(st.ready)return Promise.resolve(true);
+  if(st.failed){showMsg(NO_WEBGL);return Promise.resolve(false);}
+  if(!st.loading)st.loading=(async()=>{
+    try{
+      if(!webglAvailable())throw new Error('WebGL unavailable');
+      const[mod]=await Promise.all([import(VENDOR+'three/three.module.js'),loadGsap()]);
+      T=mod;
+      renderer=new T.WebGLRenderer({canvas,antialias:true});
+      renderer.setPixelRatio(Math.min(devicePixelRatio||1,2));
+      initScene();
+      st.ready=true;resize();
+      return true;
+    }catch(e){
+      console.warn('[chase] not available:',e);
+      st.failed=true;showMsg(NO_WEBGL);
+      return false;
+    }
+  })();
+  return st.loading;
+}
+
+// ── colour helpers ─────────────────────────────────────────────────────────
+// Vertex colours are in three's linear working space, so sRGB values from
+// the CSS strings are converted (Color.setRGB(..., SRGBColorSpace)).
+function parseCss(s){
+  const m=/rgba?\(([^)]+)\)/.exec(s);if(!m)return[255,255,255,1];
+  const p=m[1].split(',').map(Number);return[p[0],p[1],p[2],p.length>3?p[3]:1];
+}
+function hexRgb(h){const v=parseInt(h.slice(1),16);return[(v>>16)&255,(v>>8)&255,v&255];}
+function toLinear(rgb,out,k){
+  const c=new T.Color().setRGB(rgb[0]/255,rgb[1]/255,rgb[2]/255,T.SRGBColorSpace);
+  out[k]=c.r;out[k+1]=c.g;out[k+2]=c.b;
+}
+// lineColorAt() colour of point i over the road, alpha composited in sRGB,
+// the way the 2D canvas blends a translucent stroke over the track fill.
+const ROAD_RGB=hexRgb(COL.road);
+function lineRgbOverRoad(i){
+  const[r,g,b,a]=parseCss(lineColorAt(i));
+  return[r*a+ROAD_RGB[0]*(1-a),g*a+ROAD_RGB[1]*(1-a),b*a+ROAD_RGB[2]*(1-a)];
+}
+
+// ── scene (once) ───────────────────────────────────────────────────────────
+function initScene(){
+  scene=new T.Scene();
+  scene.background=new T.Color(COL.bg);
+  scene.fog=new T.Fog(COL.bg,150,900);       // fades the far track into --map-bg
+  camera=new T.PerspectiveCamera(50,1,0.1,2000);
+  scene.add(new T.HemisphereLight('#9FB3D9','#0A0F1C',1.1));
+  const sun=new T.DirectionalLight('#ffffff',1.2);sun.position.set(-0.5,1,0.3);scene.add(sun);
+
+  // Car: the 2D chevron (drawChevronArrow: nose at +0.55 L, rear corners at
+  // -0.45 L, rear notch 0.18 L in from the back) at car size, extruded up.
+  const fx=CAR_LEN*0.55,rx=-CAR_LEN*0.45,nx=rx+CAR_LEN*0.18,hw=CAR_W/2;
+  const shape=new T.Shape();
+  shape.moveTo(fx,0);shape.lineTo(rx,-hw);shape.lineTo(nx,0);shape.lineTo(rx,hw);shape.closePath();
+  const carGeo=new T.ExtrudeGeometry(shape,{depth:CAR_H,bevelEnabled:false});
+  carGeo.rotateX(-Math.PI/2);                // shape plane -> ground, extrusion -> +Y
+  carMat=new T.MeshLambertMaterial({color:'#ffffff'});
+  carRig=new T.Group();
+  carRig.add(new T.Mesh(carGeo,carMat));
+  // Dark outline, like the 2D chevron's stroke, so it reads against the line.
+  carRig.add(new T.LineSegments(new T.EdgesGeometry(carGeo,30),
+    new T.LineBasicMaterial({color:COL.outline,transparent:true,opacity:0.55})));
+  carRig.rotation.order='YZX';
+  scene.add(carRig);
+
+  // Velocity arrow along the COURSE (white, flat just above the road, under
+  // the car body like in 2D): 1.7 car lengths, the 2D proportions.
+  const VL=CAR_LEN*1.7,ah=1.0,sw=0.08;
+  const a=new T.Shape();
+  a.moveTo(0,-sw);a.lineTo(VL-ah,-sw);a.lineTo(VL-ah,-ah*0.6);a.lineTo(VL+0.3,0);
+  a.lineTo(VL-ah,ah*0.6);a.lineTo(VL-ah,sw);a.lineTo(0,sw);a.closePath();
+  const aGeo=new T.ShapeGeometry(a);aGeo.rotateX(-Math.PI/2);
+  arrowRig=new T.Group();
+  arrowRig.add(new T.Mesh(aGeo,new T.MeshBasicMaterial({color:'#ffffff',transparent:true,opacity:0.95,
+    side:T.DoubleSide,polygonOffset:true,polygonOffsetFactor:-4,polygonOffsetUnits:-4})));
+  arrowRig.rotation.order='YZX';
+  scene.add(arrowRig);
+}
+
+function disposeWorld(){
+  if(world){
+    world.traverse(o=>{
+      if(o.geometry)o.geometry.dispose();
+      if(o.material)[].concat(o.material).forEach(m=>m.dispose());
+    });
+    scene.remove(world);world=null;
+  }
+  ribbon=null;
+  labelLayer.textContent='';cornerPills=[];betaPill=null;
+}
+
+// ── per-lap scene ──────────────────────────────────────────────────────────
+function surfaceMesh(s){
+  const R=s.rows,C=s.cols,N=R*C;
+  if(R<2||C<2||s.x.length!==N||s.y.length!==N||s.z.length!==N)return null;
+  const pos=new Float32Array(N*3),col=new Float32Array(N*3),kerb=new Float32Array(N),lapS=new Float32Array(N);
+  // Lap distance per row along the middle column: the kerb stripes are every
+  // 2 m of it, finer than the rows (~600 per lap), so the shader draws them.
+  const mid=(C-1)>>1;let acc=0;
+  for(let r=0;r<R;r++){
+    if(r>0){const a=(r-1)*C+mid,b=r*C+mid;acc+=Math.hypot(s.x[b]-s.x[a],s.z[b]-s.z[a]);}
+    for(let c=0;c<C;c++){const k=r*C+c;lapS[k]=acc;}
+  }
+  const kindLin={};
+  Object.entries(KIND_COL).forEach(([k,h])=>{const o=[0,0,0];toLinear(hexRgb(h),o,0);kindLin[k]=o;});
+  for(let k=0;k<N;k++){
+    pos[3*k]=s.x[k];pos[3*k+1]=s.y[k];pos[3*k+2]=s.z[k];
+    const kind=s.kind[k],lc=kindLin[kind]||kindLin[0];
+    col[3*k]=lc[0];col[3*k+1]=lc[1];col[3*k+2]=lc[2];
+    kerb[k]=kind===5?1:0;
+  }
+  // Two triangles per cell. Which winding faces up depends on the direction
+  // of travel, so test one cell and flip all if its normal points down.
+  const idx=[];let flip=null;
+  for(let r=0;r<R-1;r++)for(let c=0;c<C-1;c++){
+    const a=r*C+c,b=a+C,d=a+1,e=b+1;
+    if(flip===null){
+      const ux=pos[3*b]-pos[3*a],uz=pos[3*b+2]-pos[3*a+2],vx=pos[3*d]-pos[3*a],vz=pos[3*d+2]-pos[3*a+2];
+      const ny=uz*vx-ux*vz;                   // y of (b-a) x (d-a)
+      if(Math.abs(ny)>1e-9)flip=ny<0;
+    }
+    idx.push(a,b,d,d,b,e);
+  }
+  if(flip)for(let i=0;i<idx.length;i+=3){const t=idx[i+1];idx[i+1]=idx[i+2];idx[i+2]=t;}
+  const g=new T.BufferGeometry();
+  g.setAttribute('position',new T.BufferAttribute(pos,3));
+  g.setAttribute('color',new T.BufferAttribute(col,3));
+  g.setAttribute('aKerb',new T.BufferAttribute(kerb,1));
+  g.setAttribute('aLapS',new T.BufferAttribute(lapS,1));
+  g.setIndex(idx);g.computeVertexNormals();
+  const mat=new T.MeshLambertMaterial({vertexColors:true});
+  mat.onBeforeCompile=sh=>{
+    sh.uniforms.kerbA={value:new T.Color(COL.kerbRed)};
+    sh.uniforms.kerbB={value:new T.Color(COL.kerbWhite)};
+    sh.vertexShader=sh.vertexShader
+      .replace('#include <common>','#include <common>\nattribute float aKerb;\nattribute float aLapS;\nvarying float vKerb;\nvarying float vLapS;')
+      .replace('#include <begin_vertex>','#include <begin_vertex>\nvKerb=aKerb;vLapS=aLapS;');
+    sh.fragmentShader=sh.fragmentShader
+      .replace('#include <common>','#include <common>\nuniform vec3 kerbA;\nuniform vec3 kerbB;\nvarying float vKerb;\nvarying float vLapS;')
+      .replace('#include <color_fragment>',
+        `#include <color_fragment>\nif(vKerb>0.5){diffuseColor.rgb=mod(floor(vLapS/${KERB_STRIPE_M.toFixed(1)}),2.0)<0.5?kerbA:kerbB;}`);
+  };
+  return{mesh:new T.Mesh(g,mat),lapS,R,C};
+}
+
+function edgeLines(tr){
+  const mat=new T.LineBasicMaterial({color:COL.edge,transparent:true,opacity:0.35});
+  const out=[];
+  [[tr.left_x,tr.left_y,tr.left_z],[tr.right_x,tr.right_y,tr.right_z]].forEach(([xs,ys,zs])=>{
+    if(!xs||xs.length<2)return;
+    const p=new Float32Array(xs.length*3);
+    xs.forEach((x,i)=>{p[3*i]=x;p[3*i+1]=(ys&&ys.length===xs.length?ys[i]:0)+0.02;p[3*i+2]=zs[i];});
+    const g=new T.BufferGeometry();g.setAttribute('position',new T.BufferAttribute(p,3));
+    out.push(new T.Line(g,mat));
+  });
+  return out;
+}
+
+// Faint transverse marks every 50 m of lap distance, following the surface
+// across (so they show banking), interpolated between rows.
+function distanceMarks(s,surf){
+  const{lapS,R,C}=surf,pts=[];
+  const P=(k,ax)=>ax===0?s.x[k]:ax===1?s.y[k]+0.02:s.z[k];
+  for(let r=0;r<R-1;r++){
+    const s0=lapS[r*C],s1=lapS[(r+1)*C];
+    for(let m=Math.ceil(s0/MARK_EVERY_M)*MARK_EVERY_M;m<s1;m+=MARK_EVERY_M){
+      if(m<=0)continue;
+      const t=(m-s0)/(s1-s0||1);
+      for(let c=0;c<C-1;c++)for(const cc of[c,c+1]){
+        const a=r*C+cc,b=a+C;
+        pts.push(P(a,0)+(P(b,0)-P(a,0))*t,P(a,1)+(P(b,1)-P(a,1))*t,P(a,2)+(P(b,2)-P(a,2))*t);
+      }
+    }
+  }
+  if(!pts.length)return null;
+  const g=new T.BufferGeometry();g.setAttribute('position',new T.BufferAttribute(new Float32Array(pts),3));
+  return new T.LineSegments(g,new T.LineBasicMaterial({color:COL.edge,transparent:true,opacity:0.06}));
+}
+
+function drivenRibbon(dl){
+  const n=dl.x.length;if(n<2)return null;
+  const hasY=dl.y&&dl.y.length===n;
+  const pos=new Float32Array(n*6),idx=[];
+  for(let i=0;i<n;i++){
+    const i0=Math.max(0,i-1),i1=Math.min(n-1,i+1);
+    let dx=dl.x[i1]-dl.x[i0],dz=dl.z[i1]-dl.z[i0];const L=Math.hypot(dx,dz)||1;dx/=L;dz/=L;
+    const lx=-dz*LINE_HALF_W,lz=dx*LINE_HALF_W,y=(hasY?dl.y[i]:0)+0.03;   // left = (-dz, dx)
+    pos.set([dl.x[i]+lx,y,dl.z[i]+lz,dl.x[i]-lx,y,dl.z[i]-lz],6*i);
+    if(i<n-1){const a=2*i;idx.push(a,a+1,a+2,a+2,a+1,a+3);}
+  }
+  const g=new T.BufferGeometry();
+  g.setAttribute('position',new T.BufferAttribute(pos,3));
+  g.setAttribute('color',new T.BufferAttribute(new Float32Array(n*6),3));
+  g.setIndex(idx);
+  // Unlit, so the overlay colours read as in 2D; double-sided because the
+  // winding depends on the direction of travel. Polygon offset keeps it on
+  // top where the line's own heights sit a few cm under the fitted surface.
+  const mesh=new T.Mesh(g,new T.MeshBasicMaterial({vertexColors:true,side:T.DoubleSide,
+    polygonOffset:true,polygonOffsetFactor:-2,polygonOffsetUnits:-2}));
+  return mesh;
+}
+function colourRibbon(){
+  if(!ribbon||!S.mapData)return;
+  const n=S.mapData.driven_line.x.length,attr=ribbon.geometry.getAttribute('color'),a=attr.array;
+  if(a.length!==n*6)return;
+  for(let i=0;i<n;i++){
+    // vertex i takes segment i's colour (the last point repeats the last segment)
+    toLinear(lineRgbOverRoad(Math.min(i,n-2)),a,6*i);
+    a[6*i+3]=a[6*i];a[6*i+4]=a[6*i+1];a[6*i+5]=a[6*i+2];
+  }
+  attr.needsUpdate=true;
+}
+
+function pill(cls,text){
+  const el=document.createElement('span');el.className='chase-pill '+cls;el.textContent=text;
+  el.style.display='none';labelLayer.appendChild(el);return el;
+}
+
+function build(d){
+  if(!st.ready||!d)return;
+  disposeWorld();
+  world=new T.Group();scene.add(world);
+  const surf=d.surface?surfaceMesh(d.surface):null;
+  if(surf){
+    world.add(surf.mesh);
+    const marks=distanceMarks(d.surface,surf);if(marks)world.add(marks);
+  }
+  if(d.has_edges&&d.track)edgeLines(d.track).forEach(l=>world.add(l));
+  ribbon=drivenRibbon(d.driven_line);
+  if(ribbon){world.add(ribbon);colourRibbon();}
+  // Corner pills, same short label as the 2D map ("T5 Esses" -> "T5").
+  cornerPills=(d.corner_labels||[]).map(c=>({el:pill('corner',c.label.replace(/^(T\d+)\s.*$/,'$1').substring(0,8)),
+    v:new T.Vector3(c.x,(c.y||0)+1.6,c.z)}));
+  betaPill=pill('beta','');
+  const note=(d.elevation&&d.elevation.note)||'';
+  noteEl.textContent=note;noteEl.classList.toggle('on',!!note);
+  st.built=true;st.builtFor=d;
+}
+
+// ── per-frame ──────────────────────────────────────────────────────────────
+// Camera from the car pose: behind and above along the course. Task 7 wraps
+// this with smoothing and the transition.
+function chasePose(x,y,z,course){
+  const cx=Math.cos(course),cz=Math.sin(course);
+  return{pos:[x-cx*CAM_BACK,y+CAM_UP,z-cz*CAM_BACK],target:[x+cx*CAM_AHEAD,y,z+cz*CAM_AHEAD]};
+}
+const _v=()=>new T.Vector3();
+function placePill(el,v,w,h,dx,dy,maxDist){
+  const d=v.distanceTo(camera.position);
+  const p=v.clone().project(camera);
+  if(p.z>1||p.z<-1||d>maxDist||Math.abs(p.x)>1.2||Math.abs(p.y)>1.2){el.style.display='none';return;}
+  el.style.display='block';
+  el.style.opacity=String(clamp(1-(d-maxDist*0.6)/(maxDist*0.4),0,1));
+  el.style.transform=`translate(${((p.x+1)/2*w+dx).toFixed(1)}px,${((1-p.y)/2*h+dy).toFixed(1)}px) translate(-50%,-100%)`;
+}
+
+function render(){
+  if(!st.ready||!S.mapData)return;
+  if(st.builtFor!==S.mapData)build(S.mapData);
+  const dl=S.mapData.driven_line,n=dl.x.length;
+  if(!st.built||!n)return;
+  const f=clamp(S.playhead*(n-1),0,n-1);
+  const m=carMarkerAt(f);
+  const at=arr=>arr&&arr.length===n?lerpAt(arr,f):0;
+  const x=lerpAt(dl.x,f),z=lerpAt(dl.z,f),y=at(dl.y);
+  const pitch=at(dl.pitch_deg)*DEG,roll=at(dl.roll_deg)*DEG;
+
+  // Attitude (plan, Euler 'YZX'): y = -(course + bodyOff), z = pitch (+ nose
+  // up), x = roll (+ right side down). bodyOff is the 2D one (slip gain).
+  carRig.position.set(x,y+0.05,z);
+  carRig.rotation.set(roll,-(m.ang+m.bodyOff),pitch,'YZX');
+  arrowRig.position.set(x,y+0.08,z);
+  arrowRig.rotation.set(roll,-m.ang,pitch,'YZX');
+  const[r,g,b]=parseCss(m.col);
+  carMat.color.setRGB(r/255,g/255,b/255,T.SRGBColorSpace);
+  // A little self-light, like the 2D marker's glow, so the US/OS colour
+  // stays readable on the shaded side.
+  carMat.emissive.copy(carMat.color).multiplyScalar(0.35);
+
+  const pose=chasePose(x,y,z,m.ang);
+  camera.position.set(...pose.pos);camera.lookAt(...pose.target);
+  renderer.render(scene,camera);
+
+  const w=canvas.clientWidth,h=canvas.clientHeight;
+  cornerPills.forEach(p=>placePill(p.el,p.v,w,h,0,-4,600));
+  if(betaPill){
+    if(m.beta==null)betaPill.style.display='none';
+    else{
+      // Centred just under the car's rear, over the line already driven:
+      // it never covers the nose or the velocity arrow (where β is read),
+      // and stays clear of the HUD panels in the bottom corners.
+      const back=-CAR_LEN*0.45;
+      betaPill.textContent=betaLabel(m.beta);
+      placePill(betaPill,_v().set(x+Math.cos(m.ang)*back,y,z+Math.sin(m.ang)*back),w,h,0,0,1e9);
+      betaPill.style.transform+=' translate(0,calc(100% + 10px))';   // top edge 10 px below the anchor
+    }
+  }
+}
+
+function setOverlayColors(){
+  if(!ribbon)return;
+  colourRibbon();
+  if(st.mix>=1&&S.mapData)render();
+}
+
+function resize(){
+  if(!renderer)return;
+  const r=mapBody.getBoundingClientRect();if(!r.width||!r.height)return;
+  renderer.setSize(r.width,r.height,false);
+  camera.aspect=r.width/r.height;camera.updateProjectionMatrix();
+}
+
+// Open / close the view. This task cuts straight to the chase pose (mix 0 or
+// 1); Task 7 replaces the cut with the GSAP camera transition.
+async function activate(){
+  const ok=await ensure();
+  if(S.view!=='chase')return;              // switched back while loading
+  if(!ok){setView('top');return;}
+  if(S.mapData&&st.builtFor!==S.mapData)build(S.mapData);
+  st.mix=1;mapBody.dataset.view='chase';
+  resize();
+  if(S.mapData)render();
+}
+function deactivate(){st.mix=0;mapBody.dataset.view='top';}
+
+function state(){
+  const c=camera?camera.position:{x:0,y:0,z:0};
+  return{ready:st.ready,built:st.built,failed:st.failed,mix:st.mix,view:S.view,cam:{x:c.x,y:c.y,z:c.z}};
+}
+
+window.Chase={ensure,build,render,setOverlayColors,resize,state,lineColorAt,activate,deactivate};
+if(S.view==='chase')activate();               // the view was remembered from last time
 </script>
 </body>
 </html>
