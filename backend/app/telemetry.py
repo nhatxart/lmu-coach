@@ -186,7 +186,10 @@ SLOW_ROW_TABLES = ("GPS Latitude", "Lap Dist", "Path Lateral")
 # 180 km/h) stale. Runs longer than this many rows are a car that really
 # stands still (or a value that really is constant) and are kept.
 SCORING_HOLD_MAX_ROWS = 2
-SCORING_HELD_CHANNELS = ("Lap Dist", "Path Lateral", "Track Edge")
+# Track Edge is held too but carries Path Lateral's sign: interpolating a
+# held row between +w and -w would pass through 0. Its users take abs()
+# per row, which the stale repeat does not hurt, so it is left as recorded.
+SCORING_HELD_CHANNELS = ("Lap Dist", "Path Lateral")
 
 
 def held_rows(values) -> np.ndarray:

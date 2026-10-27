@@ -158,6 +158,23 @@ def test_trackmap_wheels_out_in_the_kerb_excursion(tmp_path, monkeypatch):
     assert not any(d0["driven_line"]["wheels_out"])
 
 
+def test_track_edge_sign_flip_does_not_pinch_the_edge(tmp_path, monkeypatch):
+    """Track Edge carries Path Lateral's sign. Where the car crosses the
+    centre line a held row sat between +6 and -6, and interpolating it
+    (dehold) gave a half-width of ~0 there: all four wheels "out" on the
+    centre line (21 single points on the 10/27 Road Atlanta lap)."""
+    f = _file(tmp_path, "Hill-flip.duckdb", scoring_hold=True)
+    d = _trackmap(f, monkeypatch, lap=1)       # ends blending from +1.5 to -1.5 (crosses 0)
+    lat = np.array(d["driven_line"]["lat"])
+    assert lat.max() > 1 and lat.min() < -1
+    assert min(d["driven_line"]["edge_half"]) > 5.9
+    assert not any(d["driven_line"]["wheels_out"])
+    # the 2D edges do not pinch either: track width stays ~12 m
+    t = d["track"]
+    w = np.hypot(np.subtract(t["left_x"], t["right_x"]), np.subtract(t["left_z"], t["right_z"]))
+    assert w.min() > 11.5, w.min()
+
+
 def test_trackmap_without_edges_has_no_track_limits(tmp_path, monkeypatch):
     f = _file(tmp_path, "Hill-noedge.duckdb", with_edges=False)
     d = _trackmap(f, monkeypatch, lap=1)

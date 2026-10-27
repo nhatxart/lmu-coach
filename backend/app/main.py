@@ -607,8 +607,12 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
     # Both are 5 Hz scoring values written twice on the 10 Hz gate in HF1
     # files; dehold interpolates the repeats (telemetry.held_rows), so the
     # edges and the track-limit lateral do not step every other row.
+    # Track Edge carries Path Lateral's SIGN (the side the car is on) and is
+    # only ever used as a half-width, so its magnitude is taken first:
+    # interpolated signed, it passes through ~0 wherever the car crosses the
+    # centre line (a pinched edge, and all four wheels "out" on the line).
     path_lat_raw   = dehold(_col("Path Lateral"))
-    track_edge_raw = dehold(_col("Track Edge"))
+    track_edge_raw = dehold(np.abs(np.asarray(_col("Track Edge"), dtype=float)))
 
     has_edges = bool(path_lat_raw) and bool(track_edge_raw)
 

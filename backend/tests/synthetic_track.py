@@ -287,11 +287,15 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
     scalar("GPS Latitude", GPS_REF_LAT + pos[slow, 2] / R_DEG, shz, "deg")
     scalar("GPS Longitude", GPS_REF_LON + pos[slow, 0] / (R_DEG * cos_lat), shz, "deg")
     ld_slow, pl_slow = lap_dist[slow].copy(), lat[slow].copy()
+    te_slow = np.where(lat[slow] < 0, -track_edge_m, track_edge_m)
     if scoring_hold:
-        ld_slow[1::2], pl_slow[1::2] = ld_slow[0:-1:2], pl_slow[0:-1:2]
+        # the real half-width varies a little along the lap (so its values
+        # repeat in pairs, like the other scoring channels); +-1 cm here
+        te_slow = te_slow * (1.0 + 0.002 * np.sin(2 * np.pi * lap_dist[slow] / 50.0))
+        ld_slow[1::2], pl_slow[1::2], te_slow[1::2] = ld_slow[0:-1:2], pl_slow[0:-1:2], te_slow[0:-1:2]
     if with_edges:
         scalar("Path Lateral", pl_slow, shz, "m")
-        scalar("Track Edge", np.where(pl_slow < 0, -track_edge_m, track_edge_m), shz, "m")
+        scalar("Track Edge", te_slow, shz, "m")
     scalar("Lap Dist", ld_slow, shz, "m")
 
     if other_cars > 0:
