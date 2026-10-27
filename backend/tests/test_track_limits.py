@@ -54,6 +54,20 @@ def test_held_rows_marks_short_repeats_only():
                              False, False, False, False, False]      # a 4-row run is a real stop
 
 
+def test_held_rows_at_speed_drops_any_run_length():
+    """10 Hz gate jitter can write one 5 Hz value three times. At speed that
+    is still a hold (a moving car's Lap Dist cannot stand still); only a
+    slow car's long run is a real stop."""
+    v = np.array([0, 0, 0, 10, 10, 20], dtype=float)
+    fast = np.full(6, 120.0)
+    assert telemetry.held_rows(v, fast).tolist() == [False, True, True, False, True, False]
+    slow = np.full(6, 2.0)
+    assert telemetry.held_rows(v, slow).tolist() == [False, False, False, False, True, False]
+    assert np.allclose(telemetry.dehold(v, fast), [0, 10 / 3, 20 / 3, 10, 15, 20])
+    out = trackmap_elevation.lap_dist_rows(v, np.arange(6, dtype=float), speed_kmh=fast)
+    assert np.allclose(out, [0, 10 / 3, 20 / 3, 10, 15, 20])
+
+
 def test_dehold_interpolates_between_updates():
     out = telemetry.dehold([0.0, 0.0, 10.0, 10.0, 20.0])
     assert np.allclose(out, [0, 5, 10, 15, 20])

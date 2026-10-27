@@ -192,26 +192,43 @@ SCORING_HOLD_MAX_ROWS = 2
 SCORING_HELD_CHANNELS = ("Lap Dist", "Path Lateral")
 
 
-def held_rows(values) -> np.ndarray:
+# A car above this speed cannot have a standing Lap Dist / Path Lateral, so
+# with a speed per row every repeat is a hold, whatever its length.
+SCORING_MOVING_KMH = 10.0
+
+
+def held_rows(values, speed_kmh=None) -> np.ndarray:
     """True for rows that only repeat the previous row because the game had
-    not updated the value yet (runs of at most SCORING_HOLD_MAX_ROWS equal
-    values; the first row of a run is kept)."""
+    not updated the value yet (the first row of a run is kept).
+
+    The rule: a run of equal values is held (all but its first row dropped)
+    when it is at most SCORING_HOLD_MAX_ROWS long, or - given `speed_kmh`
+    per row - when the car moves (> SCORING_MOVING_KMH anywhere in the run).
+    Only a slow car's longer run is kept, as a real stop.
+    BUG FIX / PREVIOUSLY: length alone decided, so 10 Hz gate jitter that
+    wrote one 5 Hz value three times counted as a stop and its stale rows
+    came back as data."""
     v = np.asarray(values, dtype=float)
     if len(v) < 2:
         return np.zeros(len(v), dtype=bool)
     start = np.concatenate([[True], v[1:] != v[:-1]])
     run = np.cumsum(start) - 1
     run_len = np.bincount(run)
-    return ~start & (run_len[run] <= SCORING_HOLD_MAX_ROWS)
+    held_run = run_len <= SCORING_HOLD_MAX_ROWS
+    if speed_kmh is not None:
+        sp = np.nan_to_num(np.asarray(speed_kmh, dtype=float))
+        if len(sp) == len(v):
+            held_run = held_run | (np.maximum.reduceat(sp, np.nonzero(start)[0]) > SCORING_MOVING_KMH)
+    return ~start & held_run[run]
 
 
-def dehold(values) -> list:
+def dehold(values, speed_kmh=None) -> list:
     """`values` with the held repeats (held_rows) replaced by interpolation
     (by row index) between the rows where the game updated the value."""
     v = np.asarray(values, dtype=float)
     if len(v) == 0:
         return []
-    held = held_rows(v)
+    held = held_rows(v, speed_kmh)
     if not held.any():
         return v.tolist()
     keep = np.nonzero(~held)[0]
@@ -489,6 +506,12 @@ def load_telemetry_file(
     # same clock as the Lap event timestamps), then slice per lap.
     session_channels: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     wrap_added: tuple[np.ndarray, np.ndarray] | None = None
+    # Speed per row for held_rows (a moving car's scoring value cannot stand still)
+    try:
+        gs_series = (None if "Ground Speed" in unpopulated else
+                     _read_continuous(con, "Ground Speed", freqs.get("Ground Speed", 100.0), axes))
+    except duckdb.CatalogException:
+        gs_series = None
 
     for ch in CONTINUOUS_CHANNELS:
         if ch in unpopulated:
@@ -503,7 +526,9 @@ def load_telemetry_file(
                 # then sat up to ~10 m along from where the car was, and the
                 # surface heights came out shifted on every slope. Fix: drop
                 # the repeats; the grid interpolates between real updates.
-                keep = ~held_rows(v)
+                sp = (np.interp(t, gs_series[0], gs_series[1])
+                      if gs_series is not None and len(gs_series[0]) else None)
+                keep = ~held_rows(v, sp)
                 t, v = t[keep], v[keep]
             if ch == "Lap Dist":
                 # Lap Dist wraps from ~track_length back to 0 at the start/

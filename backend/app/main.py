@@ -611,8 +611,19 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
     # only ever used as a half-width, so its magnitude is taken first:
     # interpolated signed, it passes through ~0 wherever the car crosses the
     # centre line (a pinched edge, and all four wheels "out" on the line).
-    path_lat_raw   = dehold(_col("Path Lateral"))
-    track_edge_raw = dehold(np.abs(np.asarray(_col("Track Edge"), dtype=float)))
+    def _speed_at_rows(n: int):
+        """Ground Speed (km/h) at each of n slow (10 Hz) or fast rows, for
+        dehold's moving-car rule; None when it cannot be lined up."""
+        gs = _col("Ground Speed")
+        if not gs or t_fast is None or len(gs) != len(t_fast):
+            return None
+        if t_slow is not None and len(t_slow) == n:
+            return np.interp(t_slow, t_fast, np.asarray(gs, dtype=float))
+        return np.asarray(gs, dtype=float) if n == len(gs) else None
+
+    pl_col, te_col = _col("Path Lateral"), _col("Track Edge")
+    path_lat_raw   = dehold(pl_col, _speed_at_rows(len(pl_col)))
+    track_edge_raw = dehold(np.abs(np.asarray(te_col, dtype=float)), _speed_at_rows(len(te_col)))
 
     has_edges = bool(path_lat_raw) and bool(track_edge_raw)
 
@@ -962,7 +973,8 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
         if ld_raw:
             xp = trackmap_elevation.source_positions(
                 len(ld_raw), full_len, native_x, len(t_fast) if t_fast is not None else None)
-            s_lap = trackmap_elevation.lap_dist_rows(ld_raw, xp)[s_idx : e_idx + 1]
+            s_lap = trackmap_elevation.lap_dist_rows(
+                ld_raw, xp, speed_kmh=_speed_at_rows(len(ld_raw)))[s_idx : e_idx + 1]
             lap_len_m = float(s_lap.max() - s_lap.min())
 
         ground_rec = None

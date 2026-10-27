@@ -42,7 +42,7 @@ _LAP_CACHE: dict[tuple[str, int], dict | None] = {}
 LAP_CACHE_MAX = 4
 
 
-def lap_dist_rows(raw: list | np.ndarray, xp: np.ndarray) -> np.ndarray:
+def lap_dist_rows(raw: list | np.ndarray, xp: np.ndarray, speed_kmh=None) -> np.ndarray:
     """The game's Lap Dist at fractional source positions `xp`, wrap-safe.
 
     BUG FIX / PREVIOUSLY: the whole session was unwrapped by adding the
@@ -66,7 +66,7 @@ def lap_dist_rows(raw: list | np.ndarray, xp: np.ndarray) -> np.ndarray:
     """
     a_all = np.asarray(raw, dtype=float)
     xp = np.asarray(xp, dtype=float)
-    keep = np.nonzero(~held_rows(a_all))[0]
+    keep = np.nonzero(~held_rows(a_all, speed_kmh))[0]    # speed per raw row, if known
     if len(keep) == 0:
         return np.full(len(xp), np.nan)
     a = a_all[keep]
