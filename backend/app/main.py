@@ -45,7 +45,8 @@ from .grip_profile import load_profile_for_lap, save_profile
 from .tire_model import TIRE_GRID_HZ, compute_grip_utilization_for_lap, file_load_reference
 from .vehicle_dynamics import (body_slip_from_local_vel_deg, compute_body_slip_deg,
                                handling_balance)
-from .telemetry import load_telemetry_file, get_car_setup_json, session_time_axes, reference_lap_time
+from .telemetry import load_telemetry_file, get_car_setup_json, session_time_axes, reference_lap_time, dehold
+from . import track_limits
 
 log = logging.getLogger(__name__)
 
@@ -603,8 +604,11 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
     # Path Lateral = car's lateral offset from centreline, metres (positive = right)
     # Track Edge   = half-width of track on the car's side, metres (signed same as PathLat)
     # Both at 10Hz; interpolated to match pos array length for edge reconstruction.
-    path_lat_raw   = _col("Path Lateral")
-    track_edge_raw = _col("Track Edge")
+    # Both are 5 Hz scoring values written twice on the 10 Hz gate in HF1
+    # files; dehold interpolates the repeats (telemetry.held_rows), so the
+    # edges and the track-limit lateral do not step every other row.
+    path_lat_raw   = dehold(_col("Path Lateral"))
+    track_edge_raw = dehold(_col("Track Edge"))
 
     has_edges = bool(path_lat_raw) and bool(track_edge_raw)
 
@@ -939,6 +943,7 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
     # Fail closed: this step is an addition to a map that already worked, so
     # whatever goes wrong in it (ragged channels, a half-written topography
     # file, a bug) must cost the elevation, never the whole response.
+    s_lap = None                                     # also read by the track limits below
     try:
         try:
             track_name_el = (dict(con.execute("SELECT key, value FROM metadata").fetchall())
@@ -1001,6 +1006,26 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
         c.pop("_row", None)
         c["y"] = ly
 
+    # ── 9. Car class and track limits (chase view car model) ─────────────────
+    # Fail closed like the elevation: these are additions to a working map.
+    try:
+        meta_car = dict(con.execute("SELECT key, value FROM metadata").fetchall()) \
+                   if "metadata" in tables else {}
+    except Exception:
+        meta_car = {}
+    car = None
+    try:
+        car = track_limits.car_payload(meta_car, meta_car.get("CarName", ""))
+        tl = track_limits.track_limits_payload(
+            has_edges=has_edges, path_lat=path_lat, track_edge=track_edge,
+            lateral_sign=int(elev["elevation"].get("lateral_sign", 1)),
+            s_lap=s_lap, body_slip_deg=body_slip if body_slip else None, dims=car["dims"])
+    except Exception as e:
+        print(f"[trackmap] track limits failed: {type(e).__name__}: {e}")
+        tl = {"available": False, "note": track_limits.NOTE_FAILED, "lat": [], "edge_half": [], "wheels_out": []}
+    tl_line = ({k: [tl[k][i] for i in line_idx] for k in ("lat", "edge_half", "wheels_out")}
+               if tl["available"] else {"lat": [], "edge_half": [], "wheels_out": []})
+
     con.close()
 
     return {
@@ -1039,7 +1064,15 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
             "y":          elev["y"],
             "pitch_deg":  elev["pitch_deg"],
             "roll_deg":   elev["roll_deg"],
+            # right-positive lateral offset (m), track half-width (m) and the
+            # wheels whose whole tyre is beyond the edge (bit 0 FL .. bit 3
+            # RR); empty without Track Edge / Path Lateral (track_limits)
+            "lat":        [round(float(v), 3) for v in tl_line["lat"]],
+            "edge_half":  [round(float(v), 3) for v in tl_line["edge_half"]],
+            "wheels_out": [int(v) for v in tl_line["wheels_out"]],
         },
+        "car": car,
+        "track_limits": {"available": bool(tl["available"]), "note": tl["note"]},
         "susp": {
             "fl": _ds(susp_fl, LINE_PTS) if susp_fl else [],
             "fr": _ds(susp_fr, LINE_PTS) if susp_fr else [],

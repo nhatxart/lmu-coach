@@ -140,11 +140,20 @@ def _unit(v):
 def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True,
                         with_surface=True, other_cars=0,
                         track_name="Synthetic Hill Ring",
-                        cross_offset_ticks=0) -> Path:
+                        cross_offset_ticks=0, track_edge_m=TRACK_EDGE_M,
+                        vehicle_class=None, with_edges=True,
+                        scoring_hold=False) -> Path:
     """cross_offset_ticks moves every crossing but the first off its 10 Hz row
     (-8: the first 10 Hz row after it reads ~3 m), like the real game, where
     the line falls anywhere between two rows. Default 0 keeps the crossings
-    on rows with Lap Dist exactly 0."""
+    on rows with Lap Dist exactly 0.
+
+    track_edge_m: the Track Edge half-width (the kerb stays at KERB_LAT_M).
+    vehicle_class: written as metadata VehicleClass (None: no such key).
+    with_edges=False: no Path Lateral / Track Edge tables (recorder v1).
+    scoring_hold: Lap Dist and Path Lateral repeat the previous 10 Hz row on
+    every other row, as in real HF1 files: the game updates them with its
+    scoring data at 5 Hz, and the recorder writes them at 10 Hz."""
     path = Path(path)
     offsets = tuple(float(o) for o in lap_offsets)
     n_laps = len(offsets)
@@ -223,6 +232,8 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
             ("RecordedBy", "lmu-coach-recorder hf1")]
     if with_pose:
         meta.append(("PoseChannels", "1"))
+    if vehicle_class:
+        meta.append(("VehicleClass", vehicle_class))
     con.executemany("INSERT INTO metadata VALUES (?, ?)", meta)
     con.execute("CREATE TABLE channelsList (channelName VARCHAR, frequency DOUBLE, unit VARCHAR)")
     con.execute("CREATE TABLE eventsList (eventName VARCHAR, unit VARCHAR)")
@@ -275,9 +286,13 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
     cos_lat = math.cos(math.radians(GPS_REF_LAT))
     scalar("GPS Latitude", GPS_REF_LAT + pos[slow, 2] / R_DEG, shz, "deg")
     scalar("GPS Longitude", GPS_REF_LON + pos[slow, 0] / (R_DEG * cos_lat), shz, "deg")
-    scalar("Path Lateral", lat[slow], shz, "m")
-    scalar("Track Edge", np.where(lat[slow] < 0, -TRACK_EDGE_M, TRACK_EDGE_M), shz, "m")
-    scalar("Lap Dist", lap_dist[slow], shz, "m")
+    ld_slow, pl_slow = lap_dist[slow].copy(), lat[slow].copy()
+    if scoring_hold:
+        ld_slow[1::2], pl_slow[1::2] = ld_slow[0:-1:2], pl_slow[0:-1:2]
+    if with_edges:
+        scalar("Path Lateral", pl_slow, shz, "m")
+        scalar("Track Edge", np.where(pl_slow < 0, -track_edge_m, track_edge_m), shz, "m")
+    scalar("Lap Dist", ld_slow, shz, "m")
 
     if other_cars > 0:
         lats = (-2.5, 2.5, -1.0, 1.0, -4.0, 4.0)

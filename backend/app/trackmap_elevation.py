@@ -24,6 +24,7 @@ from pathlib import Path
 import numpy as np
 
 from . import track_topography as tt
+from .telemetry import held_rows
 from .vehicle_pose import ORI_CHANNELS, basis_vectors, detect_pose_basis, ori_matrices, pitch_roll_deg
 
 SURFACE_COLS = 11
@@ -54,9 +55,22 @@ def lap_dist_rows(raw: list | np.ndarray, xp: np.ndarray) -> np.ndarray:
     value plus the pre-wrap one, so those rows stay near the line instead of
     landing at half a lap. The seam rows are off by the 10 Hz shortfall at
     most, and nothing accumulates.
+
+    BUG FIX / PREVIOUSLY: real HF1 files write each 5 Hz scoring update of
+    Lap Dist twice (telemetry.held_rows), and the repeat was interpolated as
+    data: every other surface row looked its height up one update (~10 m)
+    behind where it is, so the ribbon climbed in steps (pitch 0 / twice the
+    slope, row by row, on the 10/27 Road Atlanta file) and a car resting on
+    it would rock. Fix: interpolate between the rows where the game updated
+    the value; the wrap rule below then runs on those rows.
     """
-    a = np.asarray(raw, dtype=float)
+    a_all = np.asarray(raw, dtype=float)
     xp = np.asarray(xp, dtype=float)
+    keep = np.nonzero(~held_rows(a_all))[0]
+    if len(keep) == 0:
+        return np.full(len(xp), np.nan)
+    a = a_all[keep]
+    xp = np.interp(xp, keep, np.arange(len(keep), dtype=float))   # position on the kept rows
     out = np.interp(xp, np.arange(len(a)), a)
     if len(a) < 2:
         return out
@@ -154,7 +168,7 @@ def flat_payload(*, edge_idx, line_idx, n_labels: int, left_x, left_z, right_x, 
     nl = len(line_idx)
     return {
         "elevation": {"source": "none", "orientation": "none", "datum_m": 0.0,
-                      "note": note, "topography": None},
+                      "note": note, "topography": None, "lateral_sign": 1},
         "y": [0.0] * nl, "pitch_deg": [0.0] * nl, "roll_deg": [0.0] * nl,
         "left_y": [0.0] * R, "right_y": [0.0] * R,
         "surface": {"rows": R, "cols": C, "x": sx, "y": [0.0] * (R * C),
@@ -327,7 +341,9 @@ def elevation_payload(*, path: Path, track_name: str, lap_len_m: float | None,
     return {
         "elevation": {"source": source, "orientation": orientation,
                       "datum_m": round(datum, 3), "note": note,
-                      "topography": _info(*shown) if shown else None},
+                      "topography": _info(*shown) if shown else None,
+                      # Path Lateral -> right-positive lat (track limits use it)
+                      "lateral_sign": sign},
         "y": r3(np.asarray(y)[li_]),
         "pitch_deg": r3(np.asarray(pitch)[li_]),
         "roll_deg": r3(np.asarray(roll)[li_]),

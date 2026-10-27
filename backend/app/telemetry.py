@@ -178,6 +178,43 @@ SLOW_PERIOD_S = 0.1   # recorder.py's SLOW_PERIOD_S
 SLOW_ROW_TABLES = ("GPS Latitude", "Lap Dist", "Path Lateral")
 
 
+# The game updates Lap Dist, Path Lateral and Track Edge with its scoring
+# data at 5 Hz; recorder.py writes them on its 10 Hz gate, so in real HF1
+# files every value is written twice (measured: 49.8 % of the Lap Dist steps
+# are zero on the 10/27 Road Atlanta file, the others ~9.7 m at speed). A
+# repeated row is the old value at a later time, up to 0.2 s (10 m at
+# 180 km/h) stale. Runs longer than this many rows are a car that really
+# stands still (or a value that really is constant) and are kept.
+SCORING_HOLD_MAX_ROWS = 2
+SCORING_HELD_CHANNELS = ("Lap Dist", "Path Lateral", "Track Edge")
+
+
+def held_rows(values) -> np.ndarray:
+    """True for rows that only repeat the previous row because the game had
+    not updated the value yet (runs of at most SCORING_HOLD_MAX_ROWS equal
+    values; the first row of a run is kept)."""
+    v = np.asarray(values, dtype=float)
+    if len(v) < 2:
+        return np.zeros(len(v), dtype=bool)
+    start = np.concatenate([[True], v[1:] != v[:-1]])
+    run = np.cumsum(start) - 1
+    run_len = np.bincount(run)
+    return ~start & (run_len[run] <= SCORING_HOLD_MAX_ROWS)
+
+
+def dehold(values) -> list:
+    """`values` with the held repeats (held_rows) replaced by interpolation
+    (by row index) between the rows where the game updated the value."""
+    v = np.asarray(values, dtype=float)
+    if len(v) == 0:
+        return []
+    held = held_rows(v)
+    if not held.any():
+        return v.tolist()
+    keep = np.nonzero(~held)[0]
+    return np.interp(np.arange(len(v)), keep, v[keep]).tolist()
+
+
 def _replay_slow_gate(t_fast: np.ndarray) -> np.ndarray:
     """Indices into t_fast where recorder.py wrote a 10 Hz row: the first
     tick at or after each due time, re-anchored after a clock jump."""
@@ -456,6 +493,15 @@ def load_telemetry_file(
         try:
             freq = freqs.get(ch, 10.0)  # fallback if a channel is missing from channelsList
             t, v = _read_continuous(con, ch, freq, axes)
+            if ch in SCORING_HELD_CHANNELS:
+                # BUG FIX / PREVIOUSLY: the held repeats (see held_rows) were
+                # resampled as data, so on the 50 Hz grid these channels ran
+                # in steps: ramp for 0.1 s, flat for 0.1 s. Topography probes
+                # then sat up to ~10 m along from where the car was, and the
+                # surface heights came out shifted on every slope. Fix: drop
+                # the repeats; the grid interpolates between real updates.
+                keep = ~held_rows(v)
+                t, v = t[keep], v[keep]
             if ch == "Lap Dist":
                 # Lap Dist wraps from ~track_length back to 0 at the start/
                 # finish line each lap. Linear interpolation across that
