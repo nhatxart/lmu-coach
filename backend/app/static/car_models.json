@@ -2,10 +2,14 @@
   "version": 1,
   "notes": [
     "Representative class shapes, not any one car. Metres. Read by the chase view (static/car_models.js), the STL exporter (tools/export_car_models.mjs) and the backend (track limits). The tyre positions (wheelbase, tracks, tyre size) matter most: they decide where the four contact patches are against the track edge.",
-    "Frame used by car_models.js: nose +X, up +Y, right +Z, origin on the ground at mid-wheelbase. track_* is tyre centre to tyre centre. height is the overall height including the wing (or swan-neck mount); roof_height is the cabin roof. Rear overhang = length - wheelbase - overhang_front. wing.setback = distance from the rearmost point of the body to the wing's trailing edge. wing.span includes the endplates.",
+    "Frame used by car_models.js: nose +X, up +Y, right +Z, origin on the ground at mid-wheelbase. track_* is tyre centre to tyre centre. height is the overall height including the wing, swan-neck mount or roof intake; roof_height is the cabin roof. Rear overhang = length - wheelbase - overhang_front. wing.setback = distance from the rearmost point of the body to the wing's trailing edge. wing.span includes the endplates. roof_intake: an air scoop above the roof (LMP3).",
     "LMGT3 (4.60 x 2.04 x 1.20, wheelbase 2.70): between the Porsche 911 GT3 R (992): 4619 mm long, 2039 mm (front axle) / 2050 mm (rear axle) wide, wheelbase 2507 mm (Porsche Motorsport / iRacing spec sheet, stuttcars.com), the Ferrari 296 GT3 (about 4.71 m, wheelbase about 2.66 m) and the BMW M4 GT3 (about 5.02 m, 2.04 m, wheelbase about 2.92 m); the last two are from memory of the manufacturers' press figures, not looked up again. GT3 width is capped near 2.05 m. Tracks are not published; 1.70 / 1.65 put the outer tyre faces about 15 mm inside the body, as on the real cars. Tyres: Michelin GT3 fronts are about 30/68-18 and rears 31/71-18; one 0.71 m diameter is used for both (the plan asks for 0.71).",
-    "Hypercar (5.00 x 2.00 x 1.06, wheelbase 3.15): LMH limits are 5000 mm long, 2000 mm wide, wheelbase up to 3150 mm (Ferrari 499P: '5 m long, 2 m wide, wheelbase 3.15 m', lasquadra.pl; LMU's own car page lists the 499P at 5100 x 2000 x 1055 mm). LMDh cars (Cadillac V-Series.R, Porsche 963) are about 5.1 m with a similar wheelbase. Tracks are not published; 1.65 / 1.62 keep the tyres inside 2.0 m. Tyres: Michelin LMH/LMDh 29/71-18 front, 34/71-18 rear. Height 1.06 is the wing / roof line.",
-    "LMP2 and LMP3 use the Hypercar shape until they are recorded (aliases); give them their own entry here when their dimensions matter. An unknown class falls back to LMGT3 (car_models.js classDims, source 'fallback')."
+    "LMGT3 wing (round 2, user asked for the 911 GT3 R (992) look): a large single-element swan-neck wing (Porsche: 'rear wing with swan neck connection', stuttcars.com / loveforporsche.com technical data). Its size is not published; read off photos: the wing sits about at roof height, well above the sloping engine lid, the chord is roughly 0.4 m, the span nearly the car's width, and the endplates are tall plates a little longer than the chord. Chosen: span 1.86, chord 0.42, endplates 0.27 tall (their lower edge stays clear of the engine lid, as on the car), top of the swan necks at the class height 1.20 (roof 1.16), trailing edge at the tail. These are estimates from photos, not measured.",
+    "Hypercar (5.00 x 2.00 x 1.06, wheelbase 3.15): LMH limits are 5000 mm long, 2000 mm wide, wheelbase up to 3150 mm (Ferrari 499P: '5 m long, 2 m wide, wheelbase 3.15 m', lasquadra.pl; LMU's own car page lists the 499P at 5100 x 2000 x 1055 mm). LMDh cars (Cadillac V-Series.R, Porsche 963) are about 5.1 m with a similar wheelbase. Tracks are not published; 1.65 / 1.62 keep the tyres inside 2.0 m. Tyres: Michelin LMH/LMDh 29/71-18 front, 34/71-18 rear.",
+    "Hypercar round 2 (user: higher, bigger wing and the aggressive front of the 2026/27 cars - Porsche 963, Cadillac V-Series.R, BMW M Hybrid V8, Alpine A424, Ferrari 499P, Toyota TR010, Peugeot 9X8, Valkyrie, Genesis GMR-001): height raised from 1.06 to 1.10 = the wing top (published heights range from 1055 mm, 499P on LMU's page, to about 1150 mm, Toyota's own GR010 figure, from memory); wing span 1.94, chord 0.42, endplates 0.56 tall, splitter 0.24 deep and 1.90 wide with end fences. The front aero (two dive planes per side, louvres over the front wheels, a raised sculpted nose) is shape only (car_models.js PROTO_STYLE), read off photos, not dimensions.",
+    "LMP2 (Oreca 07, the only LMP2 in LMU): 4745 x 1895 x 1045 mm, wheelbase 3005 mm, tracks 1570 / 1550 mm (Wikipedia 'Oreca 07'; LMU car page 'ORECA 07 Gibson 2024': 4745 / 1895 / 1045 mm). Front overhang 0.98 is an estimate (rear 0.76). Tyres: 18 in rims, about 0.68 m diameter, 0.30 / 0.31 m wide (Goodyear LMP2 sizes from memory, not looked up). Wing: full width, high on two pylons above a low engine cover, big endplates; span / chord / endplate sizes estimated from photos.",
+    "LMP3 (current generation: Ligier JS P325, Duqueine D09, Ginetta G61-LT-P325): Ligier JS P325 4605 mm long, 1900 mm wide, wheelbase 2860 mm (ligierautomotive.com technical sheet). ACO 2025 LMP3 rules: width 1800-1900 mm, length 4650 mm max, bodywork height 987 mm max, intake 1050 mm max (europeanlemansseries.com, 'Next Gen LMP3'). Height 1.05 is the roof air intake; the wing top (swan-neck top) is held at the 0.98 bodywork line. Rims 18 in, 12.5 in front / 13 in rear (Ligier), so tyres about 0.30 / 0.31 m wide; diameter 0.67 m and the tracks 1.56 / 1.53 m are estimates. Front overhang 0.98 is an estimate (rear 0.765). Ligier LMP3s use a swan-neck wing mount (RACER on the JS P217; assumed carried over).",
+    "An unknown class falls back to LMGT3 (car_models.js classDims, source 'fallback'). aliases maps extra class names onto an entry here (source 'alias'); empty since LMP2 and LMP3 have their own entries."
   ],
   "classes": {
     "LMGT3": {
@@ -22,23 +26,24 @@
       "tyre_width_rear": 0.33,
       "ride_height": 0.075,
       "wing": {
-        "span": 1.80,
-        "chord": 0.32,
+        "span": 1.86,
+        "chord": 0.42,
         "height_top": 1.20,
-        "setback": 0.03,
-        "endplate_height": 0.30,
+        "setback": 0.0,
+        "endplate_height": 0.27,
         "mount": "swan_neck"
       },
       "splitter": {
         "depth": 0.12,
         "width": 1.86
       },
-      "fin": false
+      "fin": false,
+      "roof_intake": false
     },
     "Hypercar": {
       "length": 5.00,
       "width": 2.00,
-      "height": 1.06,
+      "height": 1.10,
       "roof_height": 1.01,
       "wheelbase": 3.15,
       "track_front": 1.65,
@@ -49,22 +54,76 @@
       "tyre_width_rear": 0.34,
       "ride_height": 0.07,
       "wing": {
-        "span": 1.90,
-        "chord": 0.38,
-        "height_top": 1.06,
+        "span": 1.94,
+        "chord": 0.42,
+        "height_top": 1.10,
         "setback": 0.0,
-        "endplate_height": 0.50,
+        "endplate_height": 0.56,
         "mount": "pylon"
       },
       "splitter": {
-        "depth": 0.18,
-        "width": 1.80
+        "depth": 0.24,
+        "width": 1.90
       },
-      "fin": true
+      "fin": true,
+      "roof_intake": false
+    },
+    "LMP2": {
+      "length": 4.745,
+      "width": 1.895,
+      "height": 1.045,
+      "roof_height": 0.99,
+      "wheelbase": 3.005,
+      "track_front": 1.57,
+      "track_rear": 1.55,
+      "overhang_front": 0.98,
+      "tyre_diameter": 0.68,
+      "tyre_width_front": 0.30,
+      "tyre_width_rear": 0.31,
+      "ride_height": 0.06,
+      "wing": {
+        "span": 1.80,
+        "chord": 0.34,
+        "height_top": 1.045,
+        "setback": 0.0,
+        "endplate_height": 0.42,
+        "mount": "pylon"
+      },
+      "splitter": {
+        "depth": 0.15,
+        "width": 1.70
+      },
+      "fin": true,
+      "roof_intake": false
+    },
+    "LMP3": {
+      "length": 4.605,
+      "width": 1.90,
+      "height": 1.05,
+      "roof_height": 0.95,
+      "wheelbase": 2.86,
+      "track_front": 1.56,
+      "track_rear": 1.53,
+      "overhang_front": 0.98,
+      "tyre_diameter": 0.67,
+      "tyre_width_front": 0.30,
+      "tyre_width_rear": 0.31,
+      "ride_height": 0.06,
+      "wing": {
+        "span": 1.76,
+        "chord": 0.30,
+        "height_top": 0.98,
+        "setback": 0.02,
+        "endplate_height": 0.30,
+        "mount": "swan_neck"
+      },
+      "splitter": {
+        "depth": 0.14,
+        "width": 1.70
+      },
+      "fin": true,
+      "roof_intake": true
     }
   },
-  "aliases": {
-    "LMP2": "Hypercar",
-    "LMP3": "Hypercar"
-  }
+  "aliases": {}
 }

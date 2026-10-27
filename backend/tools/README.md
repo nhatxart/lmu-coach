@@ -15,7 +15,7 @@ The first run downloads the packages, and later runs use uv's cache.
 | `COMPARE_LOAD_SOURCES.ps1` | nothing | Pilot: does Susp Force give the same grip numbers as the game's Tire Load? (needs a car that has both) |
 | `MF_EXPERIMENT.ps1` | nothing | Tyre model v3 experiment: which state factors (load, temp, pressure, wear, camber) improve held-out prediction of the game's true mu? |
 | `CLASS_COLLAPSE.ps1` | nothing | Tyre model v3 experiment: how much should a car lean on the pooled curve of the other cars of its class (works for LMGT3, which has no tyre forces)? |
-| `EXPORT_CAR_MODELS.ps1` | `docs/car_models/*.stl` | Writes the chase view's GT3 and Hypercar models as STL files (1:1 and 1:43, millimetres) to check in a 3D-printer slicer. Needs Node.js, not uv |
+| `EXPORT_CAR_MODELS.ps1` | `docs/car_models/*.stl` | Writes the chase view's GT3, Hypercar, LMP2 and LMP3 models as STL files (1:1 and 1:43, millimetres) to check in a 3D-printer slicer. Needs Node.js, not uv |
 
 None of these tools ever modify `data/sessions/*.duckdb`. They open it read-only.
 
@@ -171,10 +171,10 @@ cd backend\tools
 .\EXPORT_CAR_MODELS.ps1 C:\temp\cars       # somewhere else
 ```
 
-- One file per class and scale: `LMGT3_1to1_mm.stl`, `LMGT3_1to43_mm.stl`, `Hypercar_1to1_mm.stl`, `Hypercar_1to43_mm.stl`. Units are millimetres, Z is up, the nose points along +X and the wheels stand on z = 0.
+- One file per class and scale: `<class>_1to1_mm.stl` and `<class>_1to43_mm.stl` for LMGT3, Hypercar, LMP2 and LMP3. Units are millimetres, Z is up, the nose points along +X and the wheels stand on z = 0.
 - It prints the triangle count and the bounding box of each file. At 1:1 the box is the JSON's length x width x height (the height includes the wing); at 1:43 it is the same divided by 43 (about 107 mm long for the GT3).
 - The 1:43 files are previews, not print-tuned: the wing endplates, splitter and fin are well under 0.5 mm thick at that scale, so a 0.4 mm nozzle may drop or thicken them.
-- LMP2 and LMP3 use the Hypercar shape until they have their own entry; any other class is drawn as the GT3.
+- Any class without an entry is drawn as the GT3 (the chase view says so).
 - Edit the JSON, run the tool again and reload the slicer to compare.
 
 ---

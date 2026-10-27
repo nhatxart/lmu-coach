@@ -24,7 +24,7 @@ REPO = Path(__file__).resolve().parents[2]
 STATIC = REPO / "backend" / "app" / "static"
 JSON_PATH = STATIC / "car_models.json"
 EXPORTER = REPO / "backend" / "tools" / "export_car_models.mjs"
-CLASSES = ("LMGT3", "Hypercar")
+CLASSES = ("LMGT3", "Hypercar", "LMP2", "LMP3")
 
 DIM_KEYS = ("length", "width", "height", "wheelbase", "track_front", "track_rear",
             "overhang_front", "tyre_diameter", "tyre_width_front", "tyre_width_rear",
@@ -60,10 +60,14 @@ def exported(tmp_path_factory):
     return out, r.stdout
 
 
-def test_json_has_both_classes_and_every_key():
+def test_json_has_every_class_and_every_key():
     j = _load_json()
     assert j["version"] == 1
-    assert j["aliases"] == {"LMP2": "Hypercar", "LMP3": "Hypercar"}
+    # LMP2 and LMP3 have their own entries since round 2, so no alias may
+    # shadow a class, and every alias points at a real class.
+    assert isinstance(j["aliases"], dict)
+    for name, target in j["aliases"].items():
+        assert name not in j["classes"] and target in j["classes"]
     assert isinstance(j.get("notes"), (str, list)) and j["notes"]
     for cls in CLASSES:
         d = j["classes"][cls]
@@ -77,9 +81,20 @@ def test_json_has_both_classes_and_every_key():
         assert max(d["track_front"] + d["tyre_width_front"], d["track_rear"] + d["tyre_width_rear"]) <= d["width"]
         assert d["wheelbase"] + d["overhang_front"] < d["length"]
         assert d["wing"]["height_top"] <= d["height"] + 1e-9
-    assert j["classes"]["LMGT3"]["wing"]["mount"] == "swan_neck"
-    assert j["classes"]["Hypercar"]["wing"]["mount"] == "pylon"
-    assert j["classes"]["Hypercar"]["fin"] is True
+    c = j["classes"]
+    assert c["LMGT3"]["wing"]["mount"] == "swan_neck"
+    assert c["Hypercar"]["wing"]["mount"] == "pylon"
+    assert c["LMP2"]["wing"]["mount"] == "pylon"
+    assert c["LMP3"]["wing"]["mount"] == "swan_neck"
+    for cls in ("Hypercar", "LMP2", "LMP3"):
+        assert c[cls]["fin"] is True
+    assert c["LMGT3"]["fin"] is False
+    # LMP3 is the smaller prototype; LMP2 matches the Oreca 07's published size.
+    assert c["LMP3"]["length"] < c["LMP2"]["length"] < c["Hypercar"]["length"]
+    assert c["LMP3"]["wheelbase"] < c["LMP2"]["wheelbase"] < c["Hypercar"]["wheelbase"]
+    assert (c["LMP2"]["length"], c["LMP2"]["width"], c["LMP2"]["height"]) == (4.745, 1.895, 1.045)
+    # Round 2: the GT3 wing sits at (or above) the roof line, like the 911 GT3 R.
+    assert c["LMGT3"]["wing"]["height_top"] >= c["LMGT3"]["roof_height"]
 
 
 @needs_node
@@ -102,8 +117,10 @@ def test_stl_valid_and_to_scale(exported, cls):
     box_vol = d["length"] * d["width"] * d["height"] * 1e9
     assert 0.3 * box_vol < vol < box_vol, f"{cls}: signed volume {vol / 1e9:.2f} m3"
     # The stored normals agree with the winding (slicers may use either).
+    # Slivers under 0.5 mm2 are skipped: float32 rounding of their vertices
+    # can flip the recomputed cross product.
     calc = np.cross(v1[:, 1] - v1[:, 0], v1[:, 2] - v1[:, 0])
-    ok = np.linalg.norm(calc, axis=1) > 1e-6
+    ok = np.linalg.norm(calc, axis=1) > 1.0
     assert (np.einsum("ij,ij->i", calc[ok], n1[ok]) > 0).all()
 
     pts = v1.reshape(-1, 3)
@@ -131,8 +148,15 @@ const { buildCar, classDims } = await import(process.argv[2]);
 const fs = await import('node:fs');
 const j = JSON.parse(fs.readFileSync(new URL(process.argv[3]), 'utf8'));
 const out = {};
-for (const c of ['LMGT3', 'Hypercar', 'LMP2', 'Mystery', undefined]) {
+for (const c of ['LMGT3', 'Hypercar', 'LMP2', 'LMP3', 'Mystery', undefined]) {
   const r = classDims(j, c); out[String(c)] = [r.cls, r.source];
+}
+const al = classDims({ classes: j.classes, aliases: { GTE: 'LMGT3' } }, 'GTE');
+out.alias = [al.cls, al.source];
+out.builds = {};
+for (const c of Object.keys(j.classes)) {
+  const k = buildCar(THREE, c, j.classes[c]);
+  out.builds[c] = Object.keys(k.wheels).length;
 }
 const r = classDims(j, 'Hypercar');
 const car = buildCar(THREE, r.cls, r.dims);
@@ -150,7 +174,10 @@ console.log(JSON.stringify(out));
     out = json.loads(r.stdout.strip().splitlines()[-1])
     assert out["LMGT3"] == ["LMGT3", "exact"]
     assert out["Hypercar"] == ["Hypercar", "exact"]
-    assert out["LMP2"] == ["Hypercar", "alias"]
+    assert out["LMP2"] == ["LMP2", "exact"]
+    assert out["LMP3"] == ["LMP3", "exact"]
+    assert out["alias"] == ["LMGT3", "alias"]
+    assert out["builds"] == {c: 4 for c in CLASSES}
     assert out["Mystery"] == ["LMGT3", "fallback"]
     assert out["undefined"] == ["LMGT3", "fallback"]
     d = _load_json()["classes"]["Hypercar"]

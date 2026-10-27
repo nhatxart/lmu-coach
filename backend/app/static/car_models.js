@@ -1,5 +1,5 @@
-// Procedural car models for the chase view: a representative LMGT3 car and a
-// Le Mans Hypercar, built from three.js core primitives and extrusions.
+// Procedural car models for the chase view: representative LMGT3, Hypercar,
+// LMP2 and LMP3 cars, built from three.js core primitives and extrusions.
 //
 // Shared by two callers, so it must stay DOM-free and import-free (THREE is
 // passed in):
@@ -249,16 +249,19 @@ function gt3Parts(T, d) {
   // Lower body (top and bottom lines, front -> rear): nose, hood, front
   // fender peak, beltline, rear haunch, deck and tail; floor with arches over
   // both axles and the diffuser kick.
+  // Round 2 (user, 911 GT3 R reference): the engine lid slopes down to the
+  // tail (0.84 m), so the big wing stands well clear of the deck.
   const top = [
     [xn - 0.02, 0.30], [xn - 0.07, 0.48], [xn - 0.25, 0.64], [xf + 0.35, 0.77], [xf, 0.83],
-    [xf - 0.55, 0.85], [-0.30, 0.87], [xra + 0.55, 0.93], [xra, 0.95], [xr + 0.30, 0.93],
-    [xr + 0.03, 0.91], [xr, 0.86],
+    [xf - 0.55, 0.85], [-0.30, 0.87], [xra + 0.55, 0.92], [xra, 0.91], [xr + 0.30, 0.86],
+    [xr + 0.03, 0.84], [xr, 0.80],
   ];
+  const diffuser = [[xr + 0.38, rh + 0.06], [xr + 0.08, 0.28], [xr, 0.42]];
   const bottom = [
     [xn - 0.02, rh + 0.04], [xn - 0.25, rh + 0.01],
     ...arch(xf, r, Ra, rh + 0.02),
     ...arch(xra, r, Ra, rh + 0.02),
-    [xr + 0.38, rh + 0.06], [xr + 0.08, 0.28], [xr, 0.42],
+    ...diffuser,
   ];
   // Full width (the class width) over each arch: the arch cut-out removes the
   // vertices right above the hub, so the flat part must span the arch sides.
@@ -277,78 +280,171 @@ function gt3Parts(T, d) {
   const xw = xf - 0.70;                                   // windscreen base
   const cabTop = [
     [xw, 0.84], [xw - 0.06, 0.88], [-0.05, roof - 0.012], [-0.25, roof], [-0.85, roof - 0.005],
-    [-1.10, roof - 0.05], [-1.85, 0.95], [-1.95, 0.92],
+    [-1.10, roof - 0.05], [-1.62, 0.95], [-1.75, 0.885],
   ];
-  const cabX = table([[xw, 0.85], [xw - 0.35, 1.0], [-1.0, 1.0], [-1.95, 0.93]]);
+  const cabX = table([[xw, 0.85], [xw - 0.35, 1.0], [-1.0, 1.0], [-1.75, 0.93]]);
   const cabHW = (x, y) => cabX(x) * lerp(0.84, 0.63, clamp01((y - 0.86) / (roof - 0.86)));
-  parts.push({ geo: loftSolid(T, cabTop, [[xw, 0.78], [-1.95, 0.84]], cabHW, 2) });
+  parts.push({ geo: loftSolid(T, cabTop, [[xw, 0.78], [-1.75, 0.80]], cabHW, 2) });
 
   // Door mirrors at the A-pillar base, inside the body width.
   for (const s of [-1, 1]) parts.push({ geo: box(T, 0.10, 0.07, 0.13), x: xw - 0.06, y: 0.93, z: s * 0.92 });
 
-  return { parts, xn, xr, deckY: (x) => polyY(top, x) };  // deck line: for the wing mounts
+  // deckY: the deck line, for the wing mounts; diffuser/strakes: the fins.
+  return { parts, xn, xr, deckY: (x) => polyY(top, x), diffuser, strakes: [0.22, 0.50], floorTop: 0.62 };
 }
 
-function hypercarParts(T, d) {
+// Closed-cockpit prototypes share one layout (tub, front fender pods,
+// canopy); the classes differ in these representative shape numbers (metres;
+// heights above the ground). Hypercar keeps the round-1 body and adds the
+// aggressive front aero of the current cars (aero below). LMP2 (Oreca 07-like): lower, narrower rear bodywork so the
+// high wing stands clear on its pylons, narrower tail. LMP3 (Ligier JS P325-
+// like): shorter and lower, swan-neck wing (from the JSON), a roof air intake.
+const PROTO_STYLE = {
+  Hypercar: {
+    top: [0.20, 0.35, 0.48, 0.58, 0.64, 0.68, 0.73, 0.83, 0.90, 0.88, 0.86, 0.80],
+    tailBottom: 0.42,
+    plan: [0.30, 0.45, 0.58, 0.62, 0.66, 0.80, 0.95], planRear: [1.0, 0.99, 0.95],
+    podHW: 0.22, pod: [0.30, 0.55, 0.78, 0.86, 0.82, 0.62, 0.45],
+    canX: [1.10, 0.95, 0.15, -0.15, -0.55, -0.95, -1.50], canY: [0.62, 0.70, null, null, null, 0.93, 0.85],
+    canBase: [0.55, 0.70], canHW: [0.58, 0.36], canY0: 0.65,
+    mirror: [0.78, 0.74], strakes: [0.28, 0.58], floorTop: 0.62,
+    // Round 2 (user: 2026/27 LMH/LMDh look - 963, V-Series.R, 499P, 9X8...):
+    // two dive planes per side, louvres over the front wheels, a raised
+    // sculpted nose, splitter with fences.
+    aero: { canards: 2, louvres: 5, ridge: true, fences: true },
+  },
+  LMP2: {
+    top: [0.20, 0.33, 0.45, 0.55, 0.60, 0.63, 0.66, 0.74, 0.80, 0.78, 0.76, 0.72],
+    tailBottom: 0.40,
+    plan: [0.28, 0.42, 0.55, 0.58, 0.60, 0.72, 0.86], planRear: [1.0, 0.93, 0.84],
+    podHW: 0.21, pod: [0.28, 0.52, 0.74, 0.82, 0.78, 0.58, 0.42],
+    canX: [1.05, 0.90, 0.15, -0.15, -0.55, -0.95, -1.45], canY: [0.58, 0.66, null, null, null, 0.88, 0.78],
+    canBase: [0.52, 0.62], canHW: [0.54, 0.34], canY0: 0.60,
+    mirror: [0.74, 0.70], strakes: [0.24, 0.50], floorTop: 0.50,
+    aero: { canards: 1, louvres: 3, ridge: false, fences: true },   // Oreca: dive plane, arch vents
+  },
+  LMP3: {
+    top: [0.20, 0.33, 0.45, 0.54, 0.59, 0.62, 0.65, 0.73, 0.80, 0.78, 0.76, 0.72],
+    tailBottom: 0.40,
+    plan: [0.28, 0.42, 0.54, 0.58, 0.60, 0.72, 0.88], planRear: [1.0, 0.95, 0.88],
+    podHW: 0.21, pod: [0.28, 0.50, 0.72, 0.80, 0.76, 0.56, 0.42],
+    canX: [0.98, 0.85, 0.10, -0.15, -0.50, -0.85, -1.35], canY: [0.57, 0.65, null, null, null, 0.86, 0.78],
+    canBase: [0.52, 0.62], canHW: [0.52, 0.33], canY0: 0.60,
+    mirror: [0.72, 0.70], strakes: [0.24, 0.50], floorTop: 0.50,
+    aero: { canards: 0, louvres: 0, ridge: false, fences: false },  // LMP3: simpler aero
+  },
+};
+
+function prototypeParts(T, d, s) {
   const xf = d.wheelbase / 2, xra = -d.wheelbase / 2;
   const xn = xf + d.overhang_front, xr = xn - d.length;
   const r = d.tyre_diameter / 2, rh = d.ride_height, W2 = d.width / 2;
   const roof = d.roof_height ?? d.height - 0.05;
   const Ra = r + 0.035;
   const parts = [];
+  const h = s.top;
 
   // Central tub: low nose between the front fenders, cockpit, sidepods
   // widening into full-width rear fenders, short tail. The front wheels sit
   // outside it (in the fender pods below), so it has only the rear arch.
   const top = [
-    [xn - 0.03, 0.20], [xn - 0.22, 0.35], [xn - 0.60, 0.48], [xf, 0.58], [xf - 0.60, 0.64],
-    [0.20, 0.68], [-0.60, 0.73], [xra + 0.50, 0.83], [xra, 0.90], [xra - 0.35, 0.88],
-    [xr + 0.05, 0.86], [xr, 0.80],
+    [xn - 0.03, h[0]], [xn - 0.22, h[1]], [xn - 0.60, h[2]], [xf, h[3]], [xf - 0.60, h[4]],
+    [0.20, h[5]], [-0.60, h[6]], [xra + 0.50, h[7]], [xra, h[8]], [xra - 0.35, h[9]],
+    [xr + 0.05, h[10]], [xr, h[11]],
   ];
+  const diffuser = [[xr + 0.45, rh + 0.05], [xr + 0.10, 0.30], [xr, s.tailBottom]];
   const bottom = [
     [xn - 0.03, rh + 0.03], [xn - 0.30, rh + 0.02],
     ...arch(xra, r, Ra, rh + 0.02),
-    [xr + 0.45, rh + 0.05], [xr + 0.10, 0.30], [xr, 0.42],
+    ...diffuser,
   ];
+  const p = s.plan, pr = s.planRear;
   const planX = table([
-    [xn, 0.30], [xn - 0.30, 0.45], [xf + 0.30, 0.58], [xf, 0.62], [xf - 0.50, 0.66],
-    [0.0, 0.80], [-0.80, 0.95], [xra + 0.40, W2], [xra, W2], [xra - 0.40, W2 * 0.99], [xr, W2 * 0.95],
+    [xn, p[0]], [xn - 0.30, p[1]], [xf + 0.30, p[2]], [xf, p[3]], [xf - 0.50, p[4]],
+    [0.0, p[5]], [-0.80, p[6]], [xra + 0.40, W2 * pr[0]], [xra, W2 * pr[0]],
+    [xra - 0.40, W2 * pr[1]], [xr, W2 * pr[2]],
   ]);
   const tubHW = (x, y) => planX(x) * (1 - 0.06 * clamp01((y - 0.5) / 0.4));
   parts.push({ geo: loftSolid(T, top, bottom, tubHW, 4) });
 
-  // Front fender pods: the tall, separate front wings of a modern LMH/LMDh,
+  // Front fender pods: the tall, separate front wings of a modern prototype,
   // each over one front wheel, outer face on the body width.
-  const podHW = 0.22;
+  const podHW = s.podHW, ph = s.pod;
   const podTop = [
-    [xn - 0.10, 0.30], [xn - 0.35, 0.55], [xf + 0.40, 0.78], [xf, 0.86],
-    [xf - 0.45, 0.82], [xf - 0.85, 0.62], [xf - 1.15, 0.45],
+    [xn - 0.10, ph[0]], [xn - 0.35, ph[1]], [xf + 0.40, ph[2]], [xf, ph[3]],
+    [xf - 0.45, ph[4]], [xf - 0.85, ph[5]], [xf - 1.15, ph[6]],
   ];
   const podBot = [[xn - 0.10, rh + 0.06], [xn - 0.30, rh + 0.04], ...arch(xf, r, Ra, rh + 0.02), [xf - 1.15, rh + 0.04]];
   const podX = table([[xn - 0.12, 0.6], [xn - 0.40, 0.95], [xf, 1.0], [xf - 1.15, 0.9]]);
-  for (const s of [-1, 1]) {
-    parts.push({ geo: loftSolid(T, podTop, podBot, (x) => podHW * podX(x), 2), z: s * (W2 - podHW) });
+  for (const k of [-1, 1]) {
+    parts.push({ geo: loftSolid(T, podTop, podBot, (x) => podHW * podX(x), 2), z: k * (W2 - podHW) });
   }
 
   // Canopy bubble: narrow, centred, running back into the engine cover.
+  const cx = s.canX, cy = s.canY;
   const canTop = [
-    [1.10, 0.62], [0.95, 0.70], [0.15, roof - 0.02], [-0.15, roof], [-0.55, roof - 0.01],
-    [-0.95, 0.93], [-1.50, 0.85],
+    [cx[0], cy[0]], [cx[1], cy[1]], [cx[2], roof - 0.02], [cx[3], roof], [cx[4], roof - 0.01],
+    [cx[5], cy[5]], [cx[6], cy[6]],
   ];
-  const canX = table([[1.10, 0.7], [0.80, 1.0], [-0.60, 1.0], [-1.50, 0.6]]);
-  const canHW = (x, y) => canX(x) * lerp(0.58, 0.36, clamp01((y - 0.65) / (roof - 0.65)));
-  parts.push({ geo: loftSolid(T, canTop, [[1.10, 0.55], [-1.50, 0.70]], canHW, 2) });
+  const canX = table([[cx[0], 0.7], [cx[0] - 0.30, 1.0], [-0.60, 1.0], [cx[6], 0.6]]);
+  const canHW = (x, y) => canX(x) * lerp(s.canHW[0], s.canHW[1], clamp01((y - s.canY0) / (roof - s.canY0)));
+  parts.push({ geo: loftSolid(T, canTop, [[cx[0], s.canBase[0]], [cx[6], s.canBase[1]]], canHW, 2) });
+
+  // Roof air intake (LMP3: the engine breathes through a scoop above the
+  // roof; it sets the class's overall height, the JSON's `height`).
+  if (d.roof_intake) {
+    const it = [[-0.08, roof - 0.01], [-0.22, d.height], [-0.55, d.height - 0.01], [-1.00, roof - 0.08]];
+    const ib = [[-0.08, roof - 0.06], [-1.00, roof - 0.16]];
+    const iX = table([[-0.08, 0.7], [-0.25, 1.0], [-1.0, 0.8]]);
+    parts.push({ geo: loftSolid(T, it, ib, (x) => 0.11 * iX(x), 2) });
+  }
 
   // Mirrors on the inner tops of the fender pods.
-  for (const s of [-1, 1]) parts.push({ geo: box(T, 0.10, 0.07, 0.14), x: xf - 0.75, y: 0.78, z: s * 0.74 });
+  for (const k of [-1, 1]) parts.push({ geo: box(T, 0.10, 0.07, 0.14), x: xf - 0.75, y: s.mirror[0], z: k * s.mirror[1] });
 
-  return { parts, xn, xr, deckY: (x) => polyY(top, x) };
+  // Front aero (per class, see PROTO_STYLE.aero). All of it stays inside the
+  // class width: the pods taper at the nose, which leaves room for the dive
+  // planes on their outer faces.
+  const a = s.aero;
+  for (let i = 0; i < a.louvres; i++) {
+    // Louvres: slats leaning back across each pod top behind the wheel top,
+    // standing a little proud of it (the vents real cars cut into the arch).
+    const x = xf - 0.06 - i * 0.09;
+    for (const k of [-1, 1]) {
+      parts.push({ geo: box(T, 0.014, 0.06, 2 * podHW * 0.8), x, y: polyY(podTop, x) + 0.005, z: k * (W2 - podHW), rz: 0.6 });
+    }
+  }
+  for (let i = 0; i < a.canards; i++) {
+    // Dive planes on the pod's outer face, leading edge down.
+    for (const k of [-1, 1]) {
+      parts.push({ geo: box(T, 0.20, 0.012, 0.09), x: xn - 0.24 - 0.03 * i, y: 0.18 + 0.10 * i, z: k * (W2 - 0.05), rz: -0.2 });
+    }
+  }
+  if (a.ridge) {
+    // Raised, sculpted nose: a narrow crest from the splitter back to the
+    // cockpit, standing above the low tub nose between the pods.
+    const rt = [[xn - 0.12, 0.27], [xn - 0.50, 0.52], [xf, 0.65], [xf - 0.50, 0.69]];
+    const rb = [[xn - 0.12, 0.18], [xf - 0.50, 0.58]];
+    const rX = table([[xn - 0.12, 0.5], [xn - 0.6, 1.0], [xf - 0.5, 0.9]]);
+    parts.push({ geo: loftSolid(T, rt, rb, (x, y) => rX(x) * lerp(0.20, 0.13, clamp01((y - 0.2) / 0.5)), 2) });
+  }
+  if (a.fences) {
+    // Splitter fences: vertical plates at the splitter's ends.
+    const sp = d.splitter;
+    for (const k of [-1, 1]) {
+      parts.push({ geo: box(T, sp.depth * 0.9, 0.09, 0.012), x: xn - sp.depth * 0.45 - 0.01, y: rh + 0.035, z: k * (sp.width / 2 - 0.006) });
+    }
+  }
+
+  return { parts, xn, xr, deckY: (x) => polyY(top, x), diffuser, strakes: s.strakes, floorTop: s.floorTop };
 }
 
 // Rear wing (section + endplates + mounts), splitter, shark fin and the inner
 // floor between the wheels (so the arches do not show daylight through the
-// whole car). Shared by both classes; the JSON says which mount and fin.
-function aeroParts(T, d, xn, xr, deckY) {
+// whole car), diffuser strakes. Shared by all classes; the JSON says which
+// mount and fin, the class shell gives the deck and diffuser lines.
+function aeroParts(T, d, shell) {
+  const { xn, xr, deckY } = shell;
   const parts = [];
   const w = d.wing, top = w.height_top;
   const xTe = xr + w.setback, xLe = xTe + w.chord;
@@ -361,12 +457,12 @@ function aeroParts(T, d, xn, xr, deckY) {
   const spanIn = w.span / 2 - epT;                        // wing ends at the plates' inner faces
   parts.push({ geo: profileSolid(T, sec.outline, () => spanIn, 1) });
 
-  // Endplates: GT3 small and square; Hypercar long and tall, reaching down
-  // into the rear bodywork.
-  // Pylon wings: the endplate tops are the overall height. The plates may
-  // overhang the trailing edge a little, but never past the car's tail.
+  // Endplates: swan-neck wings get tall plates a little longer than the
+  // chord (911 GT3 R); pylon wings long ones reaching down into the rear
+  // bodywork. Pylon wings: the endplate tops are the overall height. The
+  // plates may overhang the trailing edge a little, but never past the tail.
   const epTop = swan ? top - 0.01 : top, epBot = epTop - w.endplate_height;
-  const epFront = xLe + (swan ? 0.05 : 0.25), epBack = Math.max(xr, xTe - 0.02);
+  const epFront = xLe + (swan ? 0.08 : 0.25), epBack = Math.max(xr, xTe - 0.02);
   const ep = [[epFront, epBot], [epFront - 0.04, epTop - 0.02], [epFront - 0.10, epTop], [epBack, epTop], [epBack, epBot]];
   for (const s of [-1, 1]) parts.push({ geo: plate(T, ep, epT), z: s * (w.span / 2 - epT / 2) });
 
@@ -375,7 +471,7 @@ function aeroParts(T, d, xn, xr, deckY) {
     // leading edge and lands on the upper surface (the GT3 signature).
     const xLand = xLe - 0.30 * w.chord;
     const land = [xLand, polyY(sec.upper, xLand) - 0.012];
-    const halfT = 0.02;
+    const halfT = 0.06 * w.chord;                         // stouter necks on a bigger wing
     let ctrl = [
       [xLe + 0.12, deckY(xLe + 0.12) - 0.05], [xLe + 0.10, wingTop - 0.12],
       [xLe + 0.02, top - halfT], land,
@@ -389,7 +485,7 @@ function aeroParts(T, d, xn, xr, deckY) {
       ctrl = ctrl.map((p, i) => (i === 1 || i === 2 ? [p[0], p[1] - over] : p));
       pts = strip(T, ctrl, halfT);
     }
-    for (const s of [-1, 1]) parts.push({ geo: plate(T, pts, 0.024), z: s * 0.32 });
+    for (const s of [-1, 1]) parts.push({ geo: plate(T, pts, 0.03), z: s * 0.16 * w.span });
   } else {
     // Two pylons from the deck up to the wing's underside.
     const yTop = sec.bottom + 0.03;
@@ -400,8 +496,21 @@ function aeroParts(T, d, xn, xr, deckY) {
   if (d.fin) {
     // Shark fin on the centre line, from the roof back to the wing.
     const roof = d.roof_height ?? d.height - 0.05;
-    const fin = [[-0.45, 0.90], [-0.52, roof - 0.01], [xLe + 0.04, wingTop - 0.05], [xLe + 0.04, 0.82], [-0.45, 0.82]];
+    // Bottom edge sunk into the deck (the LMP decks are lower than 0.82 m).
+    const xb = xLe + 0.04;
+    const fin = [[-0.45, roof - 0.11], [-0.52, roof - 0.01], [xb, wingTop - 0.05],
+      [xb, Math.min(0.82, deckY(xb) - 0.03)], [-0.45, Math.min(0.82, deckY(-0.45) - 0.03)]];
     parts.push({ geo: plate(T, fin, 0.014) });
+  }
+
+  // Diffuser strakes: vertical fins under the tail, from the floor up into
+  // the diffuser ramp, seen below the rear bumper from the chase camera.
+  const dif = shell.diffuser, y0 = d.ride_height + 0.03;
+  const dX = dif[0][0], tailB = dif[dif.length - 1][1];
+  const strake = [[dX, y0], [xr + 0.005, y0], [xr + 0.005, tailB + 0.02],
+    ...dif.slice(1, -1).reverse().map(([x, y]) => [x, y + 0.02])];
+  for (const zc of shell.strakes) {
+    for (const s of [-1, 1]) parts.push({ geo: plate(T, strake, 0.012), z: s * zc });
   }
 
   // Splitter: a thin plate under the nose, its lip is the car's front end.
@@ -410,7 +519,7 @@ function aeroParts(T, d, xn, xr, deckY) {
 
   // Inner floor between the inner tyre faces, so the arches look closed.
   const inner = Math.min(d.track_front - d.tyre_width_front, d.track_rear - d.tyre_width_rear) / 2 - 0.02;
-  const fy = d.ride_height, ty = 0.62;
+  const fy = d.ride_height, ty = shell.floorTop;          // below the lowest nose top
   parts.push({ geo: box(T, d.wheelbase + 0.4, ty - fy, inner * 2), y: (fy + ty) / 2 });
   return parts;
 }
@@ -442,8 +551,11 @@ function makeWheel(T, d, front) {
 //             for the track-limit tint
 export function buildCar(THREE, cls, dims) {
   const T = THREE, d = dims;
-  const shell = cls === 'Hypercar' ? hypercarParts(T, d) : gt3Parts(T, d);
-  const parts = shell.parts.concat(aeroParts(T, d, shell.xn, shell.xr, shell.deckY));
+  // Prototype classes have a shape style; anything else is drawn as a GT3
+  // (classDims already maps unknown classes to LMGT3).
+  const style = Object.prototype.hasOwnProperty.call(PROTO_STYLE, cls) ? PROTO_STYLE[cls] : null;
+  const shell = style ? prototypeParts(T, d, style) : gt3Parts(T, d);
+  const parts = shell.parts.concat(aeroParts(T, d, shell));
 
   const group = new T.Group();
   group.name = `car:${cls}`;
@@ -453,6 +565,7 @@ export function buildCar(THREE, cls, dims) {
   for (const p of parts) {
     const m = new T.Mesh(p.geo, bodyMat);
     m.position.set(p.x || 0, p.y || 0, p.z || 0);
+    if (p.rz) m.rotation.z = p.rz;                        // louvres, dive planes
     body.add(m);
   }
   body.userData.material = bodyMat;
