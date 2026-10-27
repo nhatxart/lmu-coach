@@ -15,6 +15,7 @@ The first run downloads the packages, and later runs use uv's cache.
 | `COMPARE_LOAD_SOURCES.ps1` | nothing | Pilot: does Susp Force give the same grip numbers as the game's Tire Load? (needs a car that has both) |
 | `MF_EXPERIMENT.ps1` | nothing | Tyre model v3 experiment: which state factors (load, temp, pressure, wear, camber) improve held-out prediction of the game's true mu? |
 | `CLASS_COLLAPSE.ps1` | nothing | Tyre model v3 experiment: how much should a car lean on the pooled curve of the other cars of its class (works for LMGT3, which has no tyre forces)? |
+| `EXPORT_CAR_MODELS.ps1` | `docs/car_models/*.stl` | Writes the chase view's GT3 and Hypercar models as STL files (1:1 and 1:43, millimetres) to check in a 3D-printer slicer. Needs Node.js, not uv |
 
 None of these tools ever modify `data/sessions/*.duckdb`. They open it read-only.
 
@@ -157,6 +158,24 @@ Cars of one class (all LMGT3, all Hypercars) share tyre physics, so a car with f
 Per axle and car it prints the car's own fitted peak slip and peak mu (at the class reference state, with the offset vs the class prior; `*` = the peak is beyond that car's data), then leave-one-lap-out held-out R2 for prior weights 0, 0.3, 1, 3 and 10. The prior for a car is always built from the other cars only. The line `BEST WEIGHT` is the weight with the highest mean R2 over the scored cars. A car with one lap cannot be scored (no training lap) and is shown as `n/a`; laps without a load channel (plain lateral G) cannot be pooled and are listed as left out.
 
 **Read it with care:** the cars of a class were recorded on different tracks, so the track is mixed up with the car, and a lap held out from the same file as its training laps is an easy test for weight 0. Runs in about half a minute.
+
+---
+
+## EXPORT_CAR_MODELS.ps1 - car models as STL
+
+The chase view can draw a representative car instead of the chevron, so you can see where the four tyres are against the track edge. The models are built from `backend/app/static/car_models.js`, sized by `backend/app/static/car_models.json` (one entry per class: length, width, height, wheelbase, tracks, overhang, tyre size, ride height, wing, splitter, fin; the `notes` say where the numbers come from). This tool runs the same builder in Node and writes binary STL files you can open in any slicer:
+
+```powershell
+cd backend\tools
+.\EXPORT_CAR_MODELS.ps1                    # into docs\car_models
+.\EXPORT_CAR_MODELS.ps1 C:\temp\cars       # somewhere else
+```
+
+- One file per class and scale: `LMGT3_1to1_mm.stl`, `LMGT3_1to43_mm.stl`, `Hypercar_1to1_mm.stl`, `Hypercar_1to43_mm.stl`. Units are millimetres, Z is up, the nose points along +X and the wheels stand on z = 0.
+- It prints the triangle count and the bounding box of each file. At 1:1 the box is the JSON's length x width x height (the height includes the wing); at 1:43 it is the same divided by 43 (about 107 mm long for the GT3).
+- The 1:43 files are previews, not print-tuned: the wing endplates, splitter and fin are well under 0.5 mm thick at that scale, so a 0.4 mm nozzle may drop or thicken them.
+- LMP2 and LMP3 use the Hypercar shape until they have their own entry; any other class is drawn as the GT3.
+- Edit the JSON, run the tool again and reload the slicer to compare.
 
 ---
 

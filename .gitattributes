@@ -1,3 +1,6 @@
 # Vendored libraries stay byte-identical to their npm packages (no CRLF
 # conversion on checkout), so their hashes can be checked against npm.
 backend/app/static/vendor/** -text
+# Generated binary STL previews (tools/EXPORT_CAR_MODELS.ps1): never diff or
+# convert line endings, a stray 0x0A in the float data would corrupt them.
+docs/car_models/*.stl binary

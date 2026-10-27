@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "notes": [
+    "Representative class shapes, not any one car. Metres. Read by the chase view (static/car_models.js), the STL exporter (tools/export_car_models.mjs) and the backend (track limits). The tyre positions (wheelbase, tracks, tyre size) matter most: they decide where the four contact patches are against the track edge.",
+    "Frame used by car_models.js: nose +X, up +Y, right +Z, origin on the ground at mid-wheelbase. track_* is tyre centre to tyre centre. height is the overall height including the wing (or swan-neck mount); roof_height is the cabin roof. Rear overhang = length - wheelbase - overhang_front. wing.setback = distance from the rearmost point of the body to the wing's trailing edge. wing.span includes the endplates.",
+    "LMGT3 (4.60 x 2.04 x 1.20, wheelbase 2.70): between the Porsche 911 GT3 R (992): 4619 mm long, 2039 mm (front axle) / 2050 mm (rear axle) wide, wheelbase 2507 mm (Porsche Motorsport / iRacing spec sheet, stuttcars.com), the Ferrari 296 GT3 (about 4.71 m, wheelbase about 2.66 m) and the BMW M4 GT3 (about 5.02 m, 2.04 m, wheelbase about 2.92 m); the last two are from memory of the manufacturers' press figures, not looked up again. GT3 width is capped near 2.05 m. Tracks are not published; 1.70 / 1.65 put the outer tyre faces about 15 mm inside the body, as on the real cars. Tyres: Michelin GT3 fronts are about 30/68-18 and rears 31/71-18; one 0.71 m diameter is used for both (the plan asks for 0.71).",
+    "Hypercar (5.00 x 2.00 x 1.06, wheelbase 3.15): LMH limits are 5000 mm long, 2000 mm wide, wheelbase up to 3150 mm (Ferrari 499P: '5 m long, 2 m wide, wheelbase 3.15 m', lasquadra.pl; LMU's own car page lists the 499P at 5100 x 2000 x 1055 mm). LMDh cars (Cadillac V-Series.R, Porsche 963) are about 5.1 m with a similar wheelbase. Tracks are not published; 1.65 / 1.62 keep the tyres inside 2.0 m. Tyres: Michelin LMH/LMDh 29/71-18 front, 34/71-18 rear. Height 1.06 is the wing / roof line.",
+    "LMP2 and LMP3 use the Hypercar shape until they are recorded (aliases); give them their own entry here when their dimensions matter. An unknown class falls back to LMGT3 (car_models.js classDims, source 'fallback')."
+  ],
+  "classes": {
+    "LMGT3": {
+      "length": 4.60,
+      "width": 2.04,
+      "height": 1.20,
+      "roof_height": 1.16,
+      "wheelbase": 2.70,
+      "track_front": 1.70,
+      "track_rear": 1.65,
+      "overhang_front": 1.00,
+      "tyre_diameter": 0.71,
+      "tyre_width_front": 0.31,
+      "tyre_width_rear": 0.33,
+      "ride_height": 0.075,
+      "wing": {
+        "span": 1.80,
+        "chord": 0.32,
+        "height_top": 1.20,
+        "setback": 0.03,
+        "endplate_height": 0.30,
+        "mount": "swan_neck"
+      },
+      "splitter": {
+        "depth": 0.12,
+        "width": 1.86
+      },
+      "fin": false
+    },
+    "Hypercar": {
+      "length": 5.00,
+      "width": 2.00,
+      "height": 1.06,
+      "roof_height": 1.01,
+      "wheelbase": 3.15,
+      "track_front": 1.65,
+      "track_rear": 1.62,
+      "overhang_front": 1.05,
+      "tyre_diameter": 0.71,
+      "tyre_width_front": 0.29,
+      "tyre_width_rear": 0.34,
+      "ride_height": 0.07,
+      "wing": {
+        "span": 1.90,
+        "chord": 0.38,
+        "height_top": 1.06,
+        "setback": 0.0,
+        "endplate_height": 0.50,
+        "mount": "pylon"
+      },
+      "splitter": {
+        "depth": 0.18,
+        "width": 1.80
+      },
+      "fin": true
+    }
+  },
+  "aliases": {
+    "LMP2": "Hypercar",
+    "LMP3": "Hypercar"
+  }
+}
