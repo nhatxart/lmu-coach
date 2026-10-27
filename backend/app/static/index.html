@@ -2860,13 +2860,28 @@ function disposeCar(){
 }
 // Build the car for payload d (its class from /trackmap `car`; classDims
 // picks the same entry the backend judged the track limits with).
+// BUG GUARD: a car_models.json / car_models.js that cannot build this car
+// (missing class, bad dims) used to throw on every frame (carFor never got
+// set, so render() retried) and the chase view died. Now it fails once:
+// message, chevron, and the Car choice shows Chevron again (this page only:
+// the stored preference is kept, like the view fallbacks).
 function buildCarFor(d){
+  try{buildCarOrThrow(d);}
+  catch(e){
+    console.warn('[chase] cannot build the car model:',e);
+    disposeCar();carFor=null;st.carFailed=true;
+    showMsg("Car model can't be drawn. Showing the chevron.");
+    S.chaseOpts.car='chevron';if(typeof syncViewOpts==='function')syncViewOpts();
+  }
+}
+function buildCarOrThrow(d){
   disposeCar();
   const{mod,json}=carModels;
   // The class car_identity found (`requested`), not the resolved one: the
   // same input through the same rule gives the backend's class AND source.
   const want=d.car&&(d.car.requested||d.car.class);
   const{cls,dims,source}=mod.classDims(json,want);
+  if(!dims||!(dims.wheelbase>0)||!(dims.track_front>0)||!(dims.track_rear>0))throw new Error(`no usable dimensions for ${cls}`);
   const c=mod.buildCar(T,cls,dims);
   // See-through body (unlit-looking tint is not needed: it is lit like the
   // world), drawn after the opaque wheels and the road, no depth write so
@@ -2882,9 +2897,23 @@ function buildCarFor(d){
 }
 
 // ── surface contact ─────────────────────────────────────────────────────────
-function setSurf(s){
-  surf=s?{R:s.rows,C:s.cols,x:Float64Array.from(s.x),y:Float64Array.from(s.y),z:Float64Array.from(s.z)}:null;
+// lapPts: /trackmap lap_len_pts, the lap's position rows. Both the surface
+// rows and the driven-line points are samples of those same rows
+// (main.py: edge_idx = floor(i*L/600), line_idx = floor(j*(L-1)/1999)), so
+// a line point maps to its own surface row exactly, on its own pass: unlike
+// a nearest-point or lap-distance seed, a hairpin's or crossing's other pass
+// (or the start/finish wrap of lap distance) cannot be picked.
+function setSurf(s,lapPts,nLine){
+  surf=s?{R:s.rows,C:s.cols,x:Float64Array.from(s.x),y:Float64Array.from(s.y),z:Float64Array.from(s.z),
+          L:lapPts>1?lapPts:0,n:nLine}:null;
   surfRow=0;
+}
+// Surface row of driven-line point f (see setSurf).
+function surfRowAt(f){
+  const{R,L,n}=surf;
+  if(!L||n<2)return clamp(Math.round(f*(R-1)/Math.max(1,n-1)),0,R-1);
+  const lapRow=n>=L?f:f*(L-1)/(n-1);                  // all rows sent, or the 2000-point downsample
+  return clamp(Math.round(R>=L?lapRow:lapRow*R/L),0,R-1);   // all rows, or the 600-row downsample
 }
 // Height of the RENDERED surface at world (x, z): the same two triangles per
 // cell as surfaceMesh ((r,c) (r+1,c) (r,c+1) and (r,c+1) (r+1,c) (r+1,c+1)),
@@ -2901,14 +2930,11 @@ function surfH(qx,qz){
   const lo=Math.max(0,r0-SURF_SEARCH),hi=Math.min(R-1,r0+SURF_SEARCH);
   for(let r=lo;r<=hi;r++){const k=r*C+mid,d=(x[k]-qx)**2+(z[k]-qz)**2;if(d<best){best=d;r0=r;}}
   // Rows can be centimetres apart where the car crawled (pit lane, a stop):
-  // if the nearest is at the window's end, keep walking while it gets nearer.
-  for(const step of[-1,1]){
-    if(r0!==(step<0?lo:hi))continue;
-    for(let r=r0+step;r>=0&&r<R;r+=step){
-      const k=r*C+mid,d=(x[k]-qx)**2+(z[k]-qz)**2;
-      if(d>=best)break;best=d;r0=r;
-    }
-  }
+  // if the nearest is at the window's end, keep walking while it gets nearer
+  // (explicit branches: no per-call array). The walk only moves along this
+  // pass's own rows, so it cannot jump to another part of the lap.
+  if(r0===lo)for(let r=r0-1;r>=0;r--){const k=r*C+mid,d=(x[k]-qx)**2+(z[k]-qz)**2;if(d>=best)break;best=d;r0=r;}
+  else if(r0===hi)for(let r=r0+1;r<R;r++){const k=r*C+mid,d=(x[k]-qx)**2+(z[k]-qz)**2;if(d>=best)break;best=d;r0=r;}
   surfRow=r0;
   let bestScore=Infinity,h=y[r0*C+mid];
   for(let r=Math.max(0,r0-2);r<=Math.min(R-2,r0+1);r++){
@@ -3237,15 +3263,15 @@ function buildScene(d){
   // Paint first: when it is drawn as cells, the surface shader paints nothing.
   const paint=d.surface?paintMesh(d):null;
   st.paintCells=paint?paint.cells:0;st.paintVerts=paint?paint.mesh.geometry.getAttribute('position').count:0;
-  const surf=d.surface?surfaceMesh(d.surface,!!paint):null;
+  const sm=d.surface?surfaceMesh(d.surface,!!paint):null;   // not `surf`: that is the contact grid
   if(paint)world.add(paint.mesh);
-  if(surf){
-    world.add(surf.mesh);
-    const marks=distanceMarks(d.surface,surf);if(marks)world.add(marks);
+  if(sm){
+    world.add(sm.mesh);
+    const marks=distanceMarks(d.surface,sm);if(marks)world.add(marks);
     const ground=groundPlane(d.surface);if(ground)world.add(ground);
   }
   // The car rests on what is drawn: its contacts look up this grid (surfH).
-  setSurf(surf?d.surface:null);
+  setSurf(sm?d.surface:null,+d.lap_len_pts||0,d.driven_line.x.length);
   if(d.has_edges&&d.track)edgeRibbons(d.track).forEach(l=>world.add(l));
   ribbon=drivenRibbon(d.driven_line);
   if(ribbon){world.add(ribbon);colourRibbon();}
@@ -3450,7 +3476,7 @@ function render(){
   // corner sinks or floats; the velocity arrow lies on the same plane.
   let y,pitch,roll,ap,ar;
   if(surf){
-    surfRow=Math.round(f*(surf.R-1)/Math.max(1,n-1));  // search starts at the car's row
+    surfRow=surfRowAt(f);                               // search starts at the car's own row
     placeOnSurface(x,z,yaw,useCar?carContacts:chevContacts,useCar?4:3);
     y=place.h;pitch=place.pitch;roll=place.roll;
     // the plane's slope along the COURSE (the arrow) instead of the body:
@@ -3632,6 +3658,15 @@ function contacts(){
   surfRow=keep;
   return out;
 }
+// Canvas angle of the drawn marker's nose (+X) projected on the ground,
+// from its world matrix: tests check it equals course + bodyOff.
+function forwardYaw(){
+  if(!st.built)return null;
+  const obj=car&&!carRig.visible?car.group:carRig;
+  obj.updateMatrixWorld();
+  const e=obj.matrixWorld.elements;                   // column 0 = local +X in world
+  return Math.atan2(e[2],e[0]);
+}
 // Mean time (ms) of one placement (all contacts of the current marker),
 // over `iters` points spread along the lap: the per-frame cost of resting
 // the car on the surface.
@@ -3640,7 +3675,7 @@ function benchPlacement(iters){
   const n=dl.x.length,useCar=!!car&&!carRig.visible,t0=performance.now();
   for(let i=0;i<iters;i++){
     const f=(i*7919)%Math.max(1,n-1);
-    surfRow=Math.round(f*(surf.R-1)/Math.max(1,n-1));
+    surfRow=surfRowAt(f);
     placeOnSurface(dl.x[f],dl.z[f],dl.heading?dl.heading[f]:0,useCar?carContacts:chevContacts,useCar?4:3);
   }
   return(performance.now()-t0)/iters;
@@ -3657,7 +3692,7 @@ function state(){
     carBuilds:st.carBuilds,carDisposals:st.carDisposals,carFailed:st.carFailed,
     geometries:renderer?renderer.info.memory.geometries:0,
     limitsMask:st.limitsMask,limitFrames:st.limitFrames,
-    placement:{h:place.h,pitch:place.pitch,roll:place.roll},contacts:contacts()};
+    placement:{h:place.h,pitch:place.pitch,roll:place.roll},contacts:contacts(),forwardYaw:forwardYaw()};
 }
 
 // covers(): the chase canvas fully covers the 2D map (cheap, per frame).

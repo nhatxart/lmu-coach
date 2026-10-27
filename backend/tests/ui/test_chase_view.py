@@ -737,3 +737,44 @@ def test_placement_is_fast(page, server):
     page.wait_for_function("() => Chase.state().marker === 'car'", timeout=10000)
     ms = page.evaluate("Chase.benchPlacement(2000)")
     assert ms < 0.2, ms
+
+
+def test_broken_car_models_fall_back_to_chevron(page, server):
+    """A car_models.json that cannot build a car (no classes) must fail once:
+    message, chevron, the Car choice not shown as active, no error per frame."""
+    page.route("**/static/car_models.json", lambda route: route.fulfill(
+        status=200, content_type="application/json", body='{"version": 1, "classes": {}}'))
+    _open_session(page, server, HILLY, lap=1)
+    _to_chase(page)
+    page.evaluate("setChaseOpt('car', 'car')")
+    page.wait_for_function("() => Chase.state().carFailed", timeout=10000)
+    n = page.evaluate("S.mapData.driven_line.x.length")
+    for frac in (0.2, 0.4, 0.6, 0.8):
+        _render_at(page, frac * (n - 1))
+    st = page.evaluate("Chase.state()")
+    assert st["marker"] == "chevron" and st["carBuilds"] == 0
+    assert "Car model" in page.locator("#chase-msg").inner_text()
+    _open_options(page)
+    assert page.get_by_role("radio", name="Chevron", exact=True).is_checked()
+    page.keyboard.press("Escape")
+    assert len(page.errors) <= 1, page.errors
+
+
+def test_marker_yaw_is_course_plus_body_offset(page, server):
+    """The drawn body's forward axis, projected on the ground, points along
+    course + bodyOff (the 2D chevron's angle) for both markers, also where
+    the plane fit tilts it (hill, banked corner)."""
+    _open_session(page, server, HILLY, lap=1)
+    _to_chase(page)
+    n = page.evaluate("S.mapData.driven_line.x.length")
+    for label in ("Chevron", "Car"):
+        _set_car(page, label)
+        if label == "Car":
+            page.wait_for_function("() => Chase.state().marker === 'car'", timeout=10000)
+        for frac in PLACES:
+            f = frac * (n - 1)
+            _render_at(page, f)
+            d = page.evaluate("""f => { const m = carMarkerAt(f), y = Chase.state().forwardYaw;
+                const e = y - (m.ang + m.bodyOff); return Math.abs(Math.atan2(Math.sin(e), Math.cos(e))); }""", f)
+            assert np.degrees(d) < 0.5, (label, frac, np.degrees(d))
+    assert page.errors == []
