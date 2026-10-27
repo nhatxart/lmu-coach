@@ -361,10 +361,218 @@ def test_settle_loop_stops_when_paused(page, server):
     _open_session(page, server, HILLY, lap=1)
     _to_chase(page)
     page.evaluate("onScrub(330)")
-    page.evaluate("onScrub(345)")                # < 2 % jump into the corner: smoothed, not snapped
-    assert page.evaluate("Chase.state().settling") is True
+    # < 2 % jump into the corner: smoothed, not snapped. Read `settling` in
+    # the same task as the scrub: under full-suite load the settle loop
+    # could finish before a separate evaluate round trip got there.
+    assert page.evaluate("onScrub(345), Chase.state().settling") is True
     page.wait_for_function("() => !Chase.state().settling", timeout=5000)
     n = page.evaluate("Chase.state().renders")
     page.wait_for_timeout(500)
     assert page.evaluate("Chase.state().renders") == n
     assert _cam_to_car(page)["err"] < 0.001
+
+
+# ── Round 2, Task 2: velocity-locked camera + View options menu ────────────
+
+OPTS_KEY = "lmu-coach.chase.options"
+
+
+def _open_options(page):
+    btn = page.get_by_role("button", name="View options")
+    btn.click()
+    assert btn.get_attribute("aria-expanded") == "true"
+    return btn
+
+
+def _set_camera(page, label):
+    """Pick a Camera option through the menu, as a user would, then close it."""
+    btn = _open_options(page)
+    page.get_by_role("radio", name=label, exact=True).check()
+    page.keyboard.press("Escape")
+    assert btn.get_attribute("aria-expanded") == "false"
+
+
+def _render_at(page, f):
+    """Put the playhead at fractional point f and draw one chase frame."""
+    page.evaluate("f => { const n = S.mapData.driven_line.x.length;"
+                  " S.playhead = f / (n - 1); Chase.render(); }", f)
+
+
+def _arrow_screen_angle(page):
+    """Angle (deg) of the projected velocity arrow off screen-vertical
+    (0 = pointing straight up the screen)."""
+    a = page.evaluate("Chase.state().arrowScreen")
+    assert a is not None
+    dx, dy = a["x1"] - a["x0"], a["y1"] - a["y0"]
+    assert np.hypot(dx, dy) > 20, a                 # long enough to measure
+    return float(np.degrees(np.arctan2(dx, -dy)))
+
+
+def test_view_options_menu_keyboard_and_aria(page, server):
+    _open_session(page, server, HILLY, lap=1)
+    btn = page.get_by_role("button", name="View options")
+    assert not btn.is_visible()                     # top-down: the menu is chase-only
+    body_box = "() => { const r = document.querySelector('.map-body').getBoundingClientRect(); return [r.width, r.height]; }"
+    box_top = page.evaluate(body_box)
+    _to_chase(page)
+    assert btn.is_visible()
+    # showing the button must not reflow the stage (that would re-fit the
+    # 2D map under the camera transition)
+    assert page.evaluate(body_box) == box_top
+    assert btn.get_attribute("aria-haspopup") == "dialog"
+    btn.click()
+    dlg = page.get_by_role("dialog", name="View options")
+    assert dlg.is_visible()
+    group = page.get_by_role("group", name="Camera")
+    assert group.is_visible()
+    # focus moves into the menu, onto the checked option
+    assert page.evaluate("document.activeElement.name") == "chase-camera"
+    assert page.get_by_role("radio", name="Smooth", exact=True).is_checked()
+    page.keyboard.press("Escape")
+    assert not dlg.is_visible()
+    assert page.evaluate("document.activeElement === document.querySelector('#view-opts-btn')")
+    assert page.errors == []
+
+
+def test_locked_camera_arrow_vertical(page, server, shot_dir):
+    _open_session(page, server, HILLY, lap=1)
+    _to_chase(page)
+    _set_camera(page, "Locked to velocity")
+    assert page.evaluate("Chase.state().camera") == "locked"
+    n = page.evaluate("S.mapData.driven_line.x.length")
+    rng = np.random.default_rng(7)
+    worst = 0.0
+    for f in rng.uniform(2, n - 3, 20):
+        _render_at(page, float(f))
+        worst = max(worst, abs(_arrow_screen_angle(page)))
+    assert worst < 0.5, worst
+    if shot_dir:
+        page.screenshot(path=str(shot_dir / "locked.png"))
+    assert page.errors == []
+
+
+def test_smooth_camera_arrow_lags_in_corner(page, server):
+    """Control for the test above: in Smooth mode the projected arrow does
+    turn off vertical in a corner (otherwise the vertical test proves
+    nothing about the projection)."""
+    _open_session(page, server, HILLY, lap=1)
+    _to_chase(page)
+    page.evaluate("onScrub(330)")
+    page.evaluate("onScrub(345)")                   # small step into the corner: smoothed
+    assert abs(_arrow_screen_angle(page)) > 0.5
+
+
+def test_locked_heading_wrap_has_no_jump(page, server):
+    _open_session(page, server, HILLY, lap=1)
+    _to_chase(page)
+    _set_camera(page, "Locked to velocity")
+    hd = page.evaluate("S.mapData.driven_line.heading")
+    wraps = [i for i in range(len(hd) - 1) if abs(hd[i + 1] - hd[i]) > np.pi]
+    assert wraps, "synthetic lap should cross +-pi"
+    i = wraps[0]
+    prev = None
+    for f in np.arange(max(0, i - 3), min(len(hd) - 1, i + 4), 0.05):
+        _render_at(page, float(f))
+        c = page.evaluate("Chase.state().course")
+        assert c is not None and np.isfinite(c)
+        if prev is not None:
+            d = np.degrees(abs(np.arctan2(np.sin(c - prev), np.cos(c - prev))))
+            assert d < 5, (f, d)
+        prev = c
+    assert page.errors == []
+
+
+def test_locked_holds_course_at_standstill(page, server):
+    """Review focus 3: where the car stands still the backend heading is
+    atan2(0, 0) = 0 (a flip); Locked must hold the last real course, with
+    no NaN."""
+    a, b = 150, 160                                 # of the lap's 301 points
+    def stall(route):
+        resp = route.fetch()
+        body = resp.json()
+        dl = body["driven_line"]
+        for k in range(a, b):                       # parked: same position, speed 0, heading 0
+            dl["x"][k], dl["z"][k] = dl["x"][a], dl["z"][a]
+            dl["heading"][k] = 0.0
+            if dl.get("speed"):
+                dl["speed"][k] = 0.0
+        route.fulfill(response=resp, json=body)
+    page.route("**/trackmap*", stall)
+    _open_session(page, server, HILLY, lap=1)
+    _to_chase(page)
+    _set_camera(page, "Locked to velocity")
+    assert page.evaluate(f"S.mapData.driven_line.heading[{a + 3}]") == 0
+    h_before = page.evaluate(f"S.mapData.driven_line.heading[{a - 1}]")
+    out = []
+    for f in np.arange(a - 4, b + 4, 0.25):
+        _render_at(page, float(f))
+        out.append(page.evaluate("Chase.state().course"))
+    assert all(c is not None and np.isfinite(c) for c in out)
+    steps = np.degrees(np.abs(np.angle(np.exp(1j * np.diff(out)))))
+    assert steps.max() < 5, steps.max()
+    mid = out[len(out) // 2]                        # f ~ 155, parked
+    assert np.degrees(abs(np.angle(np.exp(1j * (mid - h_before))))) < 10
+    assert page.errors == []
+
+
+def test_switch_camera_mid_playback(page, server):
+    _open_session(page, server, HILLY, lap=1)
+    _to_chase(page)
+    page.evaluate("onScrub(200)")
+    page.evaluate("togglePlay()")
+    for label in ("Locked to velocity", "Smooth", "Locked to velocity", "Smooth"):
+        _set_camera(page, label)
+        page.wait_for_timeout(150)
+    assert page.evaluate("S.playing") is True
+    page.evaluate("togglePlay()")
+    st = page.evaluate("Chase.state()")
+    assert st["camera"] == "smooth" and np.isfinite(st["course"])
+    assert page.errors == []
+
+
+def test_camera_option_persists(page, server):
+    _open_session(page, server, HILLY, lap=1)
+    _to_chase(page)
+    _set_camera(page, "Locked to velocity")
+    saved = page.evaluate(f"JSON.parse(localStorage.getItem('{OPTS_KEY}'))")
+    # the other keys are reserved for the later options, with their defaults
+    assert saved == {"camera": "locked", "car": "chevron", "limits": False, "slip": False}
+    page.reload()
+    page.locator(f'.session-item[title="{HILLY}"]').click()
+    page.wait_for_function("() => S.mapData && document.getElementById('map-overlay').classList.contains('hidden')")
+    _wait_built(page)
+    assert page.evaluate("Chase.state().camera") == "locked"
+    _open_options(page)
+    assert page.get_by_role("radio", name="Locked to velocity", exact=True).is_checked()
+
+
+def test_bad_stored_options_fall_back(page, server):
+    page.add_init_script(f"localStorage.setItem('{OPTS_KEY}', '{{\"camera\": \"spin\", \"limits\": 3')")
+    _open_session(page, server, HILLY, lap=1)
+    _to_chase(page)
+    assert page.evaluate("Chase.state().camera") == "smooth"
+    assert page.errors == []
+
+
+def test_top_down_unchanged_by_camera_option(page, server):
+    """The 2D map keeps its own course function: Locked changes nothing in
+    top-down (pixel-identical canvas)."""
+    _open_session(page, server, HILLY, lap=1)
+    page.evaluate("onScrub(345)")
+    page.mouse.move(5, 5)                           # no hover over the map
+
+    def round_trip(label):
+        # Both shots go through the same chase round trip: a visit to the
+        # chase view itself changes a few 2D pixels (seen with Smooth too),
+        # which is not what this test is about.
+        _to_chase(page)
+        _set_camera(page, label)
+        _radio(page, "Top-down").click()
+        page.wait_for_function("() => Chase.state().mix === 0", timeout=10000)
+        page.evaluate("drawMap()")
+        return page.locator("#map-canvas").screenshot()
+
+    before = round_trip("Smooth")
+    after = round_trip("Locked to velocity")
+    assert page.evaluate("S.chaseOpts.camera") == "locked"
+    assert np.array_equal(_png_rgb(before), _png_rgb(after))

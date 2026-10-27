@@ -187,6 +187,26 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;bac
 .view-switch button:focus-visible{outline-offset:-2px;}
 .view-switch button:active{transform:none;}
 
+/* View options (chase view only): a button over the top-right corner of the
+   map, like the chase note pill on the left, and a small non-modal popover
+   under it; above the HUD panels (z 20-26). */
+.view-opts{position:absolute;top:var(--sp-4);right:var(--sp-4);z-index:27;}
+.view-opts[hidden]{display:none;}
+#view-opts-btn{min-height:44px;font:500 15px var(--font-ui);background:rgba(13,19,34,.93);box-shadow:var(--shadow-1);}
+#view-opts-btn:hover{background:var(--surface-3);}
+#view-opts-btn[aria-expanded=true]{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent-strong);}
+#view-opts-btn[aria-expanded=true] .i{transform:rotate(180deg);}
+#view-opts{position:absolute;right:0;top:calc(100% + 6px);min-width:260px;max-width:min(340px,calc(100vw - 32px));
+  padding:var(--sp-3) var(--sp-4);background:var(--surface-1);border:1px solid var(--line-strong);border-radius:var(--r-lg);box-shadow:var(--shadow-2);}
+#view-opts[hidden]{display:none;}
+#view-opts fieldset{border:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px;}
+#view-opts legend{padding:0 0 6px;font:600 12px var(--font-ui);letter-spacing:.12em;text-transform:uppercase;color:var(--text-3);}
+#view-opts label{display:flex;align-items:center;gap:10px;min-height:40px;padding:0 6px;border-radius:var(--r-sm);cursor:pointer;
+  font:500 15px var(--font-ui);letter-spacing:normal;text-transform:none;color:var(--text);}
+#view-opts label:hover{background:var(--surface-3);}
+#view-opts input[type=radio]{width:18px;height:18px;margin:0;accent-color:var(--accent);flex-shrink:0;cursor:pointer;}
+.view-opts-hint{margin:2px 6px 0;font-size:13px;line-height:1.4;color:var(--text-2);}
+
 /* Chase view: a second canvas over the map, under the HUDs (z 20). The 2D
    canvas stays in place (opacity 0) so hold-to-pause still reaches it.
    data-view=trans: the camera transition is running; the 2D map stays
@@ -200,7 +220,7 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;bac
   font:600 13px var(--font-data);font-variant-numeric:tabular-nums;will-change:transform;}
 .chase-pill.corner{color:var(--c-corner);}
 .chase-pill.beta{color:var(--text);}
-#chase-note{position:absolute;left:var(--sp-4);top:var(--sp-4);z-index:22;display:none;max-width:calc(100% - 140px);
+#chase-note{position:absolute;left:var(--sp-4);top:var(--sp-4);z-index:22;display:none;max-width:calc(100% - 210px);   /* clear of View options (top right) */
   padding:6px 12px;border-radius:999px;background:rgba(13,19,34,.93);border:1px solid var(--line-strong);
   font-size:13px;color:var(--text-2);box-shadow:var(--shadow-1);}
 .map-body[data-view=chase] #chase-note.on,.map-body[data-view=trans] #chase-note.on{display:block;}
@@ -477,6 +497,23 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
       <div id="chase-labels" aria-hidden="true"></div>
       <div id="chase-note" role="note"></div>
       <div id="chase-msg" role="status" aria-live="polite"></div>
+      <!-- Chase-view options. Every input with data-opt="<key>" is wired by
+           initViewOpts (radio: its value, checkbox: checked), so a new option
+           is one more fieldset/label here plus its key in CHASE_OPTS_*.
+           Over the map (top right), not in the toolbar: there it wrapped
+           onto a new toolbar row in chase view only, so every view switch
+           resized the map under the camera transition. -->
+      <div class="view-opts" id="view-opts-wrap" hidden>
+        <button type="button" id="view-opts-btn" aria-haspopup="dialog" aria-expanded="false" aria-controls="view-opts" onclick="toggleViewOpts()">View options<svg class="i sm" aria-hidden="true" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
+        <div id="view-opts" role="dialog" aria-label="View options" hidden>
+          <fieldset>
+            <legend>Camera</legend>
+            <label><input type="radio" name="chase-camera" data-opt="camera" value="smooth">Smooth</label>
+            <label><input type="radio" name="chase-camera" data-opt="camera" value="locked" aria-describedby="view-opts-locked-hint">Locked to velocity</label>
+            <p class="view-opts-hint" id="view-opts-locked-hint">The velocity arrow points straight up; the car's angle off it is β.</p>
+          </fieldset>
+        </div>
+      </div>
 
       <!-- Driver inputs (1.5× scale) -->
       <div id="hud-overlay" aria-label="Driver inputs">
@@ -2072,6 +2109,9 @@ function setView(v,opts){
     b.setAttribute('aria-checked',on?'true':'false');b.tabIndex=on?0:-1;
   });
   syncZoomSlider();                    // the slider shows this view's own zoom
+  // The options only affect the chase view, so the menu is shown only there.
+  if(v!=='chase')closeViewOpts(false);
+  document.getElementById('view-opts-wrap').hidden=v!=='chase';
   if(v==='chase'){
     S.hoverIdx=null;S.isPanning=false;document.getElementById('map-tooltip').style.display='none';
     if(window.Chase)Chase.activate();   // else the module activates itself on load
@@ -2101,6 +2141,67 @@ function setView(v,opts){
     setView(S.view==='chase'?'top':'chase');
     if(was)document.getElementById('view-'+S.view).focus();   // keep roving focus on the checked radio
   });
+})();
+
+// ── View options (chase view) ──────────────────────────────────────────────
+// Stored as one object so the later options (car model, track limits, tyre
+// slip) share the key; unknown or malformed values fall back per key, so a
+// stale or hand-edited entry never breaks the view. The chase module reads
+// S.chaseOpts each frame and is told about changes (Chase.optionsChanged).
+const CHASE_OPTS_KEY='lmu-coach.chase.options';
+const CHASE_OPTS_DEFAULT={camera:'smooth',car:'chevron',limits:false,slip:false};
+const CHASE_OPTS_VALID={camera:['smooth','locked'],car:['chevron','car'],limits:[false,true],slip:[false,true]};
+function loadChaseOpts(){
+  let s=null;
+  try{s=JSON.parse(localStorage.getItem(CHASE_OPTS_KEY));}catch(e){}
+  if(!s||typeof s!=='object')s={};
+  const o={};
+  for(const k in CHASE_OPTS_DEFAULT)o[k]=CHASE_OPTS_VALID[k].includes(s[k])?s[k]:CHASE_OPTS_DEFAULT[k];
+  return o;
+}
+S.chaseOpts=loadChaseOpts();
+function setChaseOpt(k,v){
+  if(!(k in CHASE_OPTS_VALID)||!CHASE_OPTS_VALID[k].includes(v)||S.chaseOpts[k]===v)return;
+  S.chaseOpts[k]=v;
+  try{localStorage.setItem(CHASE_OPTS_KEY,JSON.stringify(S.chaseOpts));}catch(e){}
+  if(window.Chase)Chase.optionsChanged(k);
+}
+// Non-modal popover: opening moves focus to the checked control, Esc or a
+// click outside closes it, and Esc returns focus to the button.
+function viewOptsOpen(){return!document.getElementById('view-opts').hidden;}
+function openViewOpts(){
+  const pop=document.getElementById('view-opts');
+  syncViewOpts();
+  pop.hidden=false;document.getElementById('view-opts-btn').setAttribute('aria-expanded','true');
+  const first=pop.querySelector('input:checked:not(:disabled)')||pop.querySelector('input:not(:disabled)');
+  if(first)first.focus();
+}
+function closeViewOpts(returnFocus){
+  const pop=document.getElementById('view-opts');
+  if(pop.hidden)return;
+  pop.hidden=true;document.getElementById('view-opts-btn').setAttribute('aria-expanded','false');
+  if(returnFocus)document.getElementById('view-opts-btn').focus();
+}
+function toggleViewOpts(){viewOptsOpen()?closeViewOpts(true):openViewOpts();}
+function syncViewOpts(){
+  document.querySelectorAll('#view-opts input[data-opt]').forEach(el=>{
+    const v=S.chaseOpts[el.dataset.opt];
+    el.checked=el.type==='checkbox'?!!v:el.value===v;
+  });
+}
+(function initViewOpts(){
+  const pop=document.getElementById('view-opts'),wrap=document.getElementById('view-opts-wrap');
+  pop.addEventListener('change',e=>{
+    const el=e.target;if(!el.dataset||!el.dataset.opt)return;
+    setChaseOpt(el.dataset.opt,el.type==='checkbox'?el.checked:el.value);
+  });
+  wrap.addEventListener('keydown',e=>{
+    if(e.key==='Escape'&&viewOptsOpen()){e.preventDefault();e.stopPropagation();closeViewOpts(true);}
+  });
+  document.addEventListener('pointerdown',e=>{if(viewOptsOpen()&&!wrap.contains(e.target))closeViewOpts(false);});
+  // Tabbing out of the menu closes it (it would otherwise float over the map).
+  wrap.addEventListener('focusout',e=>{if(viewOptsOpen()&&e.relatedTarget&&!wrap.contains(e.relatedTarget))closeViewOpts(false);});
+  syncViewOpts();
 })();
 function updateLegend(){
   const mode=document.getElementById('heatmap-mode').value;
@@ -2491,6 +2592,10 @@ const FOG_NEAR=150,FOG_FAR=900;
 // from the camera's line; smoothing keeps 10 Hz kinks in the course from
 // shaking it. CAM_CLEAR: never closer than this to the ground under it.
 const TAU_COURSE=0.35,TAU_HEIGHT=0.5,DT_MAX=0.1,CAM_CLEAR=1.0;
+// Locked camera (View options > Camera): below this speed the backend
+// heading is not a direction (a parked car's position does not change, so
+// its heading is atan2(0, 0) = 0), and the last real course is held.
+const LOCK_MIN_KMH=3,LOCK_MIN_STEP_M=0.01;
 const SNAP_FRAC=0.02;                          // playhead jump (fraction of the lap) that resets the smoothing
 const SETTLE_RAD=0.001,SETTLE_M=0.005;         // paused: keep drawing until this close to target
 // Top-down <-> chase transition (s, GSAP power2.inOut) and the part of the
@@ -2499,6 +2604,7 @@ const TRANS_IN_S=1.1,TRANS_OUT_S=0.8,FADE_MIX=0.15;
 // Car marker: TRUE footprint (4.7 x 2.0 m, so the line can be judged against
 // edges and kerbs) but flat and see-through, so it never hides what is under it.
 const CAR_LEN=4.7,CAR_W=2.0,CAR_H=0.15,CAR_FILL_OPACITY=0.55,CAR_LIFT=0.03;
+const ARROW_LEN=CAR_LEN*1.7;                  // velocity arrow shaft (the 2D proportions)
 const LINE_HALF_W=0.175;                     // driven line: 0.35 m ribbon
 const EDGE_HALF_W=0.04,EDGE_OPACITY=0.6;     // edge lines as 0.08 m ribbons: 1 px lines vanish at distance
 const MARK_EVERY_M=50,KERB_STRIPE_M=2;
@@ -2532,6 +2638,7 @@ const st={ready:false,built:false,failed:false,lost:false,mix:0,builtFor:null,bu
 // lastT: performance.now() of the previous frame.
 const cam={course:null,h:0,target:0,hTarget:0,lastF:0,lastData:null,lastT:0,car:{x:0,y:0,z:0}};
 let lineS=null;                              // cumulative horizontal distance along the driven line (per build)
+let headU=null;                              // unwrapped course for the locked camera (per build, see buildHeadU)
 let tween=null,settleH=null;
 // Scratch objects for the per-frame path (created with the scene): no
 // allocation per frame.
@@ -2644,7 +2751,7 @@ function initScene(){
   // Velocity arrow along the COURSE (white, flat just above the road, under
   // the car body like in 2D): 1.7 car lengths, the 2D proportions. Opaque,
   // so it draws before the translucent car and shows through it.
-  const VL=CAR_LEN*1.7,ah=1.0,sw=0.08;
+  const VL=ARROW_LEN,ah=1.0,sw=0.08;
   const a=new T.Shape();
   a.moveTo(0,-sw);a.lineTo(VL-ah,-sw);a.lineTo(VL-ah,-ah*0.6);a.lineTo(VL+0.3,0);
   a.lineTo(VL-ah,ah*0.6);a.lineTo(VL-ah,sw);a.lineTo(0,sw);a.closePath();
@@ -2966,6 +3073,7 @@ function buildScene(d){
   const dl=d.driven_line,n=dl.x.length;
   lineS=new Float64Array(n);
   for(let i=1;i<n;i++)lineS[i]=lineS[i-1]+Math.hypot(dl.x[i]-dl.x[i-1],dl.z[i]-dl.z[i-1]);
+  headU=buildHeadU(dl);
   cam.course=null;                            // new lap: snap
   // Corner pills, same short label as the 2D map ("T5 Esses" -> "T5").
   cornerPills=(d.corner_labels||[]).map(c=>({el:pill('corner',c.label.replace(/^(T\d+)\s.*$/,'$1').substring(0,8)),
@@ -2977,6 +3085,43 @@ function buildScene(d){
 
 // ── per-frame ──────────────────────────────────────────────────────────────
 const wrapAng=a=>Math.atan2(Math.sin(a),Math.cos(a));
+
+// ── locked camera course ───────────────────────────────────────────────────
+// The course (driven_line.heading, already smoothed over +-0.2 s by the
+// backend) made continuous once per lap: points where the car is not
+// moving hold the last real course (forward fill; a lap that starts parked
+// takes the first real one), then the +-pi wrap is unwrapped, so the
+// interpolation below never sees a 2*pi step. null without a heading.
+function buildHeadU(dl){
+  const h=dl.heading,n=dl.x.length;
+  if(!h||h.length!==n||!n)return null;
+  const sp=dl.speed&&dl.speed.length===n?dl.speed:null;
+  const moving=i=>sp?sp[i]>=LOCK_MIN_KMH
+    :Math.hypot(dl.x[Math.min(n-1,i+1)]-dl.x[Math.max(0,i-1)],dl.z[Math.min(n-1,i+1)]-dl.z[Math.max(0,i-1)])>LOCK_MIN_STEP_M;
+  const held=new Float64Array(n);
+  let last=null;
+  for(let i=0;i<n;i++){if(moving(i)&&isFinite(h[i]))last=h[i];held[i]=last===null?NaN:last;}
+  const first=held.find(v=>!isNaN(v));
+  const out=new Float64Array(n);
+  for(let i=0;i<n;i++){
+    const v=isNaN(held[i])?(first!==undefined?first:(isFinite(h[i])?h[i]:0)):held[i];
+    out[i]=i?out[i-1]+wrapAng(v-out[i-1]):v;
+  }
+  return out;
+}
+// Course at fractional point f for the locked camera: Catmull-Rom through
+// the four unwrapped points around f. Linear interpolation (angleAt) is
+// continuous but kinks at every point (~10 per second at 10 Hz position),
+// which a camera locked to it with no smoothing shows as a twitch at each
+// sample; the cubic is smooth in slope and passes through the data. Its
+// overshoot is bounded by the neighbouring steps, which the backend's
+// smoothing keeps small. Ends clamp (repeat the end point).
+function courseAt(f){
+  const n=headU.length,i=clamp(Math.floor(f),0,n-1),t=clamp(f-i,0,1);
+  const p0=headU[Math.max(0,i-1)],p1=headU[i],p2=headU[Math.min(n-1,i+1)],p3=headU[Math.min(n-1,i+2)];
+  const v=0.5*(2*p1+(p2-p0)*t+(2*p0-5*p1+4*p2-p3)*t*t+(3*p1-p0-3*p2+p3)*t*t*t);
+  return wrapAng(v);
+}
 // Height of the driven line `back` metres (horizontal) behind point f, by
 // cumulative distance: the ground under the chase camera, to first order.
 function groundBehind(dl,f,back){
@@ -2993,7 +3138,11 @@ function groundBehind(dl,f,back){
 // (alpha = 1 - exp(-dt/tau), frame-rate independent; dt clamped so a stalled
 // tab does not jump), snapped on scrub jumps / lap changes. Writes the eye to
 // _eye and the look-at point to _look. Returns true when converged.
-function chaseCamera(dl,f,n,x,y,z,course){
+// locked: the yaw IS the given course (no lag, so the velocity arrow drawn
+// along the same course stays exactly vertical on screen); the height is
+// still smoothed. cam.course keeps tracking it, so switching back to Smooth
+// continues from where the camera is, without a jump.
+function chaseCamera(dl,f,n,x,y,z,course,locked){
   const now=performance.now();
   const dt=cam.lastT?clamp((now-cam.lastT)/1000,0,DT_MAX):0;
   cam.lastT=now;
@@ -3003,7 +3152,7 @@ function chaseCamera(dl,f,n,x,y,z,course){
   if(cam.course===null||cam.lastData!==S.mapData||Math.abs(f-cam.lastF)>SNAP_FRAC*(n-1)){
     cam.course=course;cam.h=cam.hTarget;
   }else{
-    cam.course=wrapAng(cam.course+wrapAng(course-cam.course)*(1-Math.exp(-dt/TAU_COURSE)));
+    cam.course=locked?course:wrapAng(cam.course+wrapAng(course-cam.course)*(1-Math.exp(-dt/TAU_COURSE)));
     cam.h+=(cam.hTarget-cam.h)*(1-Math.exp(-dt/TAU_HEIGHT));
   }
   cam.lastF=f;cam.lastData=S.mapData;
@@ -3085,13 +3234,19 @@ function render(){
   const at=arr=>arr&&arr.length===n?lerpAt(arr,f):0;
   const x=lerpAt(dl.x,f),z=lerpAt(dl.z,f),y=at(dl.y);
   const pitch=at(dl.pitch_deg)*DEG,roll=at(dl.roll_deg)*DEG;
+  // Course for the chevron, the arrow and the camera. Locked: the cubic
+  // course, shared by all three, so the arrow is the camera's own forward
+  // line. Smooth: the 2D marker's course (angleAt), as before. The 2D map
+  // always keeps its own (carMarkerAt), whatever this option says.
+  const locked=S.chaseOpts&&S.chaseOpts.camera==='locked'&&!!headU;
+  const course=locked?courseAt(f):m.ang;
 
   // Attitude (plan, Euler 'YZX'): y = -(course + bodyOff), z = pitch (+ nose
   // up), x = roll (+ right side down). bodyOff is the 2D one (slip gain).
   carRig.position.set(x,y+CAR_LIFT,z);                  // just on the surface
-  carRig.rotation.set(roll,-(m.ang+m.bodyOff),pitch,'YZX');
+  carRig.rotation.set(roll,-(course+m.bodyOff),pitch,'YZX');
   arrowRig.position.set(x,y+0.06,z);                    // inside the see-through body
-  arrowRig.rotation.set(roll,-m.ang,pitch,'YZX');
+  arrowRig.rotation.set(roll,-course,pitch,'YZX');
   const[r,g,b]=parseCss(m.col);
   // Unlit fill + outline in the 2D marker's US/OS colour, so it reads the
   // same in shade and in light.
@@ -3099,7 +3254,7 @@ function render(){
   carEdgeMat.color.copy(carMat.color);
 
   cam.car.x=x;cam.car.y=y;cam.car.z=z;
-  const settled=chaseCamera(dl,f,n,x,y,z,m.ang);
+  const settled=chaseCamera(dl,f,n,x,y,z,course,locked);
   poseCamera(x,y,z);
   renderer.render(scene,camera);st.renders++;
   // Paused (or held), nothing else asks for frames: keep drawing until the
@@ -3118,7 +3273,7 @@ function render(){
       // and stays clear of the HUD panels in the bottom corners.
       const back=-CAR_LEN*0.45;
       betaPill.textContent=betaLabel(m.beta);
-      placePill(betaPill,_look.set(x+Math.cos(m.ang)*back,y,z+Math.sin(m.ang)*back),w,h,0,0,1e9);   // _look is free once the camera is posed
+      placePill(betaPill,_look.set(x+Math.cos(course)*back,y,z+Math.sin(course)*back),w,h,0,0,1e9);   // _look is free once the camera is posed
       betaPill.style.transform+=' translate(0,calc(100% + 10px))';   // top edge 10 px below the anchor
     }
   }
@@ -3191,16 +3346,38 @@ async function activate(){
 // there is no valid 3D picture to animate from.
 function deactivate(){runMix(0,st.lost||st.buildFailed);}
 
+// A View options value changed (S.chaseOpts is already updated). One frame
+// when the chase picture is up and nothing else is drawing it (paused);
+// playback and a running transition pick the new value up on their next
+// frame, so nothing is queued or stacked. Smooth -> Locked turns the camera
+// onto the velocity at once (by the lag the smoothing had, a few degrees
+// in a corner); Locked -> Smooth continues from there with no jump.
+function optionsChanged(){
+  if(st.mix>=1&&!(S.playing&&!S.holdPause)&&!tween)render();
+}
+
+// Test/diagnostic view of the module. arrowScreen: the velocity arrow's
+// start and tip projected with the current camera (CSS px on the chase
+// canvas), so a test can check its direction on screen.
+function arrowScreen(){
+  if(!st.built||!camera||!arrowRig)return null;
+  arrowRig.updateMatrixWorld();camera.updateMatrixWorld();
+  const w=canvas.clientWidth,h=canvas.clientHeight;
+  const px=v=>{v.applyMatrix4(arrowRig.matrixWorld).project(camera);return[(v.x+1)/2*w,(1-v.y)/2*h];};
+  const[x0,y0]=px(new T.Vector3(0,0,0)),[x1,y1]=px(new T.Vector3(ARROW_LEN,0,0));
+  return{x0,y0,x1,y1};
+}
 function state(){
   const c=camera?camera.position:{x:0,y:0,z:0};
   return{ready:st.ready,built:st.built,failed:st.failed,mix:st.mix,view:S.view,cam:{x:c.x,y:c.y,z:c.z},
     car:{...cam.car},course:cam.course,courseTarget:cam.target,dist:S.chaseDist,
+    camera:S.chaseOpts?S.chaseOpts.camera:'smooth',arrowScreen:arrowScreen(),
     settling:settleH!==null,renders:st.renders,paintCells:st.paintCells,paintVerts:st.paintVerts};
 }
 
 // covers(): the chase canvas fully covers the 2D map (cheap, per frame).
 const covers=()=>st.mix>=1;
-window.Chase={ensure,build,render,setOverlayColors,resize,state,covers,lineColorAt,activate,deactivate};
+window.Chase={ensure,build,render,setOverlayColors,resize,state,covers,lineColorAt,activate,deactivate,optionsChanged};
 if(S.view==='chase')activate();               // the view was remembered from last time
 </script>
 </body>
