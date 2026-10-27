@@ -204,8 +204,13 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;bac
 #view-opts label{display:flex;align-items:center;gap:10px;min-height:40px;padding:0 6px;border-radius:var(--r-sm);cursor:pointer;
   font:500 15px var(--font-ui);letter-spacing:normal;text-transform:none;color:var(--text);}
 #view-opts label:hover{background:var(--surface-3);}
-#view-opts input[type=radio]{width:18px;height:18px;margin:0;accent-color:var(--accent);flex-shrink:0;cursor:pointer;}
+#view-opts input[type=radio],#view-opts input[type=checkbox]{width:18px;height:18px;margin:0;accent-color:var(--accent);flex-shrink:0;cursor:pointer;}
+#view-opts fieldset+fieldset{margin-top:var(--sp-3);}
+#view-opts label:has(input:disabled){cursor:default;color:var(--text-3);}
+#view-opts label:has(input:disabled):hover{background:none;}
+#view-opts input:disabled{cursor:default;}
 .view-opts-hint{margin:2px 6px 0;font-size:13px;line-height:1.4;color:var(--text-2);}
+.view-opts-hint:empty{display:none;}
 
 /* Chase view: a second canvas over the map, under the HUDs (z 20). The 2D
    canvas stays in place (opacity 0) so hold-to-pause still reaches it.
@@ -511,6 +516,17 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
             <label><input type="radio" name="chase-camera" data-opt="camera" value="smooth">Smooth</label>
             <label><input type="radio" name="chase-camera" data-opt="camera" value="locked" aria-describedby="view-opts-locked-hint">Locked to velocity</label>
             <p class="view-opts-hint" id="view-opts-locked-hint">The velocity arrow points straight up; the car's angle off it is β.</p>
+          </fieldset>
+          <fieldset>
+            <legend>Car</legend>
+            <label><input type="radio" name="chase-car" data-opt="car" value="chevron">Chevron</label>
+            <label><input type="radio" name="chase-car" data-opt="car" value="car" aria-describedby="view-opts-car-note">Car</label>
+            <p class="view-opts-hint" id="view-opts-car-note"></p>
+          </fieldset>
+          <fieldset>
+            <legend>Track limits</legend>
+            <label><input type="checkbox" data-opt="limits" aria-describedby="view-opts-limits-note">Show wheels past the edge</label>
+            <p class="view-opts-hint" id="view-opts-limits-note"></p>
           </fieldset>
         </div>
       </div>
@@ -1307,6 +1323,7 @@ async function loadMap(){
     // The chase scene is per lap: rebuild it now if that view is showing;
     // otherwise Chase notices the new payload when the view is next opened.
     if(S.view==='chase'&&window.Chase&&Chase.state().ready)Chase.build(S.mapData);
+    syncViewOpts();                    // this lap's car class / track-limits availability
     hideOverlay();resizeDraw();updateBalance();showHud();drawHUD();
   }catch(e){setOverlay(`<span style="color:var(--warn)">${e.message}</span>`);}
 }
@@ -2188,6 +2205,18 @@ function syncViewOpts(){
     const v=S.chaseOpts[el.dataset.opt];
     el.checked=el.type==='checkbox'?!!v:el.value===v;
   });
+  // Per-lap facts (/trackmap `car`, `track_limits`). Track limits need
+  // LMU's Track Edge / Path Lateral; without them the toggle is disabled
+  // and says why (its stored value is kept for the next lap that has them).
+  const d=S.mapData,car=d&&d.car,tl=d&&d.track_limits;
+  const lim=document.querySelector('#view-opts input[data-opt=limits]');
+  const limOk=!!(tl&&tl.available);
+  lim.disabled=!!d&&!limOk;
+  document.getElementById('view-opts-limits-note').textContent=!d?'':
+    limOk?'A wheel turns red when its whole tyre is past the white line; the outline when all four are. Approximate: LMU gives the edge on the car\'s side only.'
+         :(tl&&tl.note)||'Track limits are not available for this lap.';
+  document.getElementById('view-opts-car-note').textContent=!car?'':
+    car.source==='fallback'?`Class not recognised: drawn as ${car.class}.`:`Drawn as ${car.class}.`;
 }
 (function initViewOpts(){
   const pop=document.getElementById('view-opts'),wrap=document.getElementById('view-opts-wrap');
@@ -2616,6 +2645,17 @@ const PAINT_CELL_M=0.5;
 const PAINT_LIFT_M=0.01;                     // paint quads sit this far above the road (plus polygon offset)
 const GROUND_DROP_M=0.3,GROUND_SIZE_M=8000; // dim floor under the whole track, faded by the fog
 const DEG=Math.PI/180;
+// Car model (View options > Car): static/car_models.js builds it from
+// static/car_models.json (one source for the UI, the STL previews and the
+// backend's track limits). See-through body like the chevron, so the tyres
+// show from above (track limits); opaque wheels.
+const CAR_MODELS_JS='/static/car_models.js',CAR_MODELS_JSON='/static/car_models.json';
+const CAR_BODY_OPACITY=0.5;
+const WHEEL_COL='#1B1F27',LIMIT_COL='#FF6B6B';   // tyre (car_models.js) / --danger
+// Surface search around the row nearest the car: rows are 2-15 m apart and
+// the contacts at most ~3 m from the car's point, so +-SURF_SEARCH rows
+// always hold the cell under them.
+const SURF_SEARCH=8;
 
 const mapBody=document.querySelector('.map-body');
 const canvas=document.getElementById('chase-canvas');
@@ -2631,7 +2671,13 @@ let cornerPills=[],betaPill=null;
 // that try threw. Both are set BEFORE building, so a bad lap fails once
 // instead of on every frame. lost: the WebGL context is gone.
 const st={ready:false,built:false,failed:false,lost:false,mix:0,builtFor:null,buildFailed:false,loading:null,msgTimer:null,renders:0,
-          paintCells:0,paintVerts:0};
+          paintCells:0,paintVerts:0,
+          // car model: builds / disposals (tests check the switch frees it),
+          // carFailed: the model files did not load (chevron stays)
+          carBuilds:0,carDisposals:0,carFailed:false,
+          // track limits: wheels_out mask drawn in the last frame, and the
+          // number of frames drawn with at least one wheel tinted
+          limitsMask:0,limitFrames:0};
 // Smoothed camera state. course: smoothed course angle (rad), null = snap on
 // the next frame; h: smoothed camera height (m, world); lastF/lastData: the
 // playhead point and payload of the previous frame (scrub/lap-change snaps);
@@ -2643,6 +2689,19 @@ let tween=null,settleH=null;
 // Scratch objects for the per-frame path (created with the scene): no
 // allocation per frame.
 let _eye,_look,_top,_topT,_pill,_q0,_q1,_m4,_upY,_upMap;
+// Rendered surface for the contact lookup (per build; null without one):
+// {R, C, x, y, z} row-major like /trackmap `surface`, and the row the last
+// lookup ended in (the next one starts there).
+let surf=null,surfRow=0;
+// Contact points of the marker being placed, (along, right) pairs in its own
+// frame: the chevron's three corners, or the car's four tyre contacts.
+const chevContacts=new Float64Array(6),carContacts=new Float64Array(8);
+// Result of placeOnSurface: origin height, plane slopes in the body frame
+// (dh/d along, dh/d right), pitch and roll for rotation 'YZX'.
+const place={h:0,gx:0,gy:0,pitch:0,roll:0};
+// Car model state: models = {mod, json} once loaded; car = the built car
+// (for the payload carFor) or null.
+let carModels=null,carLoading=null,car=null,carFor=null;
 
 // ── loading ────────────────────────────────────────────────────────────────
 function webglAvailable(){
@@ -2747,6 +2806,9 @@ function initScene(){
   carRig.add(new T.LineSegments(new T.EdgesGeometry(carGeo,30),carEdgeMat));
   carRig.rotation.order='YZX';
   scene.add(carRig);
+  // The chevron rests on the surface by its three corners (nose, rear
+  // corners): three points fix the plane, so none of them sinks or floats.
+  chevContacts.set([fx,0,rx,-hw,rx,hw]);
 
   // Velocity arrow along the COURSE (white, flat just above the road, under
   // the car body like in 2D): 1.7 car lengths, the 2D proportions. Opaque,
@@ -2771,8 +2833,125 @@ function disposeWorld(){
     });
     scene.remove(world);world=null;
   }
-  ribbon=null;
+  ribbon=null;surf=null;surfRow=0;
+  disposeCar();                               // per lap: the class may change
   labelLayer.textContent='';cornerPills=[];betaPill=null;
+}
+
+// ── car model ───────────────────────────────────────────────────────────────
+// Lazy: car_models.js + car_models.json load the first time Car is chosen
+// (memoised; a failure is remembered and the chevron stays, with a message).
+function ensureCarModels(){
+  if(carModels||st.carFailed)return Promise.resolve(!!carModels);
+  if(!carLoading)carLoading=Promise.all([import(CAR_MODELS_JS),fetch(CAR_MODELS_JSON).then(r=>{
+    if(!r.ok)throw new Error('car_models.json: HTTP '+r.status);return r.json();})])
+    .then(([mod,json])=>{carModels={mod,json};return true;})
+    .catch(e=>{console.warn('[chase] car model not available:',e);st.carFailed=true;
+      showMsg("Car model didn't load. Showing the chevron.");return false;});
+  return carLoading;
+}
+function disposeCar(){
+  if(!car)return;
+  car.group.traverse(o=>{
+    if(o.geometry)o.geometry.dispose();
+    if(o.material)[].concat(o.material).forEach(m=>m.dispose());
+  });
+  scene.remove(car.group);car=null;carFor=null;st.carDisposals++;
+}
+// Build the car for payload d (its class from /trackmap `car`; classDims
+// picks the same entry the backend judged the track limits with).
+function buildCarFor(d){
+  disposeCar();
+  const{mod,json}=carModels;
+  // The class car_identity found (`requested`), not the resolved one: the
+  // same input through the same rule gives the backend's class AND source.
+  const want=d.car&&(d.car.requested||d.car.class);
+  const{cls,dims,source}=mod.classDims(json,want);
+  const c=mod.buildCar(T,cls,dims);
+  // See-through body (unlit-looking tint is not needed: it is lit like the
+  // world), drawn after the opaque wheels and the road, no depth write so
+  // the line, the kerbs and the arrow stay visible through it.
+  const bm=c.body.userData.material;
+  bm.transparent=true;bm.opacity=CAR_BODY_OPACITY;bm.depthWrite=false;
+  c.group.rotation.order='YZX';
+  scene.add(c.group);
+  const r=dims.wheelbase/2;
+  carContacts.set([r,-dims.track_front/2,r,dims.track_front/2,-r,-dims.track_rear/2,-r,dims.track_rear/2]);
+  car={...c,cls,dims,source,tail:r+dims.overhang_front-dims.length,mask:-1};
+  carFor=d;st.carBuilds++;
+}
+
+// ── surface contact ─────────────────────────────────────────────────────────
+function setSurf(s){
+  surf=s?{R:s.rows,C:s.cols,x:Float64Array.from(s.x),y:Float64Array.from(s.y),z:Float64Array.from(s.z)}:null;
+  surfRow=0;
+}
+// Height of the RENDERED surface at world (x, z): the same two triangles per
+// cell as surfaceMesh ((r,c) (r+1,c) (r,c+1) and (r,c+1) (r+1,c) (r+1,c+1)),
+// barycentric inside the one containing the point. Only rows near the last
+// hit are searched (the car moves a few rows per frame at most); a point
+// outside the ribbon (a wheel past the edge) gets the plane of the nearest
+// triangle, extended: the ribbon is linear across, so that is its bank.
+// Scalar maths only: no allocation per call.
+function surfH(qx,qz){
+  const{R,C,x,y,z}=surf;
+  // nearest row by the middle column, around the last hit
+  const mid=(C-1)>>1;
+  let r0=clamp(surfRow,0,R-1),best=Infinity;
+  const lo=Math.max(0,r0-SURF_SEARCH),hi=Math.min(R-1,r0+SURF_SEARCH);
+  for(let r=lo;r<=hi;r++){const k=r*C+mid,d=(x[k]-qx)**2+(z[k]-qz)**2;if(d<best){best=d;r0=r;}}
+  // Rows can be centimetres apart where the car crawled (pit lane, a stop):
+  // if the nearest is at the window's end, keep walking while it gets nearer.
+  for(const step of[-1,1]){
+    if(r0!==(step<0?lo:hi))continue;
+    for(let r=r0+step;r>=0&&r<R;r+=step){
+      const k=r*C+mid,d=(x[k]-qx)**2+(z[k]-qz)**2;
+      if(d>=best)break;best=d;r0=r;
+    }
+  }
+  surfRow=r0;
+  let bestScore=Infinity,h=y[r0*C+mid];
+  for(let r=Math.max(0,r0-2);r<=Math.min(R-2,r0+1);r++){
+    for(let c=0;c<C-1;c++){
+      const a=r*C+c,b=a+C,d=a+1,e=b+1;
+      for(let t=0;t<2;t++){
+        const p0=t?d:a,p1=b,p2=t?e:d;
+        const v0x=x[p1]-x[p0],v0z=z[p1]-z[p0],v1x=x[p2]-x[p0],v1z=z[p2]-z[p0];
+        const den=v0x*v1z-v1x*v0z;if(Math.abs(den)<1e-12)continue;
+        const v2x=qx-x[p0],v2z=qz-z[p0];
+        const u=(v2x*v1z-v1x*v2z)/den,v=(v0x*v2z-v2x*v0z)/den,w=1-u-v;
+        const score=Math.max(0,-u)+Math.max(0,-v)+Math.max(0,-w);
+        if(score<bestScore){bestScore=score;h=y[p0]*w+y[p1]*u+y[p2]*v;if(score===0)return h;}
+      }
+    }
+  }
+  return h;
+}
+// Rest a marker on the surface: the surface height under each contact
+// (pts: (along, right) pairs in the marker's frame, n of them) at body yaw
+// `yaw` (canvas angle) around (x, z), then the least-squares plane
+// h = h0 + gx*along + gy*right through them. Three contacts (chevron) fix
+// it exactly; four tyres on a twisted surface leave the twist/4 per wheel
+// (a few mm on a ribbon that is linear across). Writes `place`.
+// pitch = atan(gx); roll = atan(-gy*cos(pitch)) is the exact roll for
+// rotation 'YZX' (Ry*Rz*Rx: a point (a, 0, w) ends at height
+// a*sin(pitch) - w*sin(roll)*cos(pitch)), so the tyres sit ON the plane.
+function placeOnSurface(x,z,yaw,pts,n){
+  const cy=Math.cos(yaw),sy=Math.sin(yaw);
+  let S0=0,Sa=0,Sw=0,Saa=0,Sww=0,Saw=0,Sh=0,Sah=0,Swh=0;
+  for(let k=0;k<n;k++){
+    const a=pts[2*k],w=pts[2*k+1];
+    const h=surfH(x+a*cy-w*sy,z+a*sy+w*cy);
+    S0++;Sa+=a;Sw+=w;Saa+=a*a;Sww+=w*w;Saw+=a*w;Sh+=h;Sah+=a*h;Swh+=w*h;
+  }
+  // normal equations [S0 Sa Sw; Sa Saa Saw; Sw Saw Sww] [h0 gx gy] = [Sh Sah Swh], Cramer
+  const det=S0*(Saa*Sww-Saw*Saw)-Sa*(Sa*Sww-Saw*Sw)+Sw*(Sa*Saw-Saa*Sw);
+  if(Math.abs(det)<1e-9){place.h=Sh/n;place.gx=place.gy=place.pitch=place.roll=0;return;}
+  const h0=(Sh*(Saa*Sww-Saw*Saw)-Sa*(Sah*Sww-Saw*Swh)+Sw*(Sah*Saw-Saa*Swh))/det;
+  const gx=(S0*(Sah*Sww-Swh*Saw)-Sh*(Sa*Sww-Saw*Sw)+Sw*(Sa*Swh-Sah*Sw))/det;
+  const gy=(S0*(Saa*Swh-Saw*Sah)-Sa*(Sa*Swh-Sah*Sw)+Sh*(Sa*Saw-Saa*Sw))/det;
+  place.h=h0;place.gx=gx;place.gy=gy;
+  place.pitch=Math.atan(gx);place.roll=Math.atan(-gy*Math.cos(place.pitch));
 }
 
 // ── per-lap scene ──────────────────────────────────────────────────────────
@@ -3065,6 +3244,8 @@ function buildScene(d){
     const marks=distanceMarks(d.surface,surf);if(marks)world.add(marks);
     const ground=groundPlane(d.surface);if(ground)world.add(ground);
   }
+  // The car rests on what is drawn: its contacts look up this grid (surfH).
+  setSurf(surf?d.surface:null);
   if(d.has_edges&&d.track)edgeRibbons(d.track).forEach(l=>world.add(l));
   ribbon=drivenRibbon(d.driven_line);
   if(ribbon){world.add(ribbon);colourRibbon();}
@@ -3232,26 +3413,93 @@ function render(){
   const f=(S.hoverIdx!=null)?S.hoverIdx:clamp(S.playhead*(n-1),0,n-1);
   const m=carMarkerAt(f);
   const at=arr=>arr&&arr.length===n?lerpAt(arr,f):0;
-  const x=lerpAt(dl.x,f),z=lerpAt(dl.z,f),y=at(dl.y);
-  const pitch=at(dl.pitch_deg)*DEG,roll=at(dl.roll_deg)*DEG;
+  const x=lerpAt(dl.x,f),z=lerpAt(dl.z,f);
   // Course for the chevron, the arrow and the camera. Locked: the cubic
   // course, shared by all three, so the arrow is the camera's own forward
   // line. Smooth: the 2D marker's course (angleAt), as before. The 2D map
   // always keeps its own (carMarkerAt), whatever this option says.
   const locked=S.chaseOpts&&S.chaseOpts.camera==='locked'&&!!headU;
   const course=locked?courseAt(f):m.ang;
+  const yaw=course+m.bodyOff;                           // where the drawn body points
+
+  // Chevron or car model (View options > Car). The car is built lazily and
+  // per lap; until its files have loaded the chevron stands in.
+  const wantCar=S.chaseOpts&&S.chaseOpts.car==='car'&&!st.carFailed;
+  if(!wantCar&&car)disposeCar();
+  if(wantCar&&carFor!==S.mapData){
+    if(carModels)buildCarFor(S.mapData);
+    else if(!carLoading){
+      // one waiter, not one per frame: playback renders on its own; paused,
+      // one frame once the files are in
+      ensureCarModels().then(ok=>{if(ok&&st.mix>=1&&!(S.playing&&!S.holdPause)&&!tween)render();});
+    }
+  }
+  const useCar=wantCar&&!!car;
+  carRig.visible=!useCar;
+
+  // Placement: rest the marker on the RENDERED surface by its contacts
+  // (chevron corners / the four tyres), not at the line's height with the
+  // recorded attitude.
+  // BUG FIX / PREVIOUSLY: the chevron sat at driven_line.y with the
+  // chassis's recorded pitch/roll. On a Pos Y recording it tilted along the
+  // body's own attitude (roll on the springs, pitch under braking), over a
+  // surface fitted separately from the probes, and one side sank into the
+  // ground: up to 0.3 m (p5/p95; 1.1 m worst) on the 10/27 Road Atlanta
+  // file before the 5 Hz scoring hold was fixed, still 0.1 m after. Fix:
+  // height, pitch and roll from the surface under the contacts, so no
+  // corner sinks or floats; the velocity arrow lies on the same plane.
+  let y,pitch,roll,ap,ar;
+  if(surf){
+    surfRow=Math.round(f*(surf.R-1)/Math.max(1,n-1));  // search starts at the car's row
+    placeOnSurface(x,z,yaw,useCar?carContacts:chevContacts,useCar?4:3);
+    y=place.h;pitch=place.pitch;roll=place.roll;
+    // the plane's slope along the COURSE (the arrow) instead of the body:
+    // the course is the body direction turned back by db = bodyOff, so in
+    // body axes it is (cos db, -sin db) and its right (sin db, cos db)
+    const db=yaw-course,cb=Math.cos(db),sb=Math.sin(db);
+    const gc=place.gx*cb-place.gy*sb,gr=place.gx*sb+place.gy*cb;
+    ap=Math.atan(gc);ar=Math.atan(-gr*Math.cos(ap));
+  }else{
+    // no surface ribbon: the line's height and the recorded attitude
+    y=at(dl.y);pitch=at(dl.pitch_deg)*DEG;roll=at(dl.roll_deg)*DEG;ap=pitch;ar=roll;
+  }
 
   // Attitude (plan, Euler 'YZX'): y = -(course + bodyOff), z = pitch (+ nose
   // up), x = roll (+ right side down). bodyOff is the 2D one (slip gain).
-  carRig.position.set(x,y+CAR_LIFT,z);                  // just on the surface
-  carRig.rotation.set(roll,-(course+m.bodyOff),pitch,'YZX');
-  arrowRig.position.set(x,y+0.06,z);                    // inside the see-through body
-  arrowRig.rotation.set(roll,-course,pitch,'YZX');
   const[r,g,b]=parseCss(m.col);
-  // Unlit fill + outline in the 2D marker's US/OS colour, so it reads the
-  // same in shade and in light.
-  carMat.color.setRGB(r/255,g/255,b/255,T.SRGBColorSpace);
-  carEdgeMat.color.copy(carMat.color);
+  if(useCar){
+    car.group.position.set(x,y,z);                      // origin = ground at mid-wheelbase
+    car.group.rotation.set(roll,-yaw,pitch,'YZX');
+    car.body.userData.material.color.setRGB(r/255,g/255,b/255,T.SRGBColorSpace);
+  }else{
+    carRig.position.set(x,y+CAR_LIFT,z);                // just on the surface
+    carRig.rotation.set(roll,-yaw,pitch,'YZX');
+    // Unlit fill + outline in the 2D marker's US/OS colour, so it reads the
+    // same in shade and in light.
+    carMat.color.setRGB(r/255,g/255,b/255,T.SRGBColorSpace);
+    carEdgeMat.color.copy(carMat.color);
+  }
+  arrowRig.position.set(x,y+0.06,z);                    // inside the see-through body
+  arrowRig.rotation.set(ar,-course,ap,'YZX');
+
+  // Track limits (View options): the backend's per-point mask (whole tyre
+  // past the edge line), nearest point (a mask does not interpolate).
+  const tl=S.mapData.track_limits,wo=dl.wheels_out;
+  const mask=S.chaseOpts&&S.chaseOpts.limits&&tl&&tl.available&&wo&&wo.length===n?wo[Math.round(f)]|0:0;
+  st.limitsMask=mask;if(mask)st.limitFrames++;
+  if(useCar){
+    if(car.mask!==mask){                               // colours change only when the mask does
+      // Out: red AND self-lit, so a tyre in the car's shadow or on a red
+      // kerb still reads as flagged (a lit red tyre came out dark maroon).
+      ['fl','fr','rl','rr'].forEach((k,i)=>{
+        const mt=car.wheels[k].userData.material,out=!!(mask&(1<<i));
+        mt.color.set(out?LIMIT_COL:WHEEL_COL);mt.emissive.set(out?LIMIT_COL:'#000000');mt.emissiveIntensity=out?0.7:1;
+      });
+      car.mask=mask;
+    }
+    if(mask===15)car.outline.material.color.set(LIMIT_COL);
+    else car.outline.material.color.setRGB(r/255,g/255,b/255,T.SRGBColorSpace);
+  }else if(mask===15)carEdgeMat.color.set(LIMIT_COL);  // the chevron has no wheels: outline only
 
   cam.car.x=x;cam.car.y=y;cam.car.z=z;
   const settled=chaseCamera(dl,f,n,x,y,z,course,locked);
@@ -3271,7 +3519,7 @@ function render(){
       // Centred just under the car's rear, over the line already driven:
       // it never covers the nose or the velocity arrow (where β is read),
       // and stays clear of the HUD panels in the bottom corners.
-      const back=-CAR_LEN*0.45;
+      const back=useCar?car.tail:-CAR_LEN*0.45;
       betaPill.textContent=betaLabel(m.beta);
       placePill(betaPill,_look.set(x+Math.cos(course)*back,y,z+Math.sin(course)*back),w,h,0,0,1e9);   // _look is free once the camera is posed
       betaPill.style.transform+=' translate(0,calc(100% + 10px))';   // top edge 10 px below the anchor
@@ -3367,17 +3615,54 @@ function arrowScreen(){
   const[x0,y0]=px(new T.Vector3(0,0,0)),[x1,y1]=px(new T.Vector3(ARROW_LEN,0,0));
   return{x0,y0,x1,y1};
 }
+// contacts: where the drawn marker touches the ground (its contact points
+// through the rendered object's own matrix: the four tyre bottoms of the
+// car, the chevron's three corners without its lift) against the rendered
+// surface height there, so a test can check nothing sinks or floats.
+function contacts(){
+  if(!st.built||!surf)return[];
+  const useCar=!!car&&carRig&&!carRig.visible,obj=useCar?car.group:carRig;
+  const pts=useCar?carContacts:chevContacts,nPts=useCar?4:3,lift=useCar?0:CAR_LIFT;
+  obj.updateMatrixWorld();
+  const out=[],v=new T.Vector3(),keep=surfRow;
+  for(let k=0;k<nPts;k++){
+    v.set(pts[2*k],0,pts[2*k+1]).applyMatrix4(obj.matrixWorld);
+    out.push({x:v.x,z:v.z,y:v.y-lift,surface:surfH(v.x,v.z)});
+  }
+  surfRow=keep;
+  return out;
+}
+// Mean time (ms) of one placement (all contacts of the current marker),
+// over `iters` points spread along the lap: the per-frame cost of resting
+// the car on the surface.
+function benchPlacement(iters){
+  const dl=S.mapData&&S.mapData.driven_line;if(!surf||!dl)return null;
+  const n=dl.x.length,useCar=!!car&&!carRig.visible,t0=performance.now();
+  for(let i=0;i<iters;i++){
+    const f=(i*7919)%Math.max(1,n-1);
+    surfRow=Math.round(f*(surf.R-1)/Math.max(1,n-1));
+    placeOnSurface(dl.x[f],dl.z[f],dl.heading?dl.heading[f]:0,useCar?carContacts:chevContacts,useCar?4:3);
+  }
+  return(performance.now()-t0)/iters;
+}
 function state(){
   const c=camera?camera.position:{x:0,y:0,z:0};
   return{ready:st.ready,built:st.built,failed:st.failed,mix:st.mix,view:S.view,cam:{x:c.x,y:c.y,z:c.z},
     car:{...cam.car},course:cam.course,courseTarget:cam.target,dist:S.chaseDist,
     camera:S.chaseOpts?S.chaseOpts.camera:'smooth',arrowScreen:arrowScreen(),
-    settling:settleH!==null,renders:st.renders,paintCells:st.paintCells,paintVerts:st.paintVerts};
+    settling:settleH!==null,tweening:!!tween,renders:st.renders,paintCells:st.paintCells,paintVerts:st.paintVerts,
+    marker:car&&carRig&&!carRig.visible?'car':'chevron',
+    carModel:car?{cls:car.cls,source:car.source,wheelbase:car.dims.wheelbase}:null,
+    wheelColours:car?['fl','fr','rl','rr'].map(k=>'#'+car.wheels[k].userData.material.color.getHexString()):null,
+    carBuilds:st.carBuilds,carDisposals:st.carDisposals,carFailed:st.carFailed,
+    geometries:renderer?renderer.info.memory.geometries:0,
+    limitsMask:st.limitsMask,limitFrames:st.limitFrames,
+    placement:{h:place.h,pitch:place.pitch,roll:place.roll},contacts:contacts()};
 }
 
 // covers(): the chase canvas fully covers the 2D map (cheap, per frame).
 const covers=()=>st.mix>=1;
-window.Chase={ensure,build,render,setOverlayColors,resize,state,covers,lineColorAt,activate,deactivate,optionsChanged};
+window.Chase={ensure,build,render,setOverlayColors,resize,state,covers,lineColorAt,activate,deactivate,optionsChanged,benchPlacement};
 if(S.view==='chase')activate();               // the view was remembered from last time
 </script>
 </body>

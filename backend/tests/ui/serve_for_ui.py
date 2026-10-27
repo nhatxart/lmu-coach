@@ -16,6 +16,8 @@ BACKEND = Path(__file__).resolve().parents[2]
 # The synthetic sessions conftest writes (a parseable "<track>-<car>-<UTC>" name).
 HILLY = "Synthetic_Hill_Ring-Synthetic_Car_1-2026-10-25T10_00_00Z.duckdb"
 LEGACY = "Synthetic_Hill_Ring-Synthetic_Car_1-2026-10-24T09_00_00Z.duckdb"
+# Track Edge 5.5 m: lap 1's run out to lat 5.0 puts the right tyres past it.
+LIMITS = "Synthetic_Hill_Ring-Synthetic_Car_1-2026-10-26T10_00_00Z.duckdb"
 
 
 def main(argv: list[str]) -> None:

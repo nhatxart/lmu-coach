@@ -261,7 +261,10 @@ def _cam_to_car(page):
 def _to_chase(page):
     _radio(page, "Chase").click()
     _wait_built(page)
-    page.wait_for_function("() => Chase.state().mix === 1", timeout=10000)
+    # mix can read 1 a frame before GSAP's onComplete clears the tween; until
+    # then render() leaves the frames to the tween (no settle loop), which
+    # made test_settle_loop_stops_when_paused flaky. Wait for both.
+    page.wait_for_function("() => Chase.state().mix === 1 && !Chase.state().tweening", timeout=10000)
 
 
 def test_transition_animates(page, server, shot_dir):
@@ -576,3 +579,161 @@ def test_top_down_unchanged_by_camera_option(page, server):
     after = round_trip("Locked to velocity")
     assert page.evaluate("S.chaseOpts.camera") == "locked"
     assert np.array_equal(_png_rgb(before), _png_rgb(after))
+
+
+# ── Round 2, Task 3: surface contact, car model, track limits ─────────────
+
+from serve_for_ui import LIMITS  # noqa: E402
+
+# Lap 1 of the synthetic ring at fractions of the lap: the crest (s = 300 m,
+# highest point), the downhill back straight, the kerb run-out (s = 620 m),
+# the banked left-hander (s = 1100 m) and its entry ramp.
+PLACES = (0.12, 0.25, 0.4, 0.52, 0.85, 0.92, 0.97)
+
+
+def _set_car(page, label):
+    btn = _open_options(page)
+    page.get_by_role("radio", name=label, exact=True).check()
+    page.keyboard.press("Escape")
+    assert btn.get_attribute("aria-expanded") == "false"
+
+
+def _contact_errors(page, n):
+    worst, seen = 0.0, 0
+    for frac in PLACES:
+        _render_at(page, frac * (n - 1))
+        cs = page.evaluate("Chase.state().contacts")
+        assert cs, "no contacts reported"
+        seen += 1
+        worst = max(worst, max(abs(c["y"] - c["surface"]) for c in cs))
+    return worst, seen
+
+
+def test_chevron_rests_on_surface(page, server, shot_dir):
+    """The chevron's three corners sit on the rendered surface (within 3 cm)
+    on the crest, the slopes and the banked corner: height, pitch and roll
+    come from the surface under them, not from the line and the recorded
+    attitude (which sank one side into the ground on real recordings)."""
+    _open_session(page, server, HILLY, lap=1)
+    _to_chase(page)
+    n = page.evaluate("S.mapData.driven_line.x.length")
+    worst, seen = _contact_errors(page, n)
+    assert seen == len(PLACES)
+    assert worst < 0.03, worst
+    # the bank is really there: the chevron rolls in the banked corner
+    _render_at(page, 0.92 * (n - 1))
+    assert abs(page.evaluate("Chase.state().placement.roll")) > np.radians(2)
+    assert page.evaluate("Chase.state().marker") == "chevron"
+    if shot_dir:
+        page.screenshot(path=str(shot_dir / "chevron-banked.png"))
+    assert page.errors == []
+
+
+def test_car_mode_rests_on_surface_and_disposes(page, server, shot_dir):
+    _open_session(page, server, HILLY, lap=1)
+    _to_chase(page)
+    g0 = page.evaluate("Chase.state().geometries")
+    _set_car(page, "Car")
+    page.wait_for_function("() => Chase.state().marker === 'car'", timeout=10000)
+    st = page.evaluate("Chase.state()")
+    assert st["carModel"]["cls"] == "LMGT3" and st["carModel"]["source"] == "fallback"
+    assert len(st["contacts"]) == 4
+    n = page.evaluate("S.mapData.driven_line.x.length")
+    worst, _ = _contact_errors(page, n)
+    assert worst < 0.03, worst
+    if shot_dir:
+        _render_at(page, 0.92 * (n - 1))
+        page.screenshot(path=str(shot_dir / "car-banked.png"))
+    g1 = page.evaluate("Chase.state().geometries")
+    assert g1 > g0
+    # the fallback class is said in the menu
+    _open_options(page)
+    assert "drawn as LMGT3" in page.locator("#view-opts-car-note").inner_text()
+    page.keyboard.press("Escape")
+    # chevron <-> car: the car's geometry is freed every time, no leak
+    for _ in range(3):
+        _set_car(page, "Chevron")
+        assert page.evaluate("Chase.state().marker") == "chevron"
+        assert page.evaluate("Chase.state().geometries") == g0
+        _set_car(page, "Car")
+        page.wait_for_function("() => Chase.state().marker === 'car'", timeout=10000)
+        assert page.evaluate("Chase.state().geometries") == g1
+    st = page.evaluate("Chase.state()")
+    assert st["carBuilds"] == 4 and st["carDisposals"] == 3
+    # a lap change rebuilds it for the new payload (old one disposed)
+    page.locator('.lap-chip[data-lap="2"]').click()
+    page.wait_for_function("() => S.lap === 2 && S.mapData && Chase.state().built && "
+                           "document.getElementById('map-overlay').classList.contains('hidden')")
+    _render_at(page, 10)
+    st = page.evaluate("Chase.state()")
+    assert st["marker"] == "car" and st["carDisposals"] == 4 and st["geometries"] <= g1 + 50
+    assert page.evaluate("JSON.parse(localStorage.getItem('lmu-coach.chase.options')).car") == "car"
+    assert page.errors == []
+
+
+def test_track_limits_tint_in_excursion(page, server, shot_dir):
+    _open_session(page, server, LIMITS, lap=1)
+    _to_chase(page)
+    _set_car(page, "Car")
+    page.wait_for_function("() => Chase.state().marker === 'car'", timeout=10000)
+    n = page.evaluate("S.mapData.driven_line.x.length")
+    # off: nothing is tinted even in the excursion
+    _render_at(page, 0.517 * (n - 1))
+    assert page.evaluate("Chase.state().limitsMask") == 0
+    btn = _open_options(page)
+    box = page.get_by_role("checkbox", name="Show wheels past the edge")
+    assert box.is_enabled()
+    box.check()
+    page.keyboard.press("Escape")
+    assert btn.get_attribute("aria-expanded") == "false"
+    masks = {}
+    for frac in np.linspace(0.02, 0.98, 49):
+        _render_at(page, float(frac) * (n - 1))
+        masks[round(float(frac), 3)] = page.evaluate("Chase.state().limitsMask")
+    out = {k: v for k, v in masks.items() if v}
+    assert out, masks
+    assert all(v & 0b0101 == 0 for v in out.values()), out          # right wheels only
+    assert min(out) > 0.45 and max(out) < 0.58, out                 # s ~ 540-700 m of 1200
+    _render_at(page, 0.517 * (n - 1))                                # s = 620: both right wheels
+    st = page.evaluate("Chase.state()")
+    assert st["limitsMask"] == 0b1010 and st["limitFrames"] > 0
+    colours = st["wheelColours"]
+    assert colours[1] == colours[3] != colours[0] == colours[2], colours
+    if shot_dir:
+        page.screenshot(path=str(shot_dir / "limits-kerb.png"))
+    assert page.errors == []
+
+
+def test_track_limits_unavailable_disables_toggle(page, server):
+    def strip(route):
+        r = route.fetch()
+        d = r.json()
+        d["track_limits"] = {"available": False, "note": "No Track Edge / Path Lateral in this file: track limits unavailable."}
+        for k in ("lat", "edge_half", "wheels_out"):
+            d["driven_line"][k] = []
+        route.fulfill(response=r, json=d)
+    page.route("**/trackmap*", strip)
+    page.add_init_script("localStorage.setItem('lmu-coach.chase.options', JSON.stringify({camera:'smooth',car:'car',limits:true,slip:false}))")
+    _open_session(page, server, HILLY, lap=1)
+    _to_chase(page)
+    page.wait_for_function("() => Chase.state().marker === 'car'", timeout=10000)
+    _open_options(page)
+    box = page.get_by_role("checkbox", name="Show wheels past the edge")
+    assert box.is_disabled()
+    assert "unavailable" in page.locator("#view-opts-limits-note").inner_text()
+    page.keyboard.press("Escape")
+    n = page.evaluate("S.mapData.driven_line.x.length")
+    for frac in (0.2, 0.5, 0.8):
+        _render_at(page, frac * (n - 1))
+    assert page.evaluate("Chase.state().limitFrames") == 0
+    assert page.errors == []
+
+
+def test_placement_is_fast(page, server):
+    """Resting the car on the surface costs well under 1 ms a frame."""
+    _open_session(page, server, HILLY, lap=1)
+    _to_chase(page)
+    _set_car(page, "Car")
+    page.wait_for_function("() => Chase.state().marker === 'car'", timeout=10000)
+    ms = page.evaluate("Chase.benchPlacement(2000)")
+    assert ms < 0.2, ms
