@@ -153,10 +153,14 @@ def build_topography_for(entry: dict, files: list[str]) -> str:
     tt.save_topography(topo)
     lays = topo["layouts"]
     best = max(lays, key=lambda l: l["coverage"])
+    # out-/in-laps are left out of the fit (track_topography.build_topography)
+    no_flag = sum(l["sources"].get("files_without_pit_flag", 0) for l in lays)
     return (f"topography: {slug} layouts={len(lays)} coverage={best['coverage']:.2f} "
             f"files={sum(l['sources']['files'] for l in lays)} "
             f"({sum(l['pose']['files_with_pose'] for l in lays)} with pose) "
-            f"laps={sum(l['sources']['laps'] for l in lays)}"
+            f"laps={sum(l['sources']['laps'] for l in lays)} "
+            f"pit_laps_excluded={sum(l['sources'].get('pit_laps_excluded', 0) for l in lays)}"
+            + (f" (no In Pits table in {no_flag} files: their laps all kept)" if no_flag else "")
             + ("" if any(l["has_heights"] for l in lays) else "  paint only (no pose recordings yet)"))
 
 

@@ -263,6 +263,27 @@ def test_other_car_probes_weighted(tmp_path):
     assert len(ps.paint_s) == 0
 
     path = write_hilly_session(tmp_path / "others.duckdb", other_cars=2)
+    _check_other_cars_from_file(path)
+
+
+def test_other_car_pit_laps_dropped():
+    """A slot's whole lap (wrap to wrap of its Lap Dist) is dropped when any
+    of it was in the pits: the out-lap from the pit exit to its next crossing
+    and the in-lap from its last crossing before the pit entry."""
+    def lap(t0, pits=None):
+        d = np.arange(0.0, 1200.0, 100.0)
+        p = np.zeros_like(d) if pits is None else pits
+        return [[t0 + 0.1 * i, 7, 0.0, 10.3, 0.0, s, 1.0, ip] for i, (s, ip) in enumerate(zip(d, p))]
+    out = np.zeros(12); out[:3] = 1                    # leaves the pits at 300 m
+    inl = np.zeros(12); inl[9:] = 1                    # enters the pits at 900 m
+    rows = np.array(lap(0.0, out) + lap(10.0) + lap(20.0, inl) + lap(30.0)
+                    + [[1.0, 8, 0.0, 10.3, 0.0, 600.0, 0.0, 0]])       # another slot, clean
+    ps = tt.other_car_probes(rows, L)
+    # laps 2 and 4 of slot 7 (24 rows) and slot 8's row; nothing of the out-/in-lap
+    assert len(ps.s) == 25
+
+
+def _check_other_cars_from_file(path):
     import duckdb
     con = duckdb.connect(str(path), read_only=True)
     raw = np.array(con.execute('SELECT * FROM "Other Cars" ORDER BY ts, slot').fetchall(),

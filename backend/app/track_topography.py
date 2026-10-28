@@ -243,7 +243,22 @@ def other_car_probes(rows: np.ndarray, length_m: float, lateral_sign: int = 1) -
     r = np.asarray(rows, dtype=float)
     if r.ndim != 2 or r.shape[0] == 0 or r.shape[1] < 8:
         return _probe_set([], [])
-    m = (r[:, 7] == 0) & np.isfinite(r[:, [3, 5, 6]]).all(axis=1)
+    # BUG FIX / PREVIOUSLY: only rows with in_pits = 1 were dropped, but the
+    # flag clears at the pit-lane speed-limit line, and the pit-exit road can
+    # run beside the track (at another height) for hundreds of metres after
+    # that while the game reports Lap Dist / Path Lateral as if on the track
+    # (COTA: 2.35 m below the T1 climb, read as a 25-30 deg bank). Fix: drop
+    # each slot's whole lap - wrap to wrap of its Lap Dist - when any of it
+    # was in the pits (the out-lap from the exit to its next crossing, the
+    # in-lap from its last crossing before the entry), as for the player.
+    order = np.lexsort((r[:, 0], r[:, 1]))
+    r = r[order]
+    slot, ld = r[:, 1], r[:, 5]
+    new_slot = np.r_[True, slot[1:] != slot[:-1]]
+    wrap = np.r_[False, np.diff(ld) < -0.5 * float(length_m)] & ~new_slot
+    seg = np.cumsum(new_slot | wrap)                 # one id per slot-lap
+    pit_seg = np.unique(seg[r[:, 7] != 0])
+    m = ~np.isin(seg, pit_seg) & np.isfinite(r[:, [3, 5, 6]]).all(axis=1)
     r = r[m]
     s = np.mod(r[:, 5], float(length_m))
     return _probe_set([(s, lateral_sign * r[:, 6], r[:, 3] - OTHER_CAR_REF_HEIGHT_M,
@@ -487,6 +502,46 @@ def _read_other_cars(path: Path) -> np.ndarray:
     return np.asarray(rows, dtype=float).reshape(-1, 8)
 
 
+def pit_lap_numbers(boundaries: list, pit_events: list) -> set[int]:
+    """Lap numbers whose [start, end) overlaps an In Pits = 1 interval.
+
+    boundaries: [(lap_number, start_ts, end_ts or None)] as
+    telemetry._get_lap_boundaries gives them (None: the open last lap).
+    pit_events: [(ts, value)] of the `In Pits` event table, on change; the
+    last interval stays open to the end of the file."""
+    on, intervals = None, []
+    for ts, v in sorted(pit_events):
+        if v and on is None:
+            on = float(ts)
+        elif not v and on is not None:
+            intervals.append((on, float(ts)))
+            on = None
+    if on is not None:
+        intervals.append((on, math.inf))
+    out = set()
+    for num, a, b in boundaries:
+        b = math.inf if b is None else float(b)
+        if any(p0 < b and p1 > float(a) for p0, p1 in intervals):
+            out.add(int(num))
+    return out
+
+
+def _read_pit_laps(path: Path) -> set[int] | None:
+    """Lap numbers of this file that touched the pits; None when the file
+    has no `In Pits` table (LMU's native export, very old recordings)."""
+    import duckdb
+    from .telemetry import _get_lap_boundaries
+    con = duckdb.connect(str(path), read_only=True)
+    try:
+        try:
+            ev = con.execute('SELECT ts, value FROM "In Pits" ORDER BY ts').fetchall()
+        except Exception:
+            return None
+        return pit_lap_numbers(_get_lap_boundaries(con), ev)
+    finally:
+        con.close()
+
+
 def build_topography(files: list[Path], slug: str, display_name: str) -> dict | None:
     """Fit every layout of one track from all its recordings (see the plan,
     Task 4). None when nothing gave heights or paint."""
@@ -494,6 +549,7 @@ def build_topography(files: list[Path], slug: str, display_name: str) -> dict | 
     laps_info = []                    # dicts: lap, file index, basis, length
     other_by_file: dict[int, np.ndarray] = {}
     pose_ok: dict[int, bool] = {}
+    no_pit_flag: dict[int, bool] = {}
     for fi, f in enumerate(files):
         f = Path(f)
         try:
@@ -516,8 +572,22 @@ def build_topography(files: list[Path], slug: str, display_name: str) -> dict | 
             why = ("orientation matrix does not follow the direction of travel" if had_matrix
                    else "no orientation channels (recorded before pose)")
             print(f"  {f.name}: pose refused: {why}")
+        # BUG FIX / PREVIOUSLY: every complete lap fed the fit, out-laps and
+        # in-laps included. LMU reports Lap Dist / Path Lateral on the
+        # pit-exit road as if it were the track, and at COTA that road climbs
+        # beside the T1 hill 2.35 m below it, at Path Lateral ~0 while the
+        # racing laps run at ~+4 m: the per-row plane read the step as a
+        # 25-30 deg bank. The In Pits flag clears at the speed-limit line,
+        # long before the road merges, so dropping flagged samples is not
+        # enough. Fix: leave out every lap that touched the pits (out-laps
+        # and in-laps; their purpose is tyre warm-up, not the line), for
+        # heights and paint alike. Files without an In Pits table keep all
+        # their laps (counted in sources.files_without_pit_flag).
+        pit_laps = _read_pit_laps(f)
+        no_pit_flag[fi] = pit_laps is None
         for lap in usable:
-            laps_info.append({"lap": lap, "file": fi, "basis": basis, "length": _lap_length_m(lap)})
+            laps_info.append({"lap": lap, "file": fi, "basis": basis, "length": _lap_length_m(lap),
+                              "pit": bool(pit_laps) and lap.lap_number in pit_laps})
         if usable:
             other_by_file[fi] = _read_other_cars(f)
 
@@ -525,7 +595,10 @@ def build_topography(files: list[Path], slug: str, display_name: str) -> dict | 
         return None
     layouts = []
     for group in _group_by_length([li["length"] for li in laps_info]):
-        members = [laps_info[i] for i in group]
+        pit_n = sum(laps_info[i]["pit"] for i in group)
+        members = [laps_info[i] for i in group if not laps_info[i]["pit"]]
+        if not members:
+            continue                    # only out-/in-laps of this length: nothing to trust
         length_m = float(np.median([m["length"] for m in members]))
 
         def cat(name):
@@ -553,7 +626,8 @@ def build_topography(files: list[Path], slug: str, display_name: str) -> dict | 
         lay["pose"] = {"files_with_pose": sum(pose_ok[fi] for fi in files_here),
                        "files_refused": sum(not pose_ok[fi] for fi in files_here)}
         lay["sources"] = {"files": len(files_here), "laps": len(members),
-                          "other_car_samples": other_n}
+                          "other_car_samples": other_n, "pit_laps_excluded": int(pit_n),
+                          "files_without_pit_flag": sum(no_pit_flag[fi] for fi in files_here)}
         layouts.append(lay)
     if not layouts:
         return None

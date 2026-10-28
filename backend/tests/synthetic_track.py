@@ -75,6 +75,15 @@ SLIP_RAMP_M = 40.0
 SLIP_A_M, SLIP_B_M = 1.35, 1.35
 SLIP_HALF_TRACK_F, SLIP_HALF_TRACK_R = 0.85, 0.825
 STEER_LOCK_DEG = 15.0   # Steering Pos +-1 = +-15 deg of road-wheel angle (right positive, as in LMU)
+# Out-lap (write_hilly_session(out_lap=True)), modelled on COTA: lap 0 leaves
+# the pits, `In Pits` = 1 from the lap start until the speed-limit line at
+# PIT_FLAG_CLEAR_M, and until PIT_ROAD_END_M it drives a parallel pit-exit
+# road PIT_ROAD_DROP_M below the track that merges by PIT_MERGE_M (cosine
+# ramp). The game reports Lap Dist / Path Lateral for that road as if it
+# were the track, so the file's Path Lateral is lap 0's own offset there.
+PIT_FLAG_CLEAR_M = 120.0
+PIT_ROAD_END_M, PIT_MERGE_M = 200.0, 300.0
+PIT_ROAD_DROP_M = 2.5
 GPS_REF_LAT, GPS_REF_LON, R_DEG = 35.37, 138.92, 111320.0
 T0_S = 10.0
 _SEG_B = STRAIGHT_M                         # first semicircle starts
@@ -181,6 +190,13 @@ def slip_truth(s, speed_ms, yaw_rate):
     return alpha, delta
 
 
+def pit_road_drop(s):
+    """How far the pit-exit road of out_lap=True sits below the track at
+    lap distance s (PIT_ROAD_DROP_M until PIT_ROAD_END_M, 0 from PIT_MERGE_M)."""
+    s = np.asarray(s, dtype=float)
+    return PIT_ROAD_DROP_M * (1.0 - _smooth((s - PIT_ROAD_END_M) / (PIT_MERGE_M - PIT_ROAD_END_M)))
+
+
 def _unit(v):
     return v / np.linalg.norm(v, axis=1, keepdims=True)
 
@@ -190,7 +206,7 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
                         track_name="Synthetic Hill Ring",
                         cross_offset_ticks=0, track_edge_m=TRACK_EDGE_M,
                         vehicle_class=None, with_edges=True,
-                        scoring_hold=False, slip_angles=False) -> Path:
+                        scoring_hold=False, slip_angles=False, out_lap=False) -> Path:
     """cross_offset_ticks moves every crossing but the first off its 10 Hz row
     (-8: the first 10 Hz row after it reads ~3 m), like the real game, where
     the line falls anywhere between two rows. Default 0 keeps the crossings
@@ -205,7 +221,10 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
     slip_angles: also write the recorder's per-wheel "Slip Angle" table
     (see SLIP_FRONT_DEG; `slip_truth` gives the values) and Steering Pos as
     the true road-wheel angle / STEER_LOCK_DEG, right positive like the
-    game's (the default Steering Pos is yaw rate x 20, left positive)."""
+    game's (the default Steering Pos is yaw rate x 20, left positive).
+    out_lap: lap 0 is an out-lap on a lower pit-exit road and the file gets
+    an `In Pits` event table (see PIT_FLAG_CLEAR_M). The ground under lap 0
+    there is truth(s, lat) - pit_road_drop(s), not truth(s, lat)."""
     path = Path(path)
     offsets = tuple(float(o) for o in lap_offsets)
     n_laps = len(offsets)
@@ -241,6 +260,11 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
     lap_dist = np.where(s_lap >= L, 0.0, s_lap)
 
     pos = world(s_lap, lat)
+    if out_lap:
+        # the pit-exit road under lap 0: the car (and so its ground probes) is
+        # lower; Ori and Ride Height stay as on the track (same pose, offset
+        # down), which is all the topography fit sees of it
+        pos[:, 1] -= np.where(lap_idx == 0, pit_road_drop(s_lap), 0.0)
     t_s = (world(s_lap + e, lat) - world(s_lap - e, lat)) / (2 * e)
     t_l = (world(s_lap, lat + e) - world(s_lap, lat - e)) / (2 * e)
     vel_dir = t_s + t_l * dlat_ds[:, None]
@@ -276,6 +300,10 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
     wheel_lat = np.stack([lat - HALF_TRACK_M, lat + HALF_TRACK_M,
                           lat - HALF_TRACK_M, lat + HALF_TRACK_M], axis=1)
     surface = np.where(wheel_lat > KERB_LAT_M, 5.0, 0.0)
+    if out_lap:
+        # the pit road reads as grass (any paint of its own would do): it must
+        # not land on the track either
+        surface[(lap_idx == 0) & (s_lap < PIT_ROAD_END_M)] = 2.0
 
     con = duckdb.connect(str(path))
     con.execute("CREATE TABLE metadata (key VARCHAR, value VARCHAR)")
@@ -378,6 +406,14 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
     con.executemany('INSERT INTO "Lap Time" VALUES (?, ?)',
                     [(float(t[cross[i + 1]]), float(t[cross[i + 1]] - t[cross[i]]))
                      for i in range(n_laps)])
-    con.executemany("INSERT INTO eventsList VALUES (?, ?)", [("Lap", ""), ("Lap Time", "s")])
+    events = [("Lap", ""), ("Lap Time", "s")]
+    if out_lap:
+        # as the recorder writes it: (ts, value) on change, first row at start
+        clear = int(np.argmax((lap_idx == 0) & (s_lap >= PIT_FLAG_CLEAR_M)))
+        con.execute('CREATE TABLE "In Pits" (ts DOUBLE, value DOUBLE)')
+        con.executemany('INSERT INTO "In Pits" VALUES (?, ?)',
+                        [(float(t[cross[0]]), 1.0), (float(t[clear]), 0.0)])
+        events.append(("In Pits", ""))
+    con.executemany("INSERT INTO eventsList VALUES (?, ?)", events)
     con.close()
     return path

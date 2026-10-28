@@ -112,6 +112,49 @@ def test_other_cars_add_coverage(tmp_path, ref_dir):
     assert t0["sources"]["other_car_samples"] == 0
 
 
+# laps 1-3 spread over lat 3..4.5 so their wheels alone fit a bank; lap 0
+# (the out-lap) reports lat 0 on the lower pit road
+OUT_LAP_OFFSETS = (0.0, 3.0, 4.5, 3.5)
+
+
+def test_out_lap_on_pit_road_is_excluded(tmp_path, ref_dir):
+    """BUG FIX / PREVIOUSLY (COTA T1 climb drawn banked 20-28 deg): the out-lap
+    drove the pit-exit road 2.35 m below the track, reported at Path Lateral
+    ~0, and the per-row plane read the step between it and the racing laps
+    as bank. Laps that touched the pits are now left out of heights and paint."""
+    a = write_hilly_session(tmp_path / "o.duckdb", lap_offsets=OUT_LAP_OFFSETS, out_lap=True)
+    lay = tt.build_topography([a], "synthetic-ring", "X")["layouts"][0]
+    s = np.arange(40.0, 260.0, 2.0)          # pit road (full drop to 200, merged by 300)
+    _, bank = tt.grade_bank(lay, s)
+    assert np.max(np.abs(bank)) < 0.01, np.max(np.abs(bank))      # true bank 0 here
+    for la in (3.0, 4.5):
+        err = tt.lookup_height(lay, s, np.full_like(s, la)) - truth(s, np.full_like(s, la))
+        assert np.max(np.abs(err)) < 0.08, (la, np.max(np.abs(err)))
+    assert lay["sources"]["laps"] == 3
+    assert lay["sources"]["pit_laps_excluded"] == 1
+    assert lay["sources"]["files_without_pit_flag"] == 0
+    assert all(k != 2 for _, _, k in lay["paint"])      # the pit road's grass stays out
+
+
+def test_no_pit_flag_keeps_every_lap(tmp_path, ref_dir):
+    a = write_hilly_session(tmp_path / "a.duckdb", lap_offsets=OUT_LAP_OFFSETS)
+    lay = tt.build_topography([a], "synthetic-ring", "X")["layouts"][0]
+    assert lay["sources"]["laps"] == 4
+    assert lay["sources"]["pit_laps_excluded"] == 0
+    assert lay["sources"]["files_without_pit_flag"] == 1
+
+
+def test_pit_lap_numbers_from_in_pits_intervals():
+    """A lap is a pit lap when its [start, end) overlaps In Pits = 1 (an
+    out-lap, an in-lap, or a stop in between); an open last interval runs
+    to the end of the file."""
+    laps = [(0, 10.0, 40.0), (1, 40.0, 70.0), (2, 70.0, 100.0), (3, 100.0, None)]
+    ev = [(10.0, 1.0), (15.0, 0.0), (95.0, 1.0)]
+    assert tt.pit_lap_numbers(laps, ev) == {0, 2, 3}
+    assert tt.pit_lap_numbers(laps, [(10.0, 0.0)]) == set()
+    assert tt.pit_lap_numbers(laps, [(5.0, 1.0), (40.0, 0.0)]) == {0}    # clears at the line
+
+
 def test_lap_dist_raw_matches_game_with_crossing_between_rows(tmp_path):
     """BUG FIX / PREVIOUSLY: probes took telemetry's re-zeroed Lap Dist, which
     loses the 10 Hz step the wrap falls in (here the first row after each

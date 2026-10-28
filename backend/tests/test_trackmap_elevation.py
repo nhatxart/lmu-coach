@@ -78,6 +78,27 @@ def test_trackmap_lap_source(tmp_path, monkeypatch):
     assert np.array(d["track"]["left_y"]).std() > 1.0
 
 
+def test_lap_source_ignores_out_lap_on_pit_road(tmp_path, monkeypatch):
+    """The "lap" topography (built from this file alone) leaves the out-lap
+    out too: the surface on the pit-exit stretch is flat across, as the track
+    is, not banked by the 2.5 m lower pit road (see test_topography_build)."""
+    f = write_hilly_session(sess(tmp_path) / "Hill-out.duckdb",
+                            lap_offsets=(0.0, 3.0, 4.5, 3.5), out_lap=True)
+    d = _trackmap(f, monkeypatch, lap=1)
+    assert d["elevation"]["source"] == "lap"
+    sf = d["surface"]
+    y = np.array(sf["y"]).reshape(sf["rows"], sf["cols"])
+    s = np.array(sf["s"])
+    te = 6.0                                  # synthetic Track Edge half-width
+    bank = (y[:, -1] - y[:, 0]) / (2 * te)
+    m = (s > 40.0) & (s < 260.0)
+    assert m.sum() > 5
+    assert np.max(np.abs(bank[m])) < 0.01, np.max(np.abs(bank[m]))
+    # the out-lap itself still replays, on its own recorded (pit road) height
+    d0 = _trackmap(f, monkeypatch, lap=0)
+    assert d0["elevation"]["source"] == "lap"
+
+
 def test_trackmap_recorded_source(tmp_path, monkeypatch):
     f = write_hilly_session(sess(tmp_path) / "Hill-rec.duckdb")
     _build_and_save(f)
