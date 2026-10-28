@@ -61,6 +61,20 @@ BODY_PITCH_DEG = 0.5    # nose up
 KERB_LAT_M = 5.5
 TRACK_EDGE_M = 6.0
 SPEED_MS = 40.0
+# Per-wheel slip angles (write_hilly_session(slip_angles=True)): a car with
+# no body slip (beta = 0) on the LMGT3 dims the UI falls back to for this
+# unknown car (car_models.json: wheelbase 2.70, tracks 1.70 / 1.65, origin
+# at mid-wheelbase). The front slip angle builds up linearly over the first
+# SLIP_RAMP_M of each semicircle to SLIP_FRONT_DEG (positive = the tyre
+# travels right of where it points: outward in these left-handers) and
+# eases out over its last SLIP_RAMP_M; the rears carry exactly their travel
+# angle (they do not steer). So the road-wheel angle the kinematic estimate
+# should find is known: delta = front travel angle - front slip angle.
+SLIP_FRONT_DEG = 2.5
+SLIP_RAMP_M = 40.0
+SLIP_A_M, SLIP_B_M = 1.35, 1.35
+SLIP_HALF_TRACK_F, SLIP_HALF_TRACK_R = 0.85, 0.825
+STEER_LOCK_DEG = 15.0   # Steering Pos +-1 = +-15 deg of road-wheel angle (right positive, as in LMU)
 GPS_REF_LAT, GPS_REF_LON, R_DEG = 35.37, 138.92, 111320.0
 T0_S = 10.0
 _SEG_B = STRAIGHT_M                         # first semicircle starts
@@ -133,6 +147,40 @@ def _lap_lat(offsets, i, s):
     return lat
 
 
+def slip_ramp(s):
+    """0..1: how far the front slip angle has built up at lap distance s
+    (linear over SLIP_RAMP_M in and out of each semicircle, 1 between)."""
+    s = np.mod(np.asarray(s, dtype=float), L)
+    u = np.zeros_like(s)
+    for a, b in ((_SEG_B, _SEG_C), (_SEG_D, L)):
+        inside = (s >= a) & (s < b)
+        u[inside] = np.minimum(np.clip((s[inside] - a) / SLIP_RAMP_M, 0, 1),
+                               np.clip((b - s[inside]) / SLIP_RAMP_M, 0, 1))
+    return u
+
+
+def slip_truth(s, speed_ms, yaw_rate):
+    """(alpha (n,4) deg FL FR RL RR, delta (n,) deg) for slip_angles=True.
+
+    yaw_rate is the file's Yaw Rate (left-positive here: the ring is driven
+    counter-clockwise in world x/z); the car frame below is right-positive.
+    With beta = 0 a wheel at (along a, right w) travels at
+    atan2(r*a, V - r*w) off the body axis (r right-positive). The rears
+    point straight, so their slip angle is that angle; the fronts point at
+    delta = (front travel angle at mid-track) - SLIP_FRONT_DEG * ramp, and
+    each front wheel's slip angle is its own travel angle minus delta, so
+    the mean of the two fronts' (travel - slip) is exactly delta."""
+    v = np.asarray(speed_ms, dtype=float)
+    r = -np.asarray(yaw_rate, dtype=float)
+    th = lambda a, w: np.degrees(np.arctan2(r * a, v - r * w))  # noqa: E731
+    delta = th(SLIP_A_M, 0.0) - SLIP_FRONT_DEG * slip_ramp(s)
+    alpha = np.stack([th(SLIP_A_M, -SLIP_HALF_TRACK_F) - delta,
+                      th(SLIP_A_M, SLIP_HALF_TRACK_F) - delta,
+                      th(-SLIP_B_M, -SLIP_HALF_TRACK_R),
+                      th(-SLIP_B_M, SLIP_HALF_TRACK_R)], axis=1)
+    return alpha, delta
+
+
 def _unit(v):
     return v / np.linalg.norm(v, axis=1, keepdims=True)
 
@@ -142,7 +190,7 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
                         track_name="Synthetic Hill Ring",
                         cross_offset_ticks=0, track_edge_m=TRACK_EDGE_M,
                         vehicle_class=None, with_edges=True,
-                        scoring_hold=False) -> Path:
+                        scoring_hold=False, slip_angles=False) -> Path:
     """cross_offset_ticks moves every crossing but the first off its 10 Hz row
     (-8: the first 10 Hz row after it reads ~3 m), like the real game, where
     the line falls anywhere between two rows. Default 0 keeps the crossings
@@ -153,7 +201,11 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
     with_edges=False: no Path Lateral / Track Edge tables (recorder v1).
     scoring_hold: Lap Dist and Path Lateral repeat the previous 10 Hz row on
     every other row, as in real HF1 files: the game updates them with its
-    scoring data at 5 Hz, and the recorder writes them at 10 Hz."""
+    scoring data at 5 Hz, and the recorder writes them at 10 Hz.
+    slip_angles: also write the recorder's per-wheel "Slip Angle" table
+    (see SLIP_FRONT_DEG; `slip_truth` gives the values) and Steering Pos as
+    the true road-wheel angle / STEER_LOCK_DEG, right positive like the
+    game's (the default Steering Pos is yaw rate x 20, left positive)."""
     path = Path(path)
     offsets = tuple(float(o) for o in lap_offsets)
     n_laps = len(offsets)
@@ -272,7 +324,12 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
     scalar("Yaw Rate", yaw_rate, hz, "rad/s")
     scalar("Throttle Pos", np.full(n, 100.0), hz, "%")
     scalar("Brake Pos", np.zeros(n), hz, "%")
-    scalar("Steering Pos", np.clip(yaw_rate * 20.0, -100, 100), hz, "%")
+    if slip_angles:
+        alpha_deg, delta_deg = slip_truth(s_lap, speed, yaw_rate)
+        wheel("Slip Angle", np.radians(alpha_deg), hz, "rad")
+        scalar("Steering Pos", np.clip(delta_deg / STEER_LOCK_DEG, -1, 1), hz, "")
+    else:
+        scalar("Steering Pos", np.clip(yaw_rate * 20.0, -100, 100), hz, "%")
     scalar("G Force Lat", speed * yaw_rate / 9.81, hz, "G")
     scalar("G Force Long", np.zeros(n), hz, "G")
     if with_pose:
