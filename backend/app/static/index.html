@@ -2982,12 +2982,18 @@ function buildSlip(d,useCar){
   const a=dims.wheelbase/2,pos=[[a,-dims.track_front/2],[a,dims.track_front/2],[-a,-dims.track_rear/2],[-a,dims.track_rear/2]];
   const mats=[],arrows=[];
   for(let k=0;k<4;k++){
-    // Unlit like the velocity arrow (reads the same in shade); opaque, so
-    // it shows through the see-through body; pulled forward in depth so it
-    // never z-fights the road it lies on.
+    // Unlit like the velocity arrow (reads the same in shade). Drawn as an
+    // overlay, after everything else and without the depth test.
+    // BUG FIX / PREVIOUSLY: opaque with a polygon offset, like the velocity
+    // arrow. That read fine under the see-through chevron, but in Car mode
+    // the model's opaque floor, splitter and tyres cover the contact
+    // patches and most of each arrow from the chase camera: the shots of
+    // the 10/27 Road Atlanta corner showed no arrow at all. The arrows sit
+    // at the car, so drawing them over it hides nothing else.
     const mt=new T.MeshBasicMaterial({color:'#ffffff',side:T.DoubleSide,
-      polygonOffset:true,polygonOffsetFactor:-4,polygonOffsetUnits:-4});
+      transparent:true,opacity:1,depthTest:false,depthWrite:false});
     const ar=new T.Mesh(geo,mt);ar.position.set(pos[k][0],SLIP_LIFT,pos[k][1]);ar.name='slip:'+SLIP_KEYS[k];
+    ar.renderOrder=10;                                  // after the see-through body
     rig.add(ar);mats.push(mt);arrows.push(ar);
   }
   scene.add(rig);
