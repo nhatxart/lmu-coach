@@ -483,7 +483,7 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
         <option value="gflat">Lateral G</option>
       </select>
       <label for="slip-gain">Slip angle</label>
-      <select id="slip-gain" onchange="setSlipGain(this.value)" title="Exaggerates the body-slip angle shown by the car marker. The β label always shows the true angle.">
+      <select id="slip-gain" onchange="setSlipGain(this.value)" title="Exaggerates the body-slip angle shown by the car marker, and the tyre slip arrows in chase view. The β label always shows the true angle.">
         <option value="1">True scale</option>
         <option value="3">×3</option>
         <option value="5">×5</option>
@@ -527,6 +527,11 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
             <legend>Track limits</legend>
             <label><input type="checkbox" data-opt="limits" aria-describedby="view-opts-limits-note">Show wheels past the edge</label>
             <p class="view-opts-hint" id="view-opts-limits-note"></p>
+          </fieldset>
+          <fieldset>
+            <legend>Tyre slip</legend>
+            <label><input type="checkbox" data-opt="slip" aria-describedby="view-opts-slip-note">Show tyre slip arrows</label>
+            <p class="view-opts-hint" id="view-opts-slip-note"></p>
           </fieldset>
         </div>
       </div>
@@ -1513,6 +1518,100 @@ function betaLabel(betaDeg){
   return`β ${betaDeg>=0?'+':'−'}${Math.abs(betaDeg).toFixed(1)}°`+(g>1?`  ×${g}`:'');
 }
 
+// ── Tyre slip (chase view, View options > Tyre slip) ──────────────────────
+// /trackmap slip_angle.{fl,fr,rl,rr}: signed degrees, positive = the tyre
+// travels right of where it points. It is downsampled with _ds (index
+// floor(i*L/2000)) while driven_line uses line_idx (floor(i*(L-1)/1999)):
+// the two differ by at most one row, so, like the tyre HUD dials (which
+// read slip_angle[head] with the line's own index), point f of the line
+// is point f of slip_angle, rescaled only when the lengths differ.
+const SLIP_KEYS=['fl','fr','rl','rr'];
+// Car-class dims for the chevron's wheels when /trackmap `car` has none
+// (car_models.json LMGT3, the class every unknown car falls back to).
+const SLIP_DEFAULT_DIMS={wheelbase:2.70,track_front:1.70,track_rear:1.65};
+const STEER_MIN_KMH=25;      // below this the estimate is a ratio of near-zero numbers: wheels straight
+const STEER_CORR_KMH=30;     // samples used for the correlation check
+const STEER_MIN_CORR=0.6;    // below this the estimate is not trusted to steer the wheels
+const steerCache=new WeakMap();
+function slipDims(d){
+  const c=d&&d.car&&d.car.dims;
+  return c&&c.wheelbase>0&&c.track_front>0&&c.track_rear>0?c:SLIP_DEFAULT_DIMS;
+}
+// Per lap (memoised on the payload): are per-wheel slip angles there, and
+// the front road-wheel angle delta (degrees, right positive) per line point
+// from the kinematic bicycle model. With body slip beta (positive = body
+// clockwise of the velocity), yaw rate r (right-turn positive once its
+// sign s is chosen) and the wheel at (along a, right w) from mid-wheelbase,
+// the wheel travels at
+//   theta = atan2(V sin(-beta) + s r a, V cos(beta) - s r w)
+// off the body axis, and points at theta - alpha. delta = the mean of the
+// two fronts. Without body slip (Yaw Rate files where the beta estimate
+// refused) the rear axle stands in for it: it does not steer, so its
+// travel angle IS its slip angle, V sin(-beta) = V cos(beta) tan(alpha_r)
+// + s r b, which gives delta = atan(tan(alpha_r) + s r (a+b)/V) - alpha_f.
+// The recorder's Yaw Rate sign is not documented, so both signs are tried
+// and the one whose delta correlates best with Steering Pos (right
+// positive in LMU) wins; below STEER_MIN_CORR the wheels are not steered
+// and `reason` says why. Measured (DevNotes 10/27/2026): 0.95-1.00 on the
+// 10/27 Road Atlanta and 10/19 Fuji recordings with s = +1.
+function steerEstimate(d){
+  if(!d)return null;
+  let e=steerCache.get(d);if(e)return e;
+  const dl=d.driven_line,n=dl.x.length,sa=d.slip_angle;
+  const available=!!sa&&SLIP_KEYS.every(k=>sa[k]&&sa[k].length>1)&&n>1;
+  e={available,enabled:false,sign:0,corr:NaN,corrOther:NaN,method:null,delta:null,
+     note:available?'':'This lap has no per-wheel slip angles (LMU\'s own exports do not record them): tyre slip unavailable.',
+     reason:''};
+  steerCache.set(d,e);
+  if(!available)return e;
+  const ok=a=>a&&a.length===n;
+  if(!ok(dl.speed)||!ok(dl.yaw)||!ok(dl.steering)){
+    e.reason='Front wheels not steered: this lap has no speed, yaw rate or steering input to estimate the steer angle from.';
+    return e;
+  }
+  const dims=slipDims(d),a=dims.wheelbase/2,b=a,wf=dims.track_front/2;   // origin at mid-wheelbase (car_models.js)
+  const hasB=ok(dl.body_slip_deg);e.method=hasB?'beta':'rear';
+  const m=sa.fl.length,sc=(m-1)/(n-1),D=Math.PI/180;
+  const est=s=>{
+    const out=new Float64Array(n);
+    for(let i=0;i<n;i++){
+      const V=dl.speed[i]/3.6;
+      if(!(dl.speed[i]>=STEER_MIN_KMH)){out[i]=0;continue;}
+      const r=s*dl.yaw[i],g=i*sc;
+      const afl=lerpAt(sa.fl,g)*D,afr=lerpAt(sa.fr,g)*D;
+      let dr;
+      if(hasB){
+        const be=dl.body_slip_deg[i]*D,vy=V*Math.sin(-be)+r*a,vx=V*Math.cos(be);
+        dr=(Math.atan2(vy,vx+r*wf)-afl+Math.atan2(vy,vx-r*wf)-afr)/2;
+      }else{
+        const ar=(lerpAt(sa.rl,g)+lerpAt(sa.rr,g))/2*D;
+        dr=Math.atan(Math.tan(ar)+r*(a+b)/V)-(afl+afr)/2;
+      }
+      out[i]=dr/D;
+    }
+    return out;
+  };
+  const corr=x=>{
+    let k=0,sx=0,sy=0,sxx=0,syy=0,sxy=0;
+    for(let i=0;i<n;i++){
+      if(!(dl.speed[i]>=STEER_CORR_KMH))continue;
+      const u=x[i],v=dl.steering[i];if(!isFinite(u)||!isFinite(v))continue;
+      k++;sx+=u;sy+=v;sxx+=u*u;syy+=v*v;sxy+=u*v;
+    }
+    if(k<50)return NaN;
+    const cv=sxy-sx*sy/k,vx=sxx-sx*sx/k,vy=syy-sy*sy/k;
+    return vx>1e-12&&vy>1e-12?cv/Math.sqrt(vx*vy):NaN;
+  };
+  const dp=est(1),dm=est(-1),cp=corr(dp),cm=corr(dm);
+  const pickP=!(cm>cp);                       // NaN compares false: +1 unless -1 is really better
+  e.sign=pickP?1:-1;e.delta=pickP?dp:dm;e.corr=pickP?cp:cm;e.corrOther=pickP?cm:cp;
+  e.enabled=e.corr>=STEER_MIN_CORR;
+  if(!e.enabled)e.reason=isFinite(e.corr)
+    ?`Front wheels not steered: the steer estimate's correlation with the steering input is ${e.corr.toFixed(2)} (needs ${STEER_MIN_CORR}).`
+    :'Front wheels not steered: too few moving samples to check the steer estimate against the steering input.';
+  return e;
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Car marker: velocity vector + body-angle chevron
 // White line = direction of travel. Chevron = where the car points
@@ -2217,6 +2316,13 @@ function syncViewOpts(){
          :(tl&&tl.note)||'Track limits are not available for this lap.';
   document.getElementById('view-opts-car-note').textContent=!car?'':
     car.source==='fallback'?`Class not recognised: drawn as ${car.class}.`:`Drawn as ${car.class}.`;
+  // Tyre slip needs the recorder's per-wheel slip angles (native LMU
+  // exports have none): disabled with the reason, stored value kept.
+  const se=d?steerEstimate(d):null;
+  document.querySelector('#view-opts input[data-opt=slip]').disabled=!!d&&!se.available;
+  document.getElementById('view-opts-slip-note').textContent=!d?'':!se.available?se.note:
+    'Each arrow shows where its tyre travels against where it points: the slip angle, exaggerated by the Slip angle setting. '+
+    (se.enabled?'Front wheels steered by an estimate from the slip angles, yaw rate and body slip.':se.reason);
 }
 (function initViewOpts(){
   const pop=document.getElementById('view-opts'),wrap=document.getElementById('view-opts-wrap');
@@ -2656,6 +2762,12 @@ const WHEEL_COL='#1B1F27',LIMIT_COL='#FF6B6B';   // tyre (car_models.js) / --dan
 // the contacts at most ~3 m from the car's point, so +-SURF_SEARCH rows
 // always hold the cell under them.
 const SURF_SEARCH=8;
+// Tyre slip arrows (View options > Tyre slip): one flat arrow per wheel
+// from its contact patch, about a quarter of the car long so four of them
+// do not clutter the car, wide enough to read from the chase camera ~9 m
+// back. Lifted like the velocity arrow, above the road and the paint.
+const SLIP_ARROW_LEN=1.2,SLIP_ARROW_W=0.07,SLIP_HEAD_LEN=0.38,SLIP_HEAD_W=0.2,SLIP_LIFT=0.05;
+const SLIP_MAX_DEG=60;       // drawing guard for the exaggerated angle, like the body offset
 
 const mapBody=document.querySelector('.map-body');
 const canvas=document.getElementById('chase-canvas');
@@ -2677,7 +2789,9 @@ const st={ready:false,built:false,failed:false,lost:false,mix:0,builtFor:null,bu
           carBuilds:0,carDisposals:0,carFailed:false,
           // track limits: wheels_out mask drawn in the last frame, and the
           // number of frames drawn with at least one wheel tinted
-          limitsMask:0,limitFrames:0};
+          limitsMask:0,limitFrames:0,
+          // tyre slip arrows: builds / disposals (tests check toggling frees them)
+          slipBuilds:0,slipDisposals:0};
 // Smoothed camera state. course: smoothed course angle (rad), null = snap on
 // the next frame; h: smoothed camera height (m, world); lastF/lastData: the
 // playhead point and payload of the previous frame (scrub/lap-change snaps);
@@ -2702,6 +2816,11 @@ const place={h:0,gx:0,gy:0,pitch:0,roll:0};
 // Car model state: models = {mod, json} once loaded; car = the built car
 // (for the payload carFor) or null.
 let carModels=null,carLoading=null,car=null,carFor=null;
+// Tyre slip arrows, built for one payload and one marker (the chevron's
+// class wheels or the car model's): {rig, geo, arrows[4], mats[4], d,
+// useCar, alpha[4], rel[4], delta}; null when off. alpha/rel/delta are
+// the last frame's values (degrees) for Chase.state().
+let slip=null;
 
 // ── loading ────────────────────────────────────────────────────────────────
 function webglAvailable(){
@@ -2835,7 +2954,75 @@ function disposeWorld(){
   }
   ribbon=null;surf=null;surfRow=0;
   disposeCar();                               // per lap: the class may change
+  disposeSlip();                              // per lap: other slip angles, maybe none
   labelLayer.textContent='';cornerPills=[];betaPill=null;
+}
+
+// ── tyre slip arrows ────────────────────────────────────────────────────────
+// Built once per payload and marker, then only their transforms and colours
+// change per frame. They hang off one rig that takes the marker's pose (the
+// collision plane's height, pitch and roll, the drawn body yaw), so they lie
+// on the surface plane at the contacts, like the tyres.
+function disposeSlip(){
+  if(!slip)return;
+  slip.geo.dispose();slip.mats.forEach(m=>m.dispose());
+  scene.remove(slip.rig);slip=null;st.slipDisposals++;
+}
+function buildSlip(d,useCar){
+  disposeSlip();
+  // the car model's own wheels, or the class's for the chevron (the same
+  // dims through classDims when the model is drawn)
+  const dims=useCar?car.dims:slipDims(d);
+  const L=SLIP_ARROW_LEN,hl=SLIP_HEAD_LEN,sw=SLIP_ARROW_W/2,hw=SLIP_HEAD_W/2;
+  const s=new T.Shape();
+  s.moveTo(0,-sw);s.lineTo(L-hl,-sw);s.lineTo(L-hl,-hw);s.lineTo(L,0);
+  s.lineTo(L-hl,hw);s.lineTo(L-hl,sw);s.lineTo(0,sw);s.closePath();
+  const geo=new T.ShapeGeometry(s);geo.rotateX(-Math.PI/2);   // flat, +X forward, right = +Z
+  const rig=new T.Group();rig.rotation.order='YZX';
+  const a=dims.wheelbase/2,pos=[[a,-dims.track_front/2],[a,dims.track_front/2],[-a,-dims.track_rear/2],[-a,dims.track_rear/2]];
+  const mats=[],arrows=[];
+  for(let k=0;k<4;k++){
+    // Unlit like the velocity arrow (reads the same in shade); opaque, so
+    // it shows through the see-through body; pulled forward in depth so it
+    // never z-fights the road it lies on.
+    const mt=new T.MeshBasicMaterial({color:'#ffffff',side:T.DoubleSide,
+      polygonOffset:true,polygonOffsetFactor:-4,polygonOffsetUnits:-4});
+    const ar=new T.Mesh(geo,mt);ar.position.set(pos[k][0],SLIP_LIFT,pos[k][1]);ar.name='slip:'+SLIP_KEYS[k];
+    rig.add(ar);mats.push(mt);arrows.push(ar);
+  }
+  scene.add(rig);
+  slip={rig,geo,mats,arrows,d,useCar,alpha:new Float64Array(4),rel:new Float64Array(4),delta:0};
+  st.slipBuilds++;
+}
+// One frame of the arrows (and the car's front-wheel steer). slipOn: the
+// option is on and this lap has slip angles. Allocation-free.
+function updateSlip(d,se,f,n,useCar,slipOn,x,y,z,roll,yaw,pitch){
+  const steerOn=slipOn&&se.enabled;
+  const delta=se&&se.delta?lerpAt(se.delta,f):0;
+  if(useCar){
+    // rotation about the wheel's own Y steers it; right-positive delta is
+    // a negative Y rotation (Y up: +X turns towards -Z, the left)
+    const ry=steerOn?-delta*DEG:0;
+    car.wheels.fl.rotation.y=ry;car.wheels.fr.rotation.y=ry;
+  }
+  if(!slipOn){disposeSlip();return;}
+  if(!slip||slip.d!==d||slip.useCar!==useCar)buildSlip(d,useCar);
+  slip.rig.position.set(x,y,z);
+  slip.rig.rotation.set(roll,-yaw,pitch,'YZX');
+  const sa=d.slip_angle,g=S.slipGain,fs=f*(sa.fl.length-1)/Math.max(1,n-1);
+  slip.delta=delta;
+  for(let k=0;k<4;k++){
+    const al=lerpAt(sa[SLIP_KEYS[k]],fs);
+    // arrow = where the tyre travels: its heading (body, plus delta for a
+    // steered front) turned by alpha x the slip-angle gain (real slip
+    // angles are a few degrees, invisible at true scale, like beta)
+    const rel=(k<2&&steerOn?delta:0)+clamp(al*g,-SLIP_MAX_DEG,SLIP_MAX_DEG);
+    slip.arrows[k].rotation.y=-rel*DEG;
+    slip.alpha[k]=al;slip.rel[k]=rel;
+    // the tyre HUD dial's colour scale: white near zero, amber (--warn) by 8 deg
+    const t=clamp(Math.abs(al)/8,0,1);
+    slip.mats[k].color.setRGB(lerp(226,251,t)/255,lerp(232,191,t)/255,lerp(240,36,t)/255,T.SRGBColorSpace);
+  }
 }
 
 // ── car model ───────────────────────────────────────────────────────────────
@@ -3507,6 +3694,9 @@ function render(){
   }
   arrowRig.position.set(x,y+0.06,z);                    // inside the see-through body
   arrowRig.rotation.set(ar,-course,ap,'YZX');
+  // Tyre slip arrows (View options): on the marker's plane at its wheels.
+  const se=steerEstimate(S.mapData);
+  updateSlip(S.mapData,se,f,n,useCar,!!(S.chaseOpts&&S.chaseOpts.slip&&se&&se.available),x,y,z,roll,yaw,pitch);
 
   // Track limits (View options): the backend's per-point mask (whole tyre
   // past the edge line), nearest point (a mask does not interpolate).
@@ -3692,7 +3882,25 @@ function state(){
     carBuilds:st.carBuilds,carDisposals:st.carDisposals,carFailed:st.carFailed,
     geometries:renderer?renderer.info.memory.geometries:0,
     limitsMask:st.limitsMask,limitFrames:st.limitFrames,
-    placement:{h:place.h,pitch:place.pitch,roll:place.roll},contacts:contacts(),forwardYaw:forwardYaw()};
+    placement:{h:place.h,pitch:place.pitch,roll:place.roll},contacts:contacts(),forwardYaw:forwardYaw(),
+    slip:slipState()};
+}
+// Tyre slip for tests: per arrow the true alpha, the drawn angle off the
+// body (degrees) and its world yaw (canvas angle of its +X from its world
+// matrix); the steer estimate; the car's front-wheel steer (null: chevron).
+function slipState(){
+  const se=S.mapData?steerEstimate(S.mapData):null;
+  let arrows=null;
+  if(slip){
+    slip.rig.updateMatrixWorld();
+    arrows=slip.arrows.map((a,k)=>{const e=a.matrixWorld.elements;
+      return{wheel:SLIP_KEYS[k],alphaDeg:slip.alpha[k],relDeg:slip.rel[k],worldYaw:Math.atan2(e[2],e[0]),
+             colour:'#'+slip.mats[k].color.getHexString()};});
+  }
+  return{on:!!(S.chaseOpts&&S.chaseOpts.slip),available:!!(se&&se.available),builds:st.slipBuilds,disposals:st.slipDisposals,arrows,
+    steer:se?{enabled:se.enabled,sign:se.sign,corr:se.corr,corrOther:se.corrOther,method:se.method,reason:se.reason,
+              deg:slip?slip.delta:null}:null,
+    wheelSteerDeg:car?-car.wheels.fl.rotation.y/DEG:null};
 }
 
 // covers(): the chase canvas fully covers the 2D map (cheap, per frame).

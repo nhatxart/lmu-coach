@@ -778,3 +778,189 @@ def test_marker_yaw_is_course_plus_body_offset(page, server):
                 const e = y - (m.ang + m.bodyOff); return Math.abs(Math.atan2(Math.sin(e), Math.cos(e))); }""", f)
             assert np.degrees(d) < 0.5, (label, frac, np.degrees(d))
     assert page.errors == []
+
+
+# ── Round 2, Task 4: tyre slip arrows ──────────────────────────────────────
+
+from serve_for_ui import SLIP  # noqa: E402
+from synthetic_track import (RADIUS_M, SLIP_A_M, SLIP_B_M, SLIP_FRONT_DEG,  # noqa: E402
+                             SLIP_HALF_TRACK_F, SLIP_HALF_TRACK_R, SPEED_MS)
+
+SLIP_LABEL = "Show tyre slip arrows"
+MID_CORNER = 0.42          # s ~ 504 m: middle of the first semicircle, slip fully built up
+
+
+def _slip_truth_deg():
+    """Known values on SLIP's constant-radius corner (synthetic_track): the
+    car frame is right-positive, the ring's corners are left-handers."""
+    r = -SPEED_MS / RADIUS_M
+    th = lambda a, w: float(np.degrees(np.arctan2(r * a, SPEED_MS - r * w)))  # noqa: E731
+    delta = th(SLIP_A_M, 0.0) - SLIP_FRONT_DEG
+    return {"delta": delta,
+            "fl": th(SLIP_A_M, -SLIP_HALF_TRACK_F) - delta, "fr": th(SLIP_A_M, SLIP_HALF_TRACK_F) - delta,
+            "rl": th(-SLIP_B_M, -SLIP_HALF_TRACK_R), "rr": th(-SLIP_B_M, SLIP_HALF_TRACK_R)}
+
+
+def _set_slip(page, on):
+    btn = _open_options(page)
+    box = page.get_by_role("checkbox", name=SLIP_LABEL)
+    box.check() if on else box.uncheck()
+    page.keyboard.press("Escape")
+    assert btn.get_attribute("aria-expanded") == "false"
+
+
+def _wrap_deg(a):
+    return float((a + 180.0) % 360.0 - 180.0)
+
+
+def _check_arrows(page, gain):
+    """Each arrow's drawn direction against the body: rear = alpha x gain,
+    front = delta + alpha x gain; and its world yaw = the body's + that."""
+    want = _slip_truth_deg()
+    st = page.evaluate("Chase.state()")
+    sl = st["slip"]
+    assert sl["arrows"] and [a["wheel"] for a in sl["arrows"]] == ["fl", "fr", "rl", "rr"]
+    body = np.degrees(st["forwardYaw"])
+    for a in sl["arrows"]:
+        k = a["wheel"]
+        assert abs(a["alphaDeg"] - want[k]) < 0.1, (k, a, want)
+        rel = (want["delta"] if k in ("fl", "fr") else 0.0) + want[k] * gain
+        assert abs(a["relDeg"] - rel) < 0.2, (k, a["relDeg"], rel)
+        assert abs(_wrap_deg(np.degrees(a["worldYaw"]) - body - rel)) < 0.3, (k, a, body, rel)
+    return st
+
+
+def test_tyre_slip_arrows_at_known_angles(page, server, shot_dir):
+    """Constant-radius corner with known slip angles: the arrows point at
+    alpha x the slip-angle gain off their wheel's heading, the fronts also
+    steered by the kinematic delta (yaw-rate sign from the correlation with
+    Steering Pos: -1 on this file, whose Yaw Rate is left-positive)."""
+    _open_session(page, server, SLIP, lap=0)
+    _to_chase(page)
+    page.evaluate("setSlipGain('1')")
+    _set_slip(page, True)
+    n = page.evaluate("S.mapData.driven_line.x.length")
+    _render_at(page, MID_CORNER * (n - 1))
+    st = _check_arrows(page, 1)
+    steer = st["slip"]["steer"]
+    assert steer["enabled"] and steer["sign"] == -1 and steer["corr"] > 0.99, steer
+    assert abs(steer["deg"] - _slip_truth_deg()["delta"]) < 0.1, steer
+    assert st["slip"]["wheelSteerDeg"] is None              # chevron: no wheels to steer
+    page.evaluate("setSlipGain('5')")
+    _render_at(page, MID_CORNER * (n - 1))
+    _check_arrows(page, 5)
+    # colour by |alpha| like the tyre HUD dial (white -> amber by 8 deg):
+    # the fronts (2.5 deg) carry less blue than the rears (1.2 deg)
+    cols = {a["wheel"]: a["colour"] for a in page.evaluate("Chase.state().slip.arrows")}
+    assert int(cols["fl"][5:7], 16) < int(cols["rl"][5:7], 16), cols
+    if shot_dir:
+        page.screenshot(path=str(shot_dir / "slip-chevron.png"))
+    # car mode: the same angles at the model's wheels, front wheels steered by delta
+    _set_car(page, "Car")
+    page.wait_for_function("() => Chase.state().marker === 'car'", timeout=10000)
+    _render_at(page, MID_CORNER * (n - 1))
+    st = _check_arrows(page, 5)
+    assert abs(st["slip"]["wheelSteerDeg"] - _slip_truth_deg()["delta"]) < 0.1, st["slip"]
+    if shot_dir:
+        page.screenshot(path=str(shot_dir / "slip-car.png"))
+    # on a straight: no slip, arrows straight ahead, wheels straight
+    _render_at(page, 0.15 * (n - 1))
+    st = page.evaluate("Chase.state().slip")
+    assert all(abs(a["relDeg"]) < 0.2 for a in st["arrows"]), st["arrows"]
+    assert abs(st["wheelSteerDeg"]) < 0.2
+    assert page.errors == []
+
+
+def test_tyre_slip_toggle_disposes(page, server):
+    _open_session(page, server, SLIP, lap=0)
+    _to_chase(page)
+    n = page.evaluate("S.mapData.driven_line.x.length")
+    _render_at(page, MID_CORNER * (n - 1))
+    g0 = page.evaluate("Chase.state().geometries")
+    assert page.evaluate("Chase.state().slip.arrows") is None      # default off
+    _set_slip(page, True)
+    g1 = page.evaluate("Chase.state().geometries")
+    assert g1 > g0
+    # many frames, one build: nothing is created per frame
+    for i in range(30):
+        _render_at(page, (MID_CORNER + i * 0.005) * (n - 1))
+    st = page.evaluate("Chase.state()")
+    assert st["slip"]["builds"] == 1 and st["geometries"] == g1
+    for _ in range(3):
+        _set_slip(page, False)
+        st = page.evaluate("Chase.state()")
+        assert st["slip"]["arrows"] is None and st["geometries"] == g0
+        _set_slip(page, True)
+        assert page.evaluate("Chase.state().geometries") == g1
+    assert page.evaluate("JSON.parse(localStorage.getItem('lmu-coach.chase.options')).slip") is True
+    # chevron <-> car: rebuilt at the other marker's wheels (old one freed)
+    b = page.evaluate("Chase.state().slip")
+    _set_car(page, "Car")
+    page.wait_for_function("() => Chase.state().marker === 'car'", timeout=10000)
+    _render_at(page, MID_CORNER * (n - 1))
+    b2 = page.evaluate("Chase.state().slip")
+    assert b2["builds"] == b["builds"] + 1 and b2["disposals"] == b["disposals"] + 1
+    # wheels straight again once the option is off
+    _set_slip(page, False)
+    assert page.evaluate("Chase.state().slip.wheelSteerDeg") == 0
+    _set_slip(page, True)
+    # a lap change frees them; they come back for the new lap
+    d0 = page.evaluate("Chase.state().slip.disposals")
+    page.locator('.lap-chip[data-lap="1"]').click()
+    page.wait_for_function("() => S.lap === 1 && S.mapData && Chase.state().built && "
+                           "document.getElementById('map-overlay').classList.contains('hidden')")
+    _render_at(page, 10)
+    st = page.evaluate("Chase.state().slip")
+    assert st["disposals"] > d0 and st["arrows"] is not None
+    assert page.errors == []
+
+
+def test_tyre_slip_unavailable_without_slip_angles(page, server):
+    """HILLY has no Slip Angle table (like native LMU exports): the toggle is
+    disabled with a note, a stored 'on' draws nothing, the car still renders."""
+    page.add_init_script("localStorage.setItem('lmu-coach.chase.options', JSON.stringify({camera:'smooth',car:'car',limits:false,slip:true}))")
+    _open_session(page, server, HILLY, lap=1)
+    _to_chase(page)
+    page.wait_for_function("() => Chase.state().marker === 'car'", timeout=10000)
+    _open_options(page)
+    box = page.get_by_role("checkbox", name=SLIP_LABEL)
+    assert box.is_disabled()
+    assert "slip angle" in page.locator("#view-opts-slip-note").inner_text().lower()
+    page.keyboard.press("Escape")
+    n = page.evaluate("S.mapData.driven_line.x.length")
+    for frac in (0.2, 0.42, 0.8):
+        _render_at(page, frac * (n - 1))
+        st = page.evaluate("Chase.state().slip")
+        assert st["available"] is False and st["arrows"] is None and st["builds"] == 0
+        assert st["wheelSteerDeg"] == 0
+    assert page.errors == []
+
+
+def test_tyre_slip_steer_off_when_uncorrelated(page, server):
+    """Steering Pos that does not match the kinematic estimate (here: noise)
+    leaves the front wheels straight and says why; the arrows still draw."""
+    def scramble(route):
+        r = route.fetch()
+        d = r.json()
+        rng = np.random.default_rng(3)
+        d["driven_line"]["steering"] = rng.normal(0, 0.2, len(d["driven_line"]["steering"])).tolist()
+        route.fulfill(response=r, json=d)
+    page.route("**/trackmap*", scramble)
+    page.add_init_script("localStorage.setItem('lmu-coach.chase.options', JSON.stringify({camera:'smooth',car:'car',limits:false,slip:true}))")
+    _open_session(page, server, SLIP, lap=0)
+    _to_chase(page)
+    page.wait_for_function("() => Chase.state().marker === 'car'", timeout=10000)
+    n = page.evaluate("S.mapData.driven_line.x.length")
+    _render_at(page, MID_CORNER * (n - 1))
+    st = page.evaluate("Chase.state().slip")
+    assert st["steer"]["enabled"] is False and abs(st["steer"]["corr"]) < 0.6
+    assert "correlat" in st["steer"]["reason"]
+    assert st["wheelSteerDeg"] == 0 and st["arrows"] is not None
+    # fronts then point at alpha x gain like the rears (no delta)
+    gain = page.evaluate("S.slipGain")
+    for a in st["arrows"]:
+        assert abs(a["relDeg"] - a["alphaDeg"] * gain) < 0.05, a
+    _open_options(page)
+    assert "not steered" in page.locator("#view-opts-slip-note").inner_text()
+    page.keyboard.press("Escape")
+    assert page.errors == []
