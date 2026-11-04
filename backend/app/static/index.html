@@ -322,6 +322,13 @@ canvas.tire-cv{display:block;margin:0 auto;}
 .psz-val{font:600 13px var(--font-data);min-width:44px;text-align:center;color:var(--text-2);font-variant-numeric:tabular-nums;}
 .psz-hint{margin-left:auto;}
 .right-panel.floating .psz-hint{display:none;}
+/* Docked width handle over the panel's left edge (PanelSize.setWidth) */
+.right-panel{position:relative;}
+.panel-splitter{position:absolute;left:-4px;top:0;bottom:0;width:9px;cursor:col-resize;z-index:5;touch-action:none;}
+.panel-splitter::after{content:'';position:absolute;left:4px;top:0;bottom:0;width:1px;background:transparent;transition:background var(--dur) var(--ease);}
+.panel-splitter:hover::after,.panel-splitter.active::after,.panel-splitter:focus-visible::after{left:3px;width:3px;background:var(--accent);}
+.panel-splitter:focus-visible{outline:none;}
+.right-panel.floating .panel-splitter{display:none;}
 .panel-body{flex:1;overflow-y:auto;padding:var(--sp-4);display:flex;flex-direction:column;gap:var(--sp-4);container-type:inline-size;container-name:panel;}
 .panel-body.hidden{display:none;}
 .card{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--sp-3) var(--sp-3) var(--sp-3);
@@ -450,6 +457,7 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
   .main{flex-direction:column;}
   .sidebar{width:auto;max-height:260px;border-right:none;border-bottom:1px solid var(--line);}
   .map-panel{min-height:72vh;} .right-panel{width:auto;border-left:none;border-top:1px solid var(--line);min-height:70vh;}
+  .panel-splitter,.psz-hint{display:none;}            /* stacked: the panel is full width, nothing to drag */
   :root{--hud-scale:.8;} #tire-hud{transform:scale(.75);transform-origin:bottom right;right:72px;}
 }
 
@@ -716,6 +724,8 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
       </div>
     </div>
     <div class="panel-resize-handle" id="panel-resize-handle" tabindex="0" role="button" aria-label="Resize telemetry window with arrow keys"></div>
+    <div class="panel-splitter" id="panel-splitter" tabindex="0" role="separator" aria-orientation="vertical" aria-valuemin="300"
+         aria-label="Telemetry panel width" title="Drag to resize (arrow keys too); double-click for the default width"></div>
   </aside>
 </div>
 
@@ -1103,6 +1113,9 @@ function dockPanel(){
   panel.classList.remove('floating');
   panel.style.left='';panel.style.top='';panel.style.width='';panel.style.height='';
   panel.style.removeProperty('--panel-scale');
+  // Back to the docked width the user chose (the floating frame's size
+  // never carries over into it).
+  if(window.PanelSize)PanelSize.restoreWidth();
   applyPanelScale();
 }
 
@@ -1194,14 +1207,20 @@ function dockPanel(){
 })();
 
 // ════════════════════════════════════════════════════════════════════════════
-// Panel size: content scale (Size row, Ctrl+scroll), persisted
+// Panel size: content scale (Size row, Ctrl+scroll) and docked width
+// (left-edge handle), both persisted
 // ════════════════════════════════════════════════════════════════════════════
-// 50-200 %: the buttons step 10 %, Ctrl+scroll 5 %; stored rounded to 0.05.
-// A stored value that is missing, not a number or out of range is ignored
-// (default 100 %), so a hand-edited or stale localStorage cannot break the
-// panel.
+// Scale 50-200 %: the buttons step 10 %, Ctrl+scroll 5 %; stored rounded to
+// 0.05. Docked width 300 px up to what still leaves the map ~520 px; no
+// inline width = the CSS --panel-w default. A stored value that is missing,
+// not a number or out of range is ignored (defaults), so a hand-edited or
+// stale localStorage cannot break the panel.
 const PanelSize=(()=>{
   const KS='lmu-coach.panel.scale',MIN_S=0.5,MAX_S=2;
+  const KW='lmu-coach.panel.w',MIN_W=300,MAP_MIN_W=520;
+  const panel=document.getElementById('right-panel'),splitter=document.getElementById('panel-splitter');
+  const stacked=matchMedia('(max-width:820px)');     // same breakpoint as the CSS stacked layout
+  const maxW=()=>Math.max(MIN_W,Math.min(1200,window.innerWidth-MAP_MIN_W));
   const read=(k,ok)=>{try{const s=localStorage.getItem(k);if(s==null||s.trim()==='')return null;const v=Number(s);return Number.isFinite(v)&&ok(v)?v:null;}catch(e){return null;}};
   const save=(k,v)=>{try{v==null?localStorage.removeItem(k):localStorage.setItem(k,String(v));}catch(e){}};
   let scale=read(KS,v=>v>=MIN_S&&v<=MAX_S)??1;
@@ -1217,7 +1236,60 @@ const PanelSize=(()=>{
     setScale(scale+(e.deltaY<0?0.05:-0.05));
   },{passive:false});
   label();
-  return{scale:()=>scale,setScale,step:dir=>setScale(scale+dir*0.1),reset:()=>setScale(1)};
+
+  // ── docked width ──
+  const widthApplies=()=>!panelState.floating&&!stacked.matches;
+  function syncAria(){
+    splitter.setAttribute('aria-valuemax',String(maxW()));
+    splitter.setAttribute('aria-valuenow',String(Math.round(panel.getBoundingClientRect().width)));
+  }
+  function setWidth(px,persist=true){
+    if(!widthApplies())return;
+    const w=Math.round(clamp(px,MIN_W,maxW()));
+    panel.style.width=w+'px';
+    if(persist)save(KW,w);
+    syncAria();applyPanelScale();
+  }
+  function clearWidth(){
+    save(KW,null);
+    if(widthApplies()){panel.style.width='';syncAria();applyPanelScale();}
+  }
+  // On load, on dock and on window resize: the stored width, clamped to the
+  // current window WITHOUT rewriting what is stored (a window made narrower
+  // for a moment must not shrink the user's choice for good). Ignored in the
+  // stacked layout, where the panel is full width.
+  function restoreWidth(){
+    if(!widthApplies())return;
+    const w=read(KW,v=>v>=MIN_W&&v<=1200);
+    if(w==null){panel.style.width='';syncAria();return;}
+    setWidth(w,false);
+  }
+  let drag=null;
+  splitter.addEventListener('pointerdown',e=>{
+    if(!widthApplies()||e.button!==0)return;
+    drag={x:e.clientX,w:panel.getBoundingClientRect().width};
+    splitter.setPointerCapture(e.pointerId);splitter.classList.add('active');e.preventDefault();
+  });
+  splitter.addEventListener('pointermove',e=>{if(drag)setWidth(drag.w-(e.clientX-drag.x),false);});
+  const endDrag=()=>{
+    if(!drag)return;drag=null;splitter.classList.remove('active');
+    save(KW,Math.round(panel.getBoundingClientRect().width));       // once, on release
+  };
+  splitter.addEventListener('pointerup',endDrag);
+  splitter.addEventListener('pointercancel',endDrag);
+  splitter.addEventListener('dblclick',clearWidth);
+  splitter.addEventListener('keydown',e=>{
+    if(e.key!=='ArrowLeft'&&e.key!=='ArrowRight')return;
+    e.preventDefault();
+    const d=(e.shiftKey?60:20)*(e.key==='ArrowLeft'?1:-1);           // left = wider (the handle is on the left edge)
+    setWidth(panel.getBoundingClientRect().width+d);
+  });
+  window.addEventListener('resize',restoreWidth);
+  stacked.addEventListener('change',()=>{if(stacked.matches)panel.style.width='';else restoreWidth();});
+  restoreWidth();
+
+  return{scale:()=>scale,setScale,step:dir=>setScale(scale+dir*0.1),
+         reset:()=>{clearWidth();setScale(1);},setWidth,restoreWidth};
 })();
 // Exposed on window explicitly: applyPanelScale() tests window.PanelSize, and
 // a top-level const is NOT a window property (a dead A-/A+ in the mockup).
