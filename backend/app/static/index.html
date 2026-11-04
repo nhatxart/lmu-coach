@@ -316,6 +316,12 @@ canvas.tire-cv{display:block;margin:0 auto;}
 #panel-float-btn:hover,.panel-dock-btn:hover{color:var(--accent);background:var(--accent-soft);}
 .panel-scale-wrap{flex:1;display:flex;flex-direction:column;min-height:0;transform:scale(var(--panel-scale,1));transform-origin:top left;
   width:calc(100% / var(--panel-scale,1));height:calc(100% / var(--panel-scale,1));}
+/* Size row: content scale (PanelSize), separate from the panel's size */
+.panel-sizebar{display:flex;align-items:center;gap:6px;padding:6px 12px;border-bottom:1px solid var(--line);flex-shrink:0;}
+.panel-sizebar button{min-height:32px;padding:0 10px;font:600 13px var(--font-ui);}
+.psz-val{font:600 13px var(--font-data);min-width:44px;text-align:center;color:var(--text-2);font-variant-numeric:tabular-nums;}
+.psz-hint{margin-left:auto;}
+.right-panel.floating .psz-hint{display:none;}
 .panel-body{flex:1;overflow-y:auto;padding:var(--sp-4);display:flex;flex-direction:column;gap:var(--sp-4);container-type:inline-size;container-name:panel;}
 .panel-body.hidden{display:none;}
 .card{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--sp-3) var(--sp-3) var(--sp-3);
@@ -630,6 +636,14 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
       <button class="tab" id="tab-record" role="tab" aria-selected="false" tabindex="-1" aria-controls="body-record" onclick="switchTab('record')"><svg class="i" aria-hidden="true"><use href="#i-circle-dot"/></svg><span class="tab-label">Record</span></button>
       </div>
       <button class="ghost" id="panel-float-btn" onclick="floatPanel()" title="Undock: move and resize this panel" aria-label="Undock panel (move and resize)"><svg class="i" aria-hidden="true"><use href="#i-maximize-2"/></svg></button>
+    </div>
+    <div class="panel-sizebar" role="group" aria-label="Telemetry panel size">
+      <span class="dimtext">Size</span>
+      <button type="button" class="ghost" onclick="PanelSize.step(-1)" aria-label="Smaller text and graphs" title="Smaller (Ctrl+scroll over the panel)">A−</button>
+      <span class="psz-val" id="panel-scale-val" aria-live="polite">100%</span>
+      <button type="button" class="ghost" onclick="PanelSize.step(1)" aria-label="Larger text and graphs" title="Larger (Ctrl+scroll over the panel)">A+</button>
+      <button type="button" class="ghost" onclick="PanelSize.reset()" aria-label="Reset panel size" title="Default size">Reset</button>
+      <span class="dimtext psz-hint">drag the left edge to resize</span>
     </div>
     <div class="panel-scale-wrap" id="panel-scale-wrap">
       <div class="panel-body" id="body-balance" role="tabpanel" tabindex="0" aria-labelledby="tab-balance">
@@ -1043,19 +1057,21 @@ function stopRecorderStatusPolling(){
 // ════════════════════════════════════════════════════════════════════════════
 // Floating / dockable telemetry panel (speed, yaw, balance, stats, etc.)
 // ════════════════════════════════════════════════════════════════════════════
-// BASE_PANEL_WIDTH matches the docked .right-panel CSS width (340px) — the
-// scale factor applied to everything inside the panel (via --panel-scale on
-// .panel-scale-wrap) is always current-width / BASE_PANEL_WIDTH, so content
-// is legible-sized at the panel's default size and grows/shrinks in lockstep
-// as the user resizes the floating frame.
-const BASE_PANEL_WIDTH=340;
+// The scale applied to everything inside the panel (--panel-scale on
+// .panel-scale-wrap) is the user's Size setting (PanelSize, below), docked
+// and floating alike; resizing the frame changes the room, not the scale.
 const panelState={floating:false,dragging:false,resizing:false,
                    dragOffX:0,dragOffY:0,resizeStartW:0,resizeStartH:0,resizeStartX:0,resizeStartY:0};
 
 function applyPanelScale(){
   const panel=document.getElementById('right-panel');
-  const w=panel.getBoundingClientRect().width;
-  const scale=panelState.floating?clamp(w/BASE_PANEL_WIDTH,0.6,2.2):1;
+  // PREVIOUSLY the floating panel's scale followed its width
+  // (clamp(w / BASE_PANEL_WIDTH, 0.6, 2.2)) and the docked panel was fixed
+  // at 1, so a bigger window only ever meant bigger text, never more room,
+  // and the docked panel could not be scaled at all. Fix: the scale is the
+  // user's Size setting (PanelSize, A-/A+ or Ctrl+scroll) in both modes; the
+  // frame's size is just room.
+  const scale=window.PanelSize?PanelSize.scale():1;
   panel.style.setProperty('--panel-scale',scale);
   // Canvas bitmaps don't auto-update on a CSS transform/resize — redraw
   // whatever's currently loaded so traces stay crisp at the new size
@@ -1176,6 +1192,37 @@ function dockPanel(){
   },{passive:true});
   window.addEventListener('touchend',()=>{panelState.dragging=false;panelState.resizing=false;});
 })();
+
+// ════════════════════════════════════════════════════════════════════════════
+// Panel size: content scale (Size row, Ctrl+scroll), persisted
+// ════════════════════════════════════════════════════════════════════════════
+// 50-200 %: the buttons step 10 %, Ctrl+scroll 5 %; stored rounded to 0.05.
+// A stored value that is missing, not a number or out of range is ignored
+// (default 100 %), so a hand-edited or stale localStorage cannot break the
+// panel.
+const PanelSize=(()=>{
+  const KS='lmu-coach.panel.scale',MIN_S=0.5,MAX_S=2;
+  const read=(k,ok)=>{try{const s=localStorage.getItem(k);if(s==null||s.trim()==='')return null;const v=Number(s);return Number.isFinite(v)&&ok(v)?v:null;}catch(e){return null;}};
+  const save=(k,v)=>{try{v==null?localStorage.removeItem(k):localStorage.setItem(k,String(v));}catch(e){}};
+  let scale=read(KS,v=>v>=MIN_S&&v<=MAX_S)??1;
+  const label=()=>{document.getElementById('panel-scale-val').textContent=Math.round(scale*100)+'%';};
+  function setScale(v){
+    scale=Math.round(clamp(v,MIN_S,MAX_S)*20)/20;
+    save(KS,scale===1?null:scale);label();applyPanelScale();
+  }
+  // Ctrl+scroll over the panel scales it; a plain scroll still scrolls.
+  document.getElementById('right-panel').addEventListener('wheel',e=>{
+    if(!e.ctrlKey)return;
+    e.preventDefault();                       // and keeps the browser from zooming the page
+    setScale(scale+(e.deltaY<0?0.05:-0.05));
+  },{passive:false});
+  label();
+  return{scale:()=>scale,setScale,step:dir=>setScale(scale+dir*0.1),reset:()=>setScale(1)};
+})();
+// Exposed on window explicitly: applyPanelScale() tests window.PanelSize, and
+// a top-level const is NOT a window property (a dead A-/A+ in the mockup).
+window.PanelSize=PanelSize;
+applyPanelScale();
 
 // ════════════════════════════════════════════════════════════════════════════
 // Keyboard support: tab arrow keys; move/resize the floating panel without a mouse
