@@ -229,7 +229,7 @@ Backend (`backend/`)
 - `app/grip_analysis.py` — ABS/TC events, wheel slip, combined G, understeer signatures, report builder.
 - `app/coach.py` — LLM client (OpenAI-compatible; llama.cpp), system prompt, follow-up messages, `LLMError/LLMUnavailable`.
 - `app/track_db.py` — track/layout registry + corner reference points.
-- `app/static/index.html` — whole UI (redesigned): map, HUD, traction circle, graphs, Coach/Record/Settings, lap chips, β chevron, slip-gain selector; since 10/25/2026 also the Top-down/Chase view switch and the chase view (inline `<script type="module">`, `window.Chase`).
+- `app/static/index.html` — whole UI (redesigned): map, HUD, traction circle, graphs, Coach/Record/Settings, lap chips, β chevron, slip-gain selector; since 10/25/2026 also the Top-down/Chase view switch and the chase view (inline `<script type="module">`, `window.Chase`); since 11/4/2026 the telemetry panel's Size row and docked/floating resizing (`window.PanelSize`, scale separate from size).
 - `app/static/fonts/*` + `LICENSES.txt` — bundled Fira Sans/Code (OFL).
 - `app/static/vendor/` (10/25/2026) — three.js 0.186.1 (`three/three.module.js`, `three/three.core.js`, `LICENSE`) and GSAP 3.15.0 (`gsap/gsap.min.js`, `LICENSE` notice), byte-exact from npm, loaded only when the chase view is opened. `.gitattributes` (root) keeps them `-text` so git does not rewrite their line endings.
 - `app/vehicle_pose.py` (10/25/2026) — detects the `Ori R..` convention from data; pitch/roll and the body basis per sample.

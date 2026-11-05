@@ -117,12 +117,22 @@ def test_docked_drag_resizes_and_persists(page, server):
     assert _panel_w(page) == w0
 
 
+def _sidebar_w(page):
+    return page.evaluate("Math.round(document.querySelector('.sidebar').getBoundingClientRect().width)")
+
+
+def _map_w(page):
+    return page.evaluate("Math.round(document.getElementById('map-canvas').getBoundingClientRect().width)")
+
+
 def test_docked_width_limits(page, server):
     _open_session(page, server, HILLY)
     _drag(page, "#panel-splitter", 2000)
     assert _panel_w(page) == 300
     _drag(page, "#panel-splitter", -3000)
-    assert _panel_w(page) == min(1200, 1600 - 520)
+    # the MAP keeps ~520 px: the sessions sidebar counts against the window too
+    assert _panel_w(page) == min(1200, 1600 - _sidebar_w(page) - 520)
+    assert _map_w(page) >= 515
 
 
 def test_docked_keyboard_and_reset(page, server):
@@ -140,10 +150,21 @@ def test_docked_keyboard_and_reset(page, server):
 
 def test_docked_width_clamped_to_window(page, server):
     _open_session(page, server, HILLY)
-    _drag(page, "#panel-splitter", -3000)            # 1080 at 1600 wide
+    _drag(page, "#panel-splitter", -3000)            # widest the 1600 px window allows
     page.set_viewport_size({"width": 1200, "height": 1000})
     page.wait_for_timeout(100)
-    assert _panel_w(page) <= 1200 - 520
+    assert _panel_w(page) <= 1200 - _sidebar_w(page) - 520
+    assert _map_w(page) >= 515
+
+
+def test_narrow_panel_keeps_size_row_and_tabs_tidy(page, server):
+    _open_session(page, server, HILLY)
+    _drag(page, "#panel-splitter", 2000)             # 300 px
+    bar = page.locator(".panel-sizebar").bounding_box()
+    assert bar["height"] <= 48                       # one row, the hint does not wrap
+    tabs = page.locator("#tab-record").bounding_box()
+    btn = page.locator("#panel-float-btn").bounding_box()
+    assert tabs["x"] + tabs["width"] <= btn["x"] + 1  # last tab ends before the undock button
 
 
 def test_stacked_layout_ignores_width(page, server):
@@ -155,3 +176,64 @@ def test_stacked_layout_ignores_width(page, server):
     assert page.evaluate("document.getElementById('right-panel').style.width") == ""
     assert not page.is_visible("#panel-splitter")
     assert page.evaluate("localStorage.getItem('lmu-coach.panel.w')") == "700"
+
+
+# ── Task 3: floating frame grips ────────────────────────────────────────────
+
+def _rect(page):
+    return page.evaluate("(()=>{const r=document.getElementById('right-panel').getBoundingClientRect();"
+                         "return [Math.round(r.left),Math.round(r.top),Math.round(r.width),Math.round(r.height)]})()")
+
+
+def test_floating_edges_resize_without_scaling(page, server):
+    _open_session(page, server, HILLY)
+    page.click("#panel-float-btn")
+    l, t, w, h = _rect(page)
+    _drag(page, ".pf-w", -150)
+    assert _rect(page)[0] == l - 150 and _rect(page)[2] == w + 150
+    _drag(page, ".pf-e", 40)
+    assert _rect(page)[2] == w + 190
+    _drag(page, ".pf-n", 0, 30)
+    r = _rect(page)
+    assert r[1] == t + 30 and r[3] == h - 30
+    _drag(page, ".pf-s", 0, -20)
+    assert _rect(page)[3] == h - 50
+    _drag(page, ".pf-nw", 20, 20)
+    r = _rect(page)
+    assert r[0] == l - 130 and r[1] == t + 50
+    assert abs(_scale(page) - 1.0) < 1e-6           # size never changes the scale
+    assert page.errors == []
+
+
+def test_floating_min_size(page, server):
+    _open_session(page, server, HILLY)
+    page.click("#panel-float-btn")
+    _drag(page, ".pf-se", -2000, -2000)
+    r = _rect(page)
+    assert r[2] == 260 and r[3] == 260
+
+
+def test_floating_scale_is_independent(page, server):
+    _open_session(page, server, HILLY)
+    page.click("#panel-float-btn")
+    page.get_by_role("button", name="Larger text and graphs").click()
+    _drag(page, ".pf-e", 200)
+    assert abs(_scale(page) - 1.1) < 1e-6
+
+
+def test_redock_restores_docked_width(page, server):
+    _open_session(page, server, HILLY)
+    _drag(page, "#panel-splitter", -100)
+    docked = _panel_w(page)
+    page.click("#panel-float-btn")
+    _drag(page, ".pf-w", -300)
+    page.click("#panel-dock-btn")
+    assert _panel_w(page) == docked
+
+
+def test_floating_resize_redraws(page, server):
+    _open_session(page, server, HILLY)
+    page.click("#panel-float-btn")
+    w0 = page.evaluate("document.getElementById('spd-canvas').width")
+    _drag(page, ".pf-w", -200)
+    assert page.evaluate("document.getElementById('spd-canvas').width") > w0
