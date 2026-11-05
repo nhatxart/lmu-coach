@@ -314,7 +314,14 @@ canvas.tire-cv{display:block;margin:0 auto;}
 .tab .i{width:18px;height:18px;}
 #panel-float-btn,.panel-dock-btn{width:44px;min-height:44px;padding:0;color:var(--text-2);background:transparent;border-color:transparent;flex:0 0 auto;}
 #panel-float-btn:hover,.panel-dock-btn:hover{color:var(--accent);background:var(--accent-soft);}
-.panel-scale-wrap{flex:1;display:flex;flex-direction:column;min-height:0;transform:scale(var(--panel-scale,1));transform-origin:top left;
+/* PREVIOUSLY .panel-scale-wrap was itself the flex child: flex:1 set its
+   layout height to the space left (the calc'd height was ignored), and the
+   transform then shrank or grew that box, leaving a blank band under the
+   content below 100 % and pushing the last cards out of scroll reach above
+   it. Fix: a host takes the space; the wrap is laid out at host/scale and
+   scaled back to exactly the host. */
+.panel-scale-host{flex:1;min-height:0;position:relative;overflow:hidden;}
+.panel-scale-wrap{position:absolute;top:0;left:0;display:flex;flex-direction:column;transform:scale(var(--panel-scale,1));transform-origin:top left;
   width:calc(100% / var(--panel-scale,1));height:calc(100% / var(--panel-scale,1));}
 /* Size row: content scale (PanelSize), separate from the panel's size */
 .panel-sizebar{display:flex;align-items:center;gap:6px;padding:6px 12px;border-bottom:1px solid var(--line);flex-shrink:0;}
@@ -477,6 +484,11 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
   .sidebar{width:auto;max-height:260px;border-right:none;border-bottom:1px solid var(--line);}
   .map-panel{min-height:72vh;} .right-panel{width:auto;border-left:none;border-top:1px solid var(--line);min-height:70vh;}
   .panel-splitter,.psz-hint{display:none;}            /* stacked: the panel is full width, nothing to drag */
+  /* stacked: the panel stays in the page flow and grows with its content
+     (the page scrolls), as before the scale host; no scaling here */
+  .right-panel:not(.floating) .panel-sizebar{display:none;}
+  .right-panel:not(.floating) .panel-scale-host{flex:none;overflow:visible;}
+  .right-panel:not(.floating) .panel-scale-wrap{position:static;width:auto;height:auto;transform:none;}
   :root{--hud-scale:.8;} #tire-hud{transform:scale(.75);transform-origin:bottom right;right:72px;}
 }
 
@@ -672,7 +684,7 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
       <button type="button" class="ghost" onclick="PanelSize.reset()" aria-label="Reset panel size" title="Default size">Reset</button>
       <span class="dimtext psz-hint">drag the left edge to resize</span>
     </div>
-    <div class="panel-scale-wrap" id="panel-scale-wrap">
+    <div class="panel-scale-host"><div class="panel-scale-wrap" id="panel-scale-wrap">
       <div class="panel-body" id="body-balance" role="tabpanel" tabindex="0" aria-labelledby="tab-balance">
         <section class="card" data-series="speed" aria-labelledby="h-spd">
           <h3 class="sec" id="h-spd">Ground Speed<span class="sec-unit">km/h</span></h3>
@@ -741,7 +753,7 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
           <div id="rec-log" class="rec-log" role="log" aria-live="off" tabindex="0" aria-label="Recorder log output"></div>
         </section>
       </div>
-    </div>
+    </div></div>
     <div class="panel-resize-handle" id="panel-resize-handle" tabindex="0" role="button" aria-label="Resize telemetry window with arrow keys"></div>
     <div class="panel-splitter" id="panel-splitter" tabindex="0" role="separator" aria-orientation="vertical" aria-valuemin="300"
          aria-label="Telemetry panel width" title="Drag to resize (arrow keys too); double-click for the default width"></div>
@@ -1092,6 +1104,8 @@ function stopRecorderStatusPolling(){
 const panelState={floating:false,dragging:false,resizing:false,
                    dragOffX:0,dragOffY:0,resizeStartW:0,resizeStartH:0,resizeStartX:0,resizeStartY:0};
 
+// The panel's content scale (Size setting); 1 before PanelSize exists.
+const panelScale=()=>window.PanelSize?PanelSize.scale():1;
 function applyPanelScale(){
   const panel=document.getElementById('right-panel');
   // PREVIOUSLY the floating panel's scale followed its width
@@ -1100,7 +1114,7 @@ function applyPanelScale(){
   // and the docked panel could not be scaled at all. Fix: the scale is the
   // user's Size setting (PanelSize, A-/A+ or Ctrl+scroll) in both modes; the
   // frame's size is just room.
-  const scale=window.PanelSize?PanelSize.scale():1;
+  const scale=panelScale();
   panel.style.setProperty('--panel-scale',scale);
   // Canvas bitmaps don't auto-update on a CSS transform/resize — redraw
   // whatever's currently loaded so traces stay crisp at the new size
@@ -1176,7 +1190,11 @@ function dockPanel(){
       // keeping the panel's right edge stationary while dragging.
       const dx=e.clientX-panelState.resizeStartX, dy=e.clientY-panelState.resizeStartY;
       const rect=panel.getBoundingClientRect();
-      const newW=clamp(panelState.resizeStartW-dx,260,900);
+      // PREVIOUSLY capped at 900 px (here, in the touch handler and the
+      // keyboard nudge) while the edge grips only stop at the window: a
+      // frame undocked from a wider docked panel jumped to 900 on the first
+      // touch of this grip. Fix: the same window bound for every grip.
+      const newW=clamp(panelState.resizeStartW-dx,260,Math.max(260,window.innerWidth));
       const newH=clamp(panelState.resizeStartH+dy,260,window.innerHeight-40);
       const rightEdge=rect.right;
       panel.style.width=newW+'px';
@@ -1214,7 +1232,7 @@ function dockPanel(){
     }else if(panelState.resizing){
       const dx=t.clientX-panelState.resizeStartX, dy=t.clientY-panelState.resizeStartY;
       const rect=panel.getBoundingClientRect();
-      const newW=clamp(panelState.resizeStartW-dx,260,900);
+      const newW=clamp(panelState.resizeStartW-dx,260,Math.max(260,window.innerWidth));
       const newH=clamp(panelState.resizeStartH+dy,260,window.innerHeight-40);
       const rightEdge=rect.right;
       panel.style.width=newW+'px';panel.style.height=newH+'px';
@@ -1307,10 +1325,17 @@ const PanelSize=(()=>{
     setWidth(panel.getBoundingClientRect().width+d);
   });
   window.addEventListener('resize',restoreWidth);
-  stacked.addEventListener('change',()=>{if(stacked.matches)panel.style.width='';else restoreWidth();});
+  // A floating frame keeps its own size across the breakpoint; only the
+  // docked width is dropped (stacked) or restored.
+  stacked.addEventListener('change',()=>{
+    if(panelState.floating)return;
+    if(stacked.matches)panel.style.width='';else restoreWidth();
+    applyPanelScale();                                   // scale is 1 in the stacked layout, the stored one outside it
+  });
   restoreWidth();
 
-  return{scale:()=>scale,setScale,step:dir=>setScale(scale+dir*0.1),
+  // Stacked layout (docked): no scaling, the stored value is kept for later.
+  return{scale:()=>stacked.matches&&!panelState.floating?1:scale,setScale,step:dir=>setScale(scale+dir*0.1),
          reset:()=>{clearWidth();setScale(1);},setWidth,restoreWidth};
 })();
 // Floating frame: resizable from every edge and corner. The bottom-left grip
@@ -1376,7 +1401,7 @@ applyPanelScale();
     if(e.shiftKey||resizeByDefault){
       let w=r.width,h=r.height;
       if(k==='ArrowLeft')w+=d;if(k==='ArrowRight')w-=d;if(k==='ArrowUp')h-=d;if(k==='ArrowDown')h+=d;
-      w=clamp(w,260,900);h=clamp(h,260,window.innerHeight-40);
+      w=clamp(w,260,Math.max(260,window.innerWidth));h=clamp(h,260,window.innerHeight-40);
       panel.style.width=w+'px';panel.style.height=h+'px';panel.style.left=(r.right-w)+'px';applyPanelScale();
     }else{
       let x=r.left,y=r.top;
@@ -2255,9 +2280,15 @@ function updateTraceDots(){
 function redrawTraceWithDot(id,arr,h,colTop,colBot,headFrac){
   const cv2=document.getElementById(id);
   const dpr=devicePixelRatio||1;const rect=cv2.getBoundingClientRect();
-  cv2.width=rect.width*dpr;cv2.height=h*dpr;
-  const ctx=cv2.getContext('2d');ctx.scale(dpr,dpr);
-  const W=rect.width,H=h;ctx.clearRect(0,0,W,H);
+  // PREVIOUSLY the bitmap was rect.width x h: rect.width already includes
+  // the panel's scale transform but h did not, so at 200 % the text doubled
+  // while every trace stayed h px tall on screen. Fix: draw in panel units
+  // (W x h) and size the bitmap for the on-screen pixels (x scale x dpr), so
+  // traces, their labels and line widths all follow the Size setting, crisp.
+  const sc=panelScale();
+  cv2.width=rect.width*dpr;cv2.height=h*sc*dpr;
+  const ctx=cv2.getContext('2d');ctx.scale(dpr*sc,dpr*sc);
+  const W=rect.width/sc,H=h;ctx.clearRect(0,0,W,H);
   // Dynamic range: scale to the data's own min/max + 5% margin top/bottom,
   // rather than forcing a symmetric ±max-abs range around zero. A channel
   // like Axle Balance that sits mostly negative (e.g. from static rake)
@@ -2315,9 +2346,10 @@ function redrawTraceWithDot(id,arr,h,colTop,colBot,headFrac){
 function redrawAbsTcTrace(id,absArr,tcArr,h,headFrac){
   const cv2=document.getElementById(id);if(!cv2)return;
   const dpr=devicePixelRatio||1;const rect=cv2.getBoundingClientRect();
-  cv2.width=rect.width*dpr;cv2.height=h*dpr;
-  const ctx=cv2.getContext('2d');ctx.scale(dpr,dpr);
-  const W=rect.width,H=h;ctx.clearRect(0,0,W,H);
+  const sc=panelScale();                                  // as redrawTraceWithDot: follow the Size setting
+  cv2.width=rect.width*dpr;cv2.height=h*sc*dpr;
+  const ctx=cv2.getContext('2d');ctx.scale(dpr*sc,dpr*sc);
+  const W=rect.width/sc,H=h;ctx.clearRect(0,0,W,H);
   const n=Math.max(absArr.length,tcArr.length);
   if(n<2){
     ctx.fillStyle='rgba(255,255,255,.18)';ctx.font=fontData(8,false);

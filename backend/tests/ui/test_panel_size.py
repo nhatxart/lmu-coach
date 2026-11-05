@@ -237,3 +237,66 @@ def test_floating_resize_redraws(page, server):
     w0 = page.evaluate("document.getElementById('spd-canvas').width")
     _drag(page, ".pf-w", -200)
     assert page.evaluate("document.getElementById('spd-canvas').width") > w0
+
+
+# ── Final review fixes ──────────────────────────────────────────────────────
+
+def test_larger_size_makes_graphs_taller(page, server):
+    _open_session(page, server, HILLY)
+    h1 = page.evaluate("document.getElementById('spd-canvas').getBoundingClientRect().height")
+    page.evaluate("PanelSize.setScale(2)")
+    h2 = page.evaluate("document.getElementById('spd-canvas').getBoundingClientRect().height")
+    assert abs(h2 / h1 - 2.0) < 0.05          # on screen, the trace grows with the scale
+
+
+def test_stacked_breakpoint_keeps_floating_width(page, server):
+    _open_session(page, server, HILLY)
+    page.click("#panel-float-btn")
+    _drag(page, ".pf-e", 120)
+    w = _rect(page)[2]
+    page.set_viewport_size({"width": 800, "height": 1000})
+    page.wait_for_timeout(100)
+    page.set_viewport_size({"width": 1600, "height": 1000})
+    page.wait_for_timeout(100)
+    assert _rect(page)[2] == w
+
+
+def test_old_grip_has_no_lower_cap_than_new_grips(browser, server):
+    ctx = browser.new_context(viewport={"width": 2400, "height": 1000})
+    page = ctx.new_page()
+    try:
+        _open_session(page, server, HILLY)
+        _drag(page, "#panel-splitter", -3000)          # widest docked width (1200)
+        page.click("#panel-float-btn")
+        w = _rect(page)[2]
+        assert w > 900
+        _drag(page, "#panel-resize-handle", -10)        # touch the old bottom-left grip
+        assert _rect(page)[2] == w + 10                 # no jump down to 900
+    finally:
+        ctx.close()
+
+def test_scaled_content_fills_the_panel_exactly(page, server):
+    """At any scale the scaled content ends at the panel's bottom edge: no
+    blank band below it (< 100 %) and nothing cut off out of scroll reach
+    (> 100 %)."""
+    _open_session(page, server, HILLY)
+    for s in (0.8, 1.5):
+        page.evaluate(f"PanelSize.setScale({s})")
+        wrap_bottom = page.evaluate("document.getElementById('panel-scale-wrap').getBoundingClientRect().bottom")
+        panel_bottom = page.evaluate("document.getElementById('right-panel').getBoundingClientRect().bottom")
+        assert abs(wrap_bottom - panel_bottom) <= 2, (s, wrap_bottom, panel_bottom)
+        # the last card can be scrolled fully into view
+        page.evaluate("const b=document.getElementById('body-balance');b.scrollTop=b.scrollHeight")
+        last = page.evaluate("[...document.querySelectorAll('#body-balance .card')].pop().getBoundingClientRect().bottom")
+        assert last <= panel_bottom + 1, (s, last, panel_bottom)
+
+def test_stacked_layout_panel_grows_with_content(page, server):
+    """<= 820 px: the panel is laid out in the page flow as before (it grows
+    with its content and the page scrolls); no Size row, scale stays 100 %."""
+    page.set_viewport_size({"width": 800, "height": 900})
+    _open_session(page, server, HILLY)
+    panel_h = page.evaluate("document.getElementById('right-panel').getBoundingClientRect().height")
+    body_scroll = page.evaluate("document.getElementById('body-balance').scrollHeight")
+    assert panel_h >= body_scroll
+    assert not page.is_visible(".panel-sizebar")
+    assert abs(_scale(page) - 1.0) < 1e-6
