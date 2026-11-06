@@ -37,7 +37,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import trackmap_elevation
+from . import session_index, trackmap_elevation
 from .coach import LLMError, ask_followup, get_coaching_analysis
 from .track_db import find_track_in_registry, find_layout_in_track, annotate_report_with_corners
 from .grip_analysis import build_grip_report
@@ -238,6 +238,16 @@ def list_sessions():
         "sessions": _list_duckdb_files(OWN_SESSIONS_DIR),
         "reference_laps": _list_duckdb_files(REFERENCE_LAPS_DIR),
     }
+
+
+@app.get("/sessions/index")
+def sessions_index():
+    # Track, class, layout length, coordinate system and laps of every file
+    # (metadata and lap tables only, cached per file), for the Compare tab's
+    # ghost picker. Same file order as /sessions. Registered before the
+    # /sessions/{source}/{file}/... routes so no pattern can claim it.
+    return {"files": session_index.build_index([("sessions", OWN_SESSIONS_DIR),
+                                                ("reference_laps", REFERENCE_LAPS_DIR)])}
 
 
 @app.get("/sessions/{source}/{file}/laps")

@@ -207,7 +207,8 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
                         cross_offset_ticks=0, track_edge_m=TRACK_EDGE_M,
                         vehicle_class=None, with_edges=True,
                         scoring_hold=False, slip_angles=False, out_lap=False,
-                        trailing_partial_m: float = 0.0) -> Path:
+                        trailing_partial_m: float = 0.0,
+                        lap_dist_scale: float = 1.0) -> Path:
     """cross_offset_ticks moves every crossing but the first off its 10 Hz row
     (-8: the first 10 Hz row after it reads ~3 m), like the real game, where
     the line falls anywhere between two rows. Default 0 keeps the crossings
@@ -228,7 +229,10 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
     there is truth(s, lat) - pit_road_drop(s), not truth(s, lat).
     trailing_partial_m: keep driving that many metres past the closing
     crossing, so the file ends mid-lap like a session left mid-lap: its last
-    Lap row then opens one more (incomplete) lap with no Lap Time row."""
+    Lap row then opens one more (incomplete) lap with no Lap Time row.
+    lap_dist_scale: multiplies the written Lap Dist values only (geometry,
+    times and the other channels unchanged), to stand in for another layout
+    of the same track name."""
     path = Path(path)
     offsets = tuple(float(o) for o in lap_offsets)
     n_laps = len(offsets)
@@ -386,7 +390,7 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
     cos_lat = math.cos(math.radians(GPS_REF_LAT))
     scalar("GPS Latitude", GPS_REF_LAT + pos[slow, 2] / R_DEG, shz, "deg")
     scalar("GPS Longitude", GPS_REF_LON + pos[slow, 0] / (R_DEG * cos_lat), shz, "deg")
-    ld_slow, pl_slow = lap_dist[slow].copy(), lat[slow].copy()
+    ld_slow, pl_slow = lap_dist[slow] * float(lap_dist_scale), lat[slow].copy()
     te_slow = np.where(lat[slow] < 0, -track_edge_m, track_edge_m)
     if scoring_hold:
         # the real half-width varies a little along the lap (so its values
