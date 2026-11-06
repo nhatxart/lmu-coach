@@ -33,3 +33,9 @@ def test_vehicle_class_meta_wins_and_normalises():
                           "GameVersion": "1.2.3"}, "x")
     assert ident.car_class == "Hypercar"
     assert ident.game_version == "1.2.3"
+
+
+def test_vehicle_class_hyper_is_hypercar():
+    # real recordings (Ferrari at COTA, BMW at Daytona) say "Hyper"
+    for raw in ("Hyper", "HYPER", " hyper "):
+        assert identify_car({"VehicleClass": raw}, "x").car_class == "Hypercar"

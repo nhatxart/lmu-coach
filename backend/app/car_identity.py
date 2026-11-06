@@ -28,6 +28,10 @@ LIVERY_TABLE: dict[tuple[str, str], tuple[str, str]] = {
 
 _CLASS_ALIASES = {
     "hypercar": "Hypercar", "lmh": "Hypercar", "lmdh": "Hypercar",
+    # BUG FIX / PREVIOUSLY "Hyper" stayed "Hyper": the Ferrari (COTA) and BMW
+    # (Daytona) recordings write VehicleClass "Hyper", so they were a class of
+    # their own (lap comparison refused them against other Hypercars).
+    "hyper": "Hypercar",
     "gt3": "LMGT3", "lmgt3": "LMGT3",
 }
 
