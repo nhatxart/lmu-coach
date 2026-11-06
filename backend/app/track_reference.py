@@ -560,6 +560,42 @@ def load_reference(track_name: str, lap_length_m: float | None = None) -> dict |
     return {"slug": slug, "display_name": ref["display_name"], "layout": usable[0]}
 
 
+# Keyed by the sources file's path (so a test's TRACK_REFERENCE_DIR does not
+# read another directory's answer); None is cached too: the folder is
+# read-only at run time.
+_ORIGIN_CACHE: dict[str, tuple[float, float] | None] = {}
+
+
+def track_origin(track_name: str) -> tuple[float, float] | None:
+    """The fixed (lat, lon) every recording of this track is projected
+    around: sources/<slug>.json "center", the OSM query centre the build
+    used. None when there is no such file or key, or it cannot be read.
+
+    The slug is the catalog's, else the plain name with "_" for spaces
+    ("Synthetic Hill Ring" -> synthetic_hill_ring), so a track outside the
+    catalog shares a frame as soon as a sources file with a centre exists.
+    The directory is resolved per call (TRACK_REFERENCE_DIR), like the
+    topography files."""
+    from .track_catalog import _plain, find_entry
+    entry = find_entry(track_name)
+    slug = entry["slug"] if entry else _plain(track_name).replace(" ", "_")
+    if not slug:
+        return None
+    p = _reference_dir() / "sources" / f"{slug}.json"
+    key = str(p)
+    if key not in _ORIGIN_CACHE:
+        origin = None
+        try:
+            c = json.loads(p.read_text(encoding="utf-8")).get("center")
+            lat, lon = float(c[0]), float(c[1])
+            if np.isfinite(lat) and np.isfinite(lon):
+                origin = (lat, lon)
+        except Exception:
+            origin = None             # missing, malformed, or no usable centre
+        _ORIGIN_CACHE[key] = origin
+    return _ORIGIN_CACHE[key]
+
+
 def locate_ex(layout: dict, dist_m: float) -> tuple[str, str] | None:
     """(label, place) for an event at LMU lap distance dist_m. `place` names the corner or the
     gap without the metre offset, so two events in the same corner compare equal.

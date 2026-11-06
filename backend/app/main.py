@@ -37,7 +37,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import session_index, trackmap_elevation
+from . import session_index, track_reference, trackmap_elevation
 from .coach import LLMError, ask_followup, get_coaching_analysis
 from .track_db import find_track_in_registry, find_layout_in_track, annotate_report_with_corners
 from .grip_analysis import build_grip_report
@@ -504,8 +504,28 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
         lon_raw = _col("GPS Longitude")
         if not lat_raw:
             raise HTTPException(422, "GPS Latitude table is empty")
-        centre_lat = (min(lat_raw) + max(lat_raw)) / 2
-        centre_lon = (min(lon_raw) + max(lon_raw)) / 2
+        # PREVIOUSLY each file was projected around its own session's
+        # bounding-box centre, so the same corner sat metres apart between
+        # two recordings of one track (a lap comparison overlays them). Fix:
+        # a fixed origin per track (track_reference.track_origin, the centre
+        # stored in data/track_reference/sources/<slug>.json) puts every file
+        # of a track in one frame. Without one the old bbox centre is kept,
+        # and any error finding it costs only the shared frame (fail closed).
+        origin = None
+        try:
+            meta_tn = (dict(con.execute("SELECT key, value FROM metadata").fetchall())
+                       .get("TrackName", "") if "metadata" in tables else "")
+            origin = track_reference.track_origin(meta_tn) if meta_tn else None
+        except Exception as e:
+            print(f"[trackmap] track origin failed, using the file's own: {type(e).__name__}: {e}")
+            origin = None
+        if origin is not None:
+            centre_lat, centre_lon = origin
+            coordinate_origin = {"kind": "track", "lat": centre_lat, "lon": centre_lon}
+        else:
+            centre_lat = (min(lat_raw) + max(lat_raw)) / 2
+            centre_lon = (min(lon_raw) + max(lon_raw)) / 2
+            coordinate_origin = {"kind": "file", "lat": centre_lat, "lon": centre_lon}
         cos_lat    = math.cos(math.radians(centre_lat))
         R          = 111_320.0
         # Screen-space projection: +lon (east) → +x (right), +lat (north) → -z
@@ -534,6 +554,7 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
         pos_x  = list(raw_x)
         pos_z  = _col("Pos Z")
         pos_hz = 100.0
+        coordinate_origin = {"kind": "world", "lat": None, "lon": None}
 
     if not pos_x:
         con.close()
@@ -581,8 +602,11 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
         if candidates:
             lap_number = min(candidates)[1]
 
+    lap_span_s = None   # game seconds of the chosen lap (Lap rows); driven_line.t fallback
+
     def _lap_slice() -> tuple[int, int]:
         """Return (start_idx, end_idx) into pos_x/pos_z for the chosen lap."""
+        nonlocal lap_span_s
         if len(lap_events) < 2:
             # Single-lap recorder file — use the whole array
             return 0, len(pos_x) - 1
@@ -594,6 +618,7 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
         ts_start = target[0][0]
         later    = [ts for ts, _ in lap_events if ts > ts_start]
         ts_end   = later[0] if later else (gps_time[-1] if gps_time else ts_start + 600)
+        lap_span_s = float(ts_end - ts_start)
 
         if t_pos is not None:
             s = int(np.searchsorted(t_pos, ts_start, side="left"))
@@ -980,6 +1005,7 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
     # whatever goes wrong in it (ragged channels, a half-written topography
     # file, a bug) must cost the elevation, never the whole response.
     s_lap = None                                     # also read by the track limits below
+    lap_len_m = None                                 # and by the payload (lap_len_m)
     try:
         try:
             track_name_el = (dict(con.execute("SELECT key, value FROM metadata").fetchall())
@@ -1063,6 +1089,25 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
     tl_line = ({k: [tl[k][i] for i in line_idx] for k in ("lat", "edge_half", "wheels_out")}
                if tl["available"] else {"lat": [], "edge_half": [], "wheels_out": []})
 
+    # ── 10. Lap distance and time per line point (lap comparison) ────────────
+    # A comparison lines laps up by the game's lap distance and reads time
+    # deltas off it, so both come with the line, through the same line_idx.
+    # t is game clock seconds from the lap's first position row: skipped
+    # ticks show as a jump instead of being spread over the lap. Fail closed.
+    line_lap_dist, line_t = [], []
+    try:
+        if s_lap is not None and len(s_lap) == lap_len:
+            line_lap_dist = [round(float(s_lap[i]), 2) for i in line_idx]
+        if t_pos is not None:
+            t0 = float(t_pos[s_idx])
+            line_t = [round(float(t_pos[s_idx + i]) - t0, 3) for i in line_idx]
+        else:
+            span = lap_span_s if lap_span_s is not None else (lap_len - 1) / pos_hz
+            line_t = [round(span * i / max(lap_len - 1, 1), 3) for i in line_idx]
+    except Exception as e:
+        print(f"[trackmap] lap distance / time failed: {type(e).__name__}: {e}")
+        line_lap_dist, line_t = [], []
+
     con.close()
 
     return {
@@ -1071,6 +1116,11 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
         "paint":     elev["paint"],
         "paint_cell": elev["paint_cell"],
         "coordinate_system": "gps_projected" if use_gps else "world_metres",
+        # what x/z are metres from: "track" = the track's fixed origin (every
+        # file of the track shares the frame), "file" = this file's own
+        # GPS bbox centre, "world" = no GPS, the game's Pos X/Z
+        "coordinate_origin": coordinate_origin,
+        "lap_len_m":   lap_len_m,          # game Lap Dist span of this lap (m)
         "lap_number":  lap_number,
         "has_edges":   has_edges,
         "lap_len_pts": lap_len,
@@ -1107,6 +1157,10 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
             "lat":        [round(float(v), 3) for v in tl_line["lat"]],
             "edge_half":  [round(float(v), 3) for v in tl_line["edge_half"]],
             "wheels_out": [int(v) for v in tl_line["wheels_out"]],
+            # game lap distance (m) and game seconds from the lap's first
+            # row per point; lap_dist is [] without a Lap Dist channel
+            "lap_dist":   line_lap_dist,
+            "t":          line_t,
         },
         "car": car,
         "track_limits": {"available": bool(tl["available"]), "note": tl["note"]},
