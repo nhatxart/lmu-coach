@@ -45,7 +45,8 @@ from .grip_profile import load_profile_for_lap, save_profile
 from .tire_model import TIRE_GRID_HZ, compute_grip_utilization_for_lap, file_load_reference
 from .vehicle_dynamics import (body_slip_from_local_vel_deg, compute_body_slip_deg,
                                handling_balance)
-from .telemetry import load_telemetry_file, get_car_setup_json, session_time_axes, reference_lap_time, dehold
+from .telemetry import (load_telemetry_file, get_car_setup_json, session_time_axes, reference_lap_time,
+                        dehold, lap_index)
 from . import track_limits
 
 log = logging.getLogger(__name__)
@@ -242,18 +243,28 @@ def list_sessions():
 @app.get("/sessions/{source}/{file}/laps")
 def list_laps(source: str, file: str):
     path = _resolve_file(file, source)
-    laps = load_telemetry_file(path)
+    # PREVIOUSLY /laps ran load_telemetry_file, seconds per big file; the lap
+    # list needs only the Lap / Lap Time tables. lap_index gives the same
+    # laps (and drops >= 600 s ones as before) plus complete / real, so the
+    # UI's BEST no longer lands on the unfinished last lap.
+    con = duckdb.connect(str(path), read_only=True)
+    try:
+        meta = dict(con.execute("SELECT key, value FROM metadata").fetchall())
+        laps = lap_index(con)
+    finally:
+        con.close()
     return {
         "laps": [
             {
                 "lap_number": lap.lap_number,
                 "lap_time_s": round(lap.lap_time_s, 3),
-                "car_name": lap.car_name,
-                "track_name": lap.track_name,
-                "session_type": lap.session_type,
+                "car_name": meta.get("CarName", "unknown"),
+                "track_name": meta.get("TrackName", "unknown"),
+                "session_type": meta.get("SessionType", "unknown"),
+                "complete": lap.complete,
+                "real": lap.real,
             }
             for lap in laps
-            if lap.lap_time_s < 600  # filter obviously-partial trailing laps
         ]
     }
 

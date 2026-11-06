@@ -642,6 +642,22 @@ def load_telemetry_file(
     return laps
 
 
+def real_lap_flags(times: list[float], complete: list[bool]) -> list[bool]:
+    """
+    Which laps are REAL laps (one flag per lap, same order): complete, under
+    600 s and at least 85 % of the median of the complete laps' times. Shorter
+    "laps" are the unfinished last lap or a mid-lap join (see
+    reference_lap_time). The median is the upper one of an even count, as
+    reference_lap_time has always used.
+    """
+    ok = [c and t < 600 for t, c in zip(times, complete)]
+    pool = sorted(t for t, o in zip(times, ok) if o)
+    if not pool:
+        return [False] * len(times)
+    med = pool[len(pool) // 2]
+    return [o and t >= 0.85 * med for t, o in zip(times, ok)]
+
+
 def reference_lap_time(laps: list[LapTelemetry]) -> float | None:
     """
     The file's fastest REAL lap time, for "fastest lap" picks and the tire
@@ -649,14 +665,71 @@ def reference_lap_time(laps: list[LapTelemetry]) -> float | None:
     with the unfinished last lap (Ferrari 14.1 s, Aston 1.4 s) or a mid-lap
     join (Barcelona L19 71.5 s vs ~106 s laps), so ingest_tire_laps rejected
     every real lap. Now: complete laps only, ignoring any shorter than 85 %
-    of their median. None when no lap qualifies.
+    of their median (real_lap_flags). None when no lap qualifies.
     """
-    times = sorted(l.lap_time_s for l in laps if l.is_complete and l.lap_time_s < 600)
-    if not times:
-        return None
-    med = times[len(times) // 2]
-    real = [t for t in times if t >= 0.85 * med]
-    return real[0] if real else None
+    times = [l.lap_time_s for l in laps]
+    flags = real_lap_flags(times, [l.is_complete for l in laps])
+    real = [t for t, r in zip(times, flags) if r]
+    return min(real) if real else None
+
+
+@dataclass(frozen=True)
+class LapInfo:
+    """One lap of a file, from the Lap / Lap Time tables only (lap_index)."""
+
+    lap_number: int
+    lap_time_s: float
+    complete: bool   # closed by a later Lap row (False: the file's open last lap)
+    real: bool       # real_lap_flags: a lap to pick as "best"
+
+
+def _last_session_time(con: duckdb.DuckDBPyConnection) -> float | None:
+    """Where the recording stops: the last GPS Time value. Files without GPS
+    Time put row N at N / frequency from 0 (channel_time), so their end is
+    the longest channel's last row on that axis, as load_telemetry_file has it."""
+    try:
+        row = con.execute('SELECT value FROM "GPS Time" ORDER BY rowid DESC LIMIT 1').fetchone()
+        if row is not None and row[0] is not None:
+            return float(row[0])
+    except Exception:
+        pass
+    ends = [(n - 1) / f for ch, f in _read_channel_frequencies(con).items()
+            if f > 0 and (n := _row_count(con, ch)) > 0]
+    return max(ends) if ends else None
+
+
+def lap_index(con: duckdb.DuckDBPyConnection) -> list[LapInfo]:
+    """
+    The file's laps without loading its channels: the same lap numbers and
+    complete-lap times as load_telemetry_file (LMU's official 1 ms time when
+    it agrees within OFFICIAL_LAP_TOLERANCE_S), the open last lap ending at
+    the last GPS Time value. Laps of 600 s or more are dropped, as /laps
+    always did, and so are zero-length ones (the closing Lap row of a file
+    that stops right at the line).
+    """
+    boundaries = _get_lap_boundaries(con)
+    if not boundaries:
+        return []
+    official_times = _read_lap_time_events(con)
+    session_end = _last_session_time(con) if boundaries[-1][2] is None else None
+
+    rows: list[tuple[int, float, bool]] = []
+    for lap_num, start_ts, end_ts in boundaries:
+        complete = end_ts is not None
+        end = float(end_ts) if complete else (session_end if session_end is not None else start_ts)
+        duration = end - start_ts
+        if duration <= 0:
+            continue
+        lap_time = duration
+        official = official_times.get(lap_num)
+        if official and abs(official - duration) <= OFFICIAL_LAP_TOLERANCE_S:
+            lap_time = official
+        if lap_time >= 600:
+            continue
+        rows.append((lap_num, lap_time, complete))
+
+    flags = real_lap_flags([t for _, t, _ in rows], [c for _, _, c in rows])
+    return [LapInfo(n, t, c, r) for (n, t, c), r in zip(rows, flags)]
 
 
 def get_car_setup_json(path: str | Path) -> dict | None:

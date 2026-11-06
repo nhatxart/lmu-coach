@@ -20,6 +20,8 @@ LEGACY = "Synthetic_Hill_Ring-Synthetic_Car_1-2026-10-24T09_00_00Z.duckdb"
 LIMITS = "Synthetic_Hill_Ring-Synthetic_Car_1-2026-10-26T10_00_00Z.duckdb"
 # Per-wheel Slip Angle with known values and a known steer angle (tyre slip arrows).
 SLIP = "Synthetic_Hill_Ring-Synthetic_Car_1-2026-10-27T10_00_00Z.duckdb"
+# Ends 300 m into one more lap (session left mid-lap): the short last lap must not be BEST.
+PARTIAL = "Synthetic_Hill_Ring-Synthetic_Car_1-2026-10-28T10_00_00Z.duckdb"
 
 
 def main(argv: list[str]) -> None:

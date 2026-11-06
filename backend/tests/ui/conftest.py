@@ -19,7 +19,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))        # synthetic_track / synthetic_session
 sys.path.insert(0, str(HERE))               # serve_for_ui (file names)
 
-from serve_for_ui import HILLY, LEGACY, LIMITS, SLIP  # noqa: E402
+from serve_for_ui import HILLY, LEGACY, LIMITS, PARTIAL, SLIP  # noqa: E402
 
 # SwiftShader: software WebGL, so the chase view renders without a GPU.
 # Verified with Chromium 156 headless (Playwright 1.5x) on Windows 11.
@@ -45,6 +45,7 @@ def server(tmp_path_factory):
     write_hilly_session(sessions / LEGACY, with_pose=False)
     write_hilly_session(sessions / LIMITS, with_pose=True, track_edge_m=5.5)
     write_hilly_session(sessions / SLIP, with_pose=True, slip_angles=True)
+    write_hilly_session(sessions / PARTIAL, with_pose=True, trailing_partial_m=300)
 
     port = _free_port()
     proc = subprocess.Popen([sys.executable, str(HERE / "serve_for_ui.py"), str(sessions), str(port), str(ref)],

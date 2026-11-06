@@ -1481,18 +1481,27 @@ async function selectSession(file,source,el){
     const d=await(await fetch(`/sessions/${source}/${encodeURIComponent(file)}/laps`)).json();
     S.laps=d.laps||[];renderLapBar();
     if(S.laps.length>0){
-      const best=S.laps.reduce((a,b)=>b.lap_time_s<a.lap_time_s?b:a,S.laps[0]);
+      const best=bestLap(S.laps);
       const chip=document.querySelector(`.lap-chip[data-lap="${best.lap_number}"]`);
       if(chip)selectLap(best.lap_number,chip);else setOverlay('Click a lap to load the map');
     }else setOverlay('No complete laps in this file');
   }catch(e){setOverlay('Error: '+e.message);}
 }
+// PREVIOUSLY BEST and the auto-pick were min(lap_time_s) over every lap, so on
+// the 10/19 Fuji file the 36 s L13 (session left mid-lap) was BEST and opened
+// first. Fix: the fastest `real` lap (/laps: complete, not a short mid-lap
+// join), else the fastest complete one, else the first lap.
+function bestLap(laps){
+  const fastest=ls=>ls.reduce((a,b)=>b.lap_time_s<a.lap_time_s?b:a,ls[0]);
+  const real=laps.filter(l=>l.real),complete=laps.filter(l=>l.complete);
+  return real.length?fastest(real):complete.length?fastest(complete):laps[0];
+}
 function renderLapBar(){
   const bar=document.getElementById('lap-bar');bar.innerHTML='';
   if(!S.laps.length){bar.innerHTML='<span class="dimtext">No laps</span>';return;}
-  const best=Math.min(...S.laps.map(l=>l.lap_time_s));
+  const best=bestLap(S.laps);
   S.laps.forEach(lap=>{
-    const isBest=lap.lap_time_s===best;
+    const isBest=lap===best;
     const ch=document.createElement('button');ch.type='button';
     ch.className='lap-chip'+(isBest?' best':'');
     ch.dataset.lap=lap.lap_number;

@@ -206,7 +206,8 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
                         track_name="Synthetic Hill Ring",
                         cross_offset_ticks=0, track_edge_m=TRACK_EDGE_M,
                         vehicle_class=None, with_edges=True,
-                        scoring_hold=False, slip_angles=False, out_lap=False) -> Path:
+                        scoring_hold=False, slip_angles=False, out_lap=False,
+                        trailing_partial_m: float = 0.0) -> Path:
     """cross_offset_ticks moves every crossing but the first off its 10 Hz row
     (-8: the first 10 Hz row after it reads ~3 m), like the real game, where
     the line falls anywhere between two rows. Default 0 keeps the crossings
@@ -224,7 +225,10 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
     game's (the default Steering Pos is yaw rate x 20, left positive).
     out_lap: lap 0 is an out-lap on a lower pit-exit road and the file gets
     an `In Pits` event table (see PIT_FLAG_CLEAR_M). The ground under lap 0
-    there is truth(s, lat) - pit_road_drop(s), not truth(s, lat)."""
+    there is truth(s, lat) - pit_road_drop(s), not truth(s, lat).
+    trailing_partial_m: keep driving that many metres past the closing
+    crossing, so the file ends mid-lap like a session left mid-lap: its last
+    Lap row then opens one more (incomplete) lap with no Lap Time row."""
     path = Path(path)
     offsets = tuple(float(o) for o in lap_offsets)
     n_laps = len(offsets)
@@ -237,7 +241,9 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
     cross = [int(gate_arr[np.argmin(np.abs(gate_arr - i * ticks_per_lap))])
              for i in range(n_laps + 1)]
     cross = [cross[0]] + [c + int(cross_offset_ticks) for c in cross[1:]]
-    n = cross[-1] + 1
+    n_tail = int(round(float(trailing_partial_m) / SPEED_MS * 100))
+    n = cross[-1] + 1 + n_tail
+    assert n <= len(all_t), "trailing_partial_m must be shorter than a lap"
     t = np.asarray(all_t[:n])
     slow = [i for i in gate if i < n]
 
@@ -257,6 +263,15 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
         s_lap[k], lap_idx[k], sdot[k] = sl, i, L / (span * 0.01)
         lat[k] = _lap_lat(offsets, i, sl)
         dlat_ds[k] = (_lap_lat(offsets, i, sl + e) - _lap_lat(offsets, i, sl - e)) / (2 * e)
+    if n_tail:
+        # past the closing crossing: lap n_laps at SPEED_MS, on the last
+        # lap's line (its lat at s = 0 is where that lap ended)
+        k = np.arange(cross[-1] + 1, n)
+        sl = SPEED_MS * 0.01 * (k - cross[-1])
+        s_lap[k], lap_idx[k], sdot[k] = sl, n_laps, SPEED_MS
+        lat[k] = _lap_lat(offsets, n_laps - 1, sl)
+        dlat_ds[k] = (_lap_lat(offsets, n_laps - 1, sl + e)
+                      - _lap_lat(offsets, n_laps - 1, sl - e)) / (2 * e)
     lap_dist = np.where(s_lap >= L, 0.0, s_lap)
 
     pos = world(s_lap, lat)
