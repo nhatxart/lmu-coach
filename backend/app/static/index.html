@@ -39,6 +39,8 @@
   /* data series — each ≥3:1 on surfaces; brake/throttle = coral/teal (colour-blind safer than red/green) */
   --c-thr:#2DD4A7; --c-brk:#FF6B6B; --c-str:#94A3B8; --c-spd:#38BDF8; --c-abs:#C4A1FF; --c-tc:#FBBF24;
   --c-yaw:#FB923C; --us:#60A5FA; --os:#FB923C; --c-corner:#FBBF24;
+  /* lap comparison: your lap and up to four ghosts (CMP PALETTE / ME_COL in JS) */
+  --ghost-1:#F472B6; --ghost-2:#A3E635; --ghost-3:#FB923C; --ghost-4:#A78BFA; --you:#E8ECF6;
   /* type */
   --font-ui:'Fira Sans',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
   --font-data:'Fira Code',ui-monospace,'Cascadia Mono',Consolas,monospace;
@@ -344,6 +346,30 @@ canvas.tire-cv{display:block;margin:0 auto;}
 .panel-splitter:hover::after,.panel-splitter.active::after,.panel-splitter:focus-visible::after{left:3px;width:3px;background:var(--accent);}
 .panel-splitter:focus-visible{outline:none;}
 .right-panel.floating .panel-splitter{display:none;}
+/* Compare tab (window.CMP): laps on screen, ghost picker, alignment */
+.cmp-row{display:grid;grid-template-columns:14px minmax(0,1fr) auto auto;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid var(--line);}
+.cmp-row:last-child{border-bottom:none;}
+.cmp-sw{width:14px;height:14px;border-radius:4px;}
+.cmp-t{font:600 var(--fs-sm) var(--font-data);font-variant-numeric:tabular-nums;}
+.cmp-t .nw{white-space:nowrap;}   /* a narrow panel wraps between "G1 · L9 ·" and the time, not inside them */
+.cmp-sub{font-size:var(--fs-xs);color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.cmp-tag{font:700 11px var(--font-ui);letter-spacing:.06em;color:var(--warn);}
+.cmp-approx{color:var(--warn);cursor:help;}
+.cmp-d{font:600 var(--fs-sm) var(--font-data);font-variant-numeric:tabular-nums;min-width:64px;text-align:right;color:var(--text-2);}
+.cmp-d.pos{color:var(--c-brk);} .cmp-d.neg{color:var(--c-thr);}
+.cmp-x{min-height:36px;min-width:36px;padding:0 8px;}
+.cmp-add{display:grid;grid-template-columns:minmax(0,1fr) 130px auto;gap:6px;margin-top:10px;}
+.cmp-add select{min-width:0;}
+.cmp-quick{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;}
+.cmp-quick button{font-size:var(--fs-xs);min-height:36px;}
+.cmp-status{margin-top:6px;font-size:var(--fs-xs);color:var(--text-2);min-height:1.2em;}
+.cmp-align-row{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:10px;}
+/* Delta pill over the map: below the chase view's notices (#chase-note z 22,
+   #chase-msg z 26, both at the top), so it never covers them. */
+#cmp-pill{position:absolute;top:58px;left:50%;transform:translateX(-50%);z-index:21;display:none;gap:14px;padding:6px 12px;border-radius:999px;
+  background:rgba(7,11,20,.82);border:1px solid var(--line);font:600 15px var(--font-data);font-variant-numeric:tabular-nums;pointer-events:none;}
+#cmp-pill span{display:inline-flex;align-items:center;gap:6px;} #cmp-pill i{width:10px;height:10px;border-radius:50%;display:inline-block;}
+#cmp-pill .pos{color:var(--c-brk);} #cmp-pill .neg{color:var(--c-thr);}
 .panel-body{flex:1;overflow-y:auto;padding:var(--sp-4);display:flex;flex-direction:column;gap:var(--sp-4);container-type:inline-size;container-name:panel;}
 .panel-body.hidden{display:none;}
 .card{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--sp-3) var(--sp-3) var(--sp-3);
@@ -382,6 +408,8 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
   .gauge-val{font-size:24px;} .wheel-val{font-size:20px;} .grip-card-val{font-size:20px;}
 }
 @container panel (max-width:290px){ .stats-row{grid-template-columns:repeat(2,1fr);} }
+/* narrow panel: the file picker gets its own row, lap + Add under it */
+@container panel (max-width:360px){ .cmp-add{grid-template-columns:minmax(0,1fr) auto;} .cmp-add #cmp-file{grid-column:1/-1;} }
 
 /* Coach */
 .coach-actions{display:flex;gap:8px;flex-shrink:0;}
@@ -502,7 +530,7 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
 </head>
 <body>
 <a class="skip-link" href="#stage">Skip to the track map</a>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs><symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" /><circle cx="12" cy="12" r="3" /></symbol><symbol id="i-play" viewBox="0 0 24 24"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z" /></symbol><symbol id="i-pause" viewBox="0 0 24 24"><rect x="14" y="3" width="5" height="18" rx="1" /><rect x="5" y="3" width="5" height="18" rx="1" /></symbol><symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14" /><path d="M12 5v14" /></symbol><symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14" /></symbol><symbol id="i-house" viewBox="0 0 24 24"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" /><path d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></symbol><symbol id="i-maximize-2" viewBox="0 0 24 24"><path d="M15 3h6v6" /><path d="m21 3-7 7" /><path d="m3 21 7-7" /><path d="M9 21H3v-6" /></symbol><symbol id="i-panel-right" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M15 3v18" /></symbol><symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></symbol><symbol id="i-circle-dot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1" /><circle cx="12" cy="12" r="10" /></symbol><symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" /></symbol><symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z" /><path d="M20 2v4" /><path d="M22 4h-4" /><circle cx="4" cy="20" r="2" /></symbol><symbol id="i-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34" /><circle cx="11" cy="11" r="8" /></symbol><symbol id="i-send" viewBox="0 0 24 24"><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z" /><path d="m21.854 2.147-10.94 10.939" /></symbol><symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 3v12" /><path d="m17 8-5-5-5 5" /><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /></symbol><symbol id="i-download" viewBox="0 0 24 24"><path d="M12 15V3" /><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="m7 10 5 5 5-5" /></symbol><symbol id="i-rotate-ccw" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></symbol><symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></symbol><symbol id="i-map" viewBox="0 0 24 24"><path d="M14.106 5.553a2 2 0 0 0 1.788 0l3.659-1.83A1 1 0 0 1 21 4.619v12.764a1 1 0 0 1-.553.894l-4.553 2.277a2 2 0 0 1-1.788 0l-4.212-2.106a2 2 0 0 0-1.788 0l-3.659 1.83A1 1 0 0 1 3 19.381V6.618a1 1 0 0 1 .553-.894l4.553-2.277a2 2 0 0 1 1.788 0z" /><path d="M15 5.764v15" /><path d="M9 3.236v15" /></symbol><symbol id="i-flag" viewBox="0 0 24 24"><path d="M4 22V4a1 1 0 0 1 .4-.8A6 6 0 0 1 8 2c3 0 5 2 7.333 2q2 0 3.067-.8A1 1 0 0 1 20 4v10a1 1 0 0 1-.4.8A6 6 0 0 1 16 16c-3 0-5-2-8-2a6 6 0 0 0-4 1.528" /></symbol><symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" /></symbol><symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="19" r="3" /><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15" /><circle cx="18" cy="5" r="3" /></symbol><symbol id="i-gauge" viewBox="0 0 24 24"><path d="m12 14 4-4" /><path d="M3.34 19a10 10 0 1 1 17.32 0" /></symbol><symbol id="i-bot" viewBox="0 0 24 24"><path d="M12 8V4H8" /><rect width="16" height="12" x="4" y="8" rx="2" /><path d="M2 14h2" /><path d="M20 14h2" /><path d="M15 13v2" /><path d="M9 13v2" /></symbol><symbol id="i-message-square-text" viewBox="0 0 24 24"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z" /><path d="M7 11h10" /><path d="M7 15h6" /><path d="M7 7h8" /></symbol><symbol id="i-radio" viewBox="0 0 24 24"><path d="M16.247 7.761a6 6 0 0 1 0 8.478" /><path d="M19.075 4.933a10 10 0 0 1 0 14.134" /><path d="M4.925 19.067a10 10 0 0 1 0-14.134" /><path d="M7.753 16.239a6 6 0 0 1 0-8.478" /><circle cx="12" cy="12" r="2" /></symbol><symbol id="i-save" viewBox="0 0 24 24"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" /><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" /><path d="M7 3v4a1 1 0 0 0 1 1h7" /></symbol><symbol id="i-folder-open" viewBox="0 0 24 24"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" /></symbol></defs></svg>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs><symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" /><circle cx="12" cy="12" r="3" /></symbol><symbol id="i-play" viewBox="0 0 24 24"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z" /></symbol><symbol id="i-pause" viewBox="0 0 24 24"><rect x="14" y="3" width="5" height="18" rx="1" /><rect x="5" y="3" width="5" height="18" rx="1" /></symbol><symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14" /><path d="M12 5v14" /></symbol><symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14" /></symbol><symbol id="i-house" viewBox="0 0 24 24"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" /><path d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></symbol><symbol id="i-maximize-2" viewBox="0 0 24 24"><path d="M15 3h6v6" /><path d="m21 3-7 7" /><path d="m3 21 7-7" /><path d="M9 21H3v-6" /></symbol><symbol id="i-panel-right" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M15 3v18" /></symbol><symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></symbol><symbol id="i-git-compare" viewBox="0 0 24 24"><circle cx="5" cy="6" r="3" /><path d="M12 6h5a2 2 0 0 1 2 2v7" /><path d="m15 9-3-3 3-3" /><circle cx="19" cy="18" r="3" /><path d="M12 18H7a2 2 0 0 1-2-2V9" /><path d="m9 15 3 3-3 3" /></symbol><symbol id="i-circle-dot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1" /><circle cx="12" cy="12" r="10" /></symbol><symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" /></symbol><symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z" /><path d="M20 2v4" /><path d="M22 4h-4" /><circle cx="4" cy="20" r="2" /></symbol><symbol id="i-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34" /><circle cx="11" cy="11" r="8" /></symbol><symbol id="i-send" viewBox="0 0 24 24"><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z" /><path d="m21.854 2.147-10.94 10.939" /></symbol><symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 3v12" /><path d="m17 8-5-5-5 5" /><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /></symbol><symbol id="i-download" viewBox="0 0 24 24"><path d="M12 15V3" /><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="m7 10 5 5 5-5" /></symbol><symbol id="i-rotate-ccw" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></symbol><symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></symbol><symbol id="i-map" viewBox="0 0 24 24"><path d="M14.106 5.553a2 2 0 0 0 1.788 0l3.659-1.83A1 1 0 0 1 21 4.619v12.764a1 1 0 0 1-.553.894l-4.553 2.277a2 2 0 0 1-1.788 0l-4.212-2.106a2 2 0 0 0-1.788 0l-3.659 1.83A1 1 0 0 1 3 19.381V6.618a1 1 0 0 1 .553-.894l4.553-2.277a2 2 0 0 1 1.788 0z" /><path d="M15 5.764v15" /><path d="M9 3.236v15" /></symbol><symbol id="i-flag" viewBox="0 0 24 24"><path d="M4 22V4a1 1 0 0 1 .4-.8A6 6 0 0 1 8 2c3 0 5 2 7.333 2q2 0 3.067-.8A1 1 0 0 1 20 4v10a1 1 0 0 1-.4.8A6 6 0 0 1 16 16c-3 0-5-2-8-2a6 6 0 0 0-4 1.528" /></symbol><symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" /></symbol><symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="19" r="3" /><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15" /><circle cx="18" cy="5" r="3" /></symbol><symbol id="i-gauge" viewBox="0 0 24 24"><path d="m12 14 4-4" /><path d="M3.34 19a10 10 0 1 1 17.32 0" /></symbol><symbol id="i-bot" viewBox="0 0 24 24"><path d="M12 8V4H8" /><rect width="16" height="12" x="4" y="8" rx="2" /><path d="M2 14h2" /><path d="M20 14h2" /><path d="M15 13v2" /><path d="M9 13v2" /></symbol><symbol id="i-message-square-text" viewBox="0 0 24 24"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z" /><path d="M7 11h10" /><path d="M7 15h6" /><path d="M7 7h8" /></symbol><symbol id="i-radio" viewBox="0 0 24 24"><path d="M16.247 7.761a6 6 0 0 1 0 8.478" /><path d="M19.075 4.933a10 10 0 0 1 0 14.134" /><path d="M4.925 19.067a10 10 0 0 1 0-14.134" /><path d="M7.753 16.239a6 6 0 0 1 0-8.478" /><circle cx="12" cy="12" r="2" /></symbol><symbol id="i-save" viewBox="0 0 24 24"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" /><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" /><path d="M7 3v4a1 1 0 0 0 1 1h7" /></symbol><symbol id="i-folder-open" viewBox="0 0 24 24"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" /></symbol></defs></svg>
 <header class="app-header">
   <div class="brand"><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="1" y="1" width="30" height="30" rx="9" fill="#131B2F" stroke="#33426A"/><path d="M9.5 21.5c-2.6-3.2-1-9.6 3.2-11 3.1-1 4.6 1 6.1 2.6s4.6 1 5.1 3.6c.6 3.2-2.1 5.7-5.2 5.7h-6.4c-1.5 0-2.3-.3-2.8-.9z" fill="none" stroke="#2EE6A0" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="22.3" cy="13.4" r="2" fill="#2EE6A0"/></svg><h1 class="brand-name">LMU <span>Coach</span></h1></div>
   <div class="status-pill" role="status" aria-live="polite"><span class="dot" id="sdot"></span><span id="status-text">connecting…</span></div>
@@ -526,6 +554,7 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
         <option value="balance">Car Balance (Susp)</option>
         <option value="yaw">Yaw Rate</option>
         <option value="gflat">Lateral G</option>
+        <option value="delta" disabled>Time vs ghost 1</option>
       </select>
       <label for="slip-gain">Slip angle</label>
       <select id="slip-gain" onchange="setSlipGain(this.value)" title="Exaggerates the body-slip angle shown by the car marker, and the tyre slip arrows in chase view. The β label always shows the true angle.">
@@ -643,6 +672,9 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
         <div class="tire-legend"><span><i class="sw" style="background:var(--warn)"></i>angle</span><span><i class="sw" style="background:var(--us)"></i>slip</span><span><i class="sw" style="background:var(--c-brk)"></i>lockup</span></div>
       </div>
 
+      <!-- Live time delta per ghost (window.CMP). aria-hidden: the same values
+           are in the Compare tab's list, which screen readers can reach. -->
+      <div id="cmp-pill" aria-hidden="true"></div>
       <div class="map-overlay" id="map-overlay" role="status"><svg class="i empty-ico" aria-hidden="true"><use href="#i-map"/></svg><span>Select a session to begin</span></div>
       <div id="map-tooltip"></div>
 
@@ -673,6 +705,7 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
       <button class="tab active" id="tab-balance" role="tab" aria-selected="true" aria-controls="body-balance" onclick="switchTab('balance')"><svg class="i" aria-hidden="true"><use href="#i-activity"/></svg><span class="tab-label">Balance</span></button>
       <button class="tab" id="tab-coach" role="tab" aria-selected="false" tabindex="-1" aria-controls="body-coach" onclick="switchTab('coach')"><svg class="i" aria-hidden="true"><use href="#i-sparkles"/></svg><span class="tab-label">Coach</span></button>
       <button class="tab" id="tab-record" role="tab" aria-selected="false" tabindex="-1" aria-controls="body-record" onclick="switchTab('record')"><svg class="i" aria-hidden="true"><use href="#i-circle-dot"/></svg><span class="tab-label">Record</span></button>
+      <button class="tab" id="tab-compare" role="tab" aria-selected="false" tabindex="-1" aria-controls="body-compare" onclick="switchTab('compare')"><svg class="i" aria-hidden="true"><use href="#i-git-compare"/></svg><span class="tab-label">Compare</span></button>
       </div>
       <button class="ghost" id="panel-float-btn" onclick="floatPanel()" title="Undock: move and resize this panel" aria-label="Undock panel (move and resize)"><svg class="i" aria-hidden="true"><use href="#i-maximize-2"/></svg></button>
     </div>
@@ -751,6 +784,30 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
         <section class="card" style="flex:1;min-height:0;display:flex;flex-direction:column;">
           <h3 class="sec">Log Output</h3>
           <div id="rec-log" class="rec-log" role="log" aria-live="off" tabindex="0" aria-label="Recorder log output"></div>
+        </section>
+      </div>
+      <!-- Lap comparison (window.CMP): ghosts from this file or other files
+           of the same track, class and layout. Nothing here is saved. -->
+      <div class="panel-body hidden" id="body-compare" role="tabpanel" tabindex="0" aria-labelledby="tab-compare">
+        <section class="card" aria-labelledby="h-cmp-laps">
+          <h3 class="sec" id="h-cmp-laps">Laps on screen<span class="sec-unit" id="cmp-filter"></span></h3>
+          <div id="cmp-list"></div>
+          <div class="cmp-add">
+            <select id="cmp-file" aria-label="File to compare against" onchange="CMP.fillLaps()"></select>
+            <select id="cmp-lap" aria-label="Lap to compare against"></select>
+            <button type="button" class="primary" onclick="CMP.addSelected()"><svg class="i sm" aria-hidden="true"><use href="#i-plus"/></svg>Add</button>
+          </div>
+          <div class="cmp-quick">
+            <button type="button" onclick="CMP.addBestHere()"><svg class="i sm" aria-hidden="true"><use href="#i-plus"/></svg>Best lap of this session</button>
+            <button type="button" onclick="CMP.addBestOther()"><svg class="i sm" aria-hidden="true"><use href="#i-plus"/></svg>Best other file, same track</button>
+          </div>
+          <div class="cmp-status" id="cmp-status" role="status" aria-live="polite"></div>
+          <div class="cmp-align-row"><span class="dimtext" id="cmp-al-lbl">Ghost position</span>
+            <div class="view-switch" id="cmp-align" role="radiogroup" aria-labelledby="cmp-al-lbl">
+              <button type="button" id="cmp-al-time" role="radio" aria-checked="true" tabindex="0" onclick="CMP.setAlign('time')" title="The ghost where it was at your elapsed lap time: the gap shows">Same time</button>
+              <button type="button" id="cmp-al-dist" role="radio" aria-checked="false" tabindex="-1" onclick="CMP.setAlign('dist')" title="The ghost alongside you: line and angle differences show">Same distance</button>
+            </div>
+          </div>
         </section>
       </div>
     </div></div>
@@ -936,6 +993,7 @@ function lineColorAt(i){
   if     (mode==='throttle_brake')return colTB(dl.throttle[i],dl.brake[i]);
   else if(mode==='balance')       return colBal(dl.balance[i],c.balMx);
   else if(mode==='yaw')           return colYaw(dl.yaw[i],c.yawMx);
+  else if(mode==='delta')         return window.CMP?CMP.deltaColAt(i):'rgba(120,132,156,0.32)';   // where you gain/lose vs ghost 1
   return colScalar(dl.gflat[i],c.gMx);
 }
 
@@ -943,13 +1001,14 @@ function lineColorAt(i){
 // Tab / Health
 // ════════════════════════════════════════════════════════════════════════════
 function switchTab(n){
-  ['balance','coach','record'].forEach(t=>{
+  ['balance','coach','record','compare'].forEach(t=>{
     const tab=document.getElementById('tab-'+t),on=t===n;
     tab.classList.toggle('active',on);tab.setAttribute('aria-selected',on?'true':'false');tab.tabIndex=on?0:-1;
     document.getElementById('body-'+t).classList.toggle('hidden',!on);
   });
   if(n==='record')startRecorderStatusPolling();
   else stopRecorderStatusPolling();
+  if(n==='compare'&&window.CMP)CMP.onTab();          // refresh the picker (new recordings)
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1383,7 +1442,7 @@ applyPanelScale();
 // Keyboard support: tab arrow keys; move/resize the floating panel without a mouse
 // ════════════════════════════════════════════════════════════════════════════
 (function initA11yKeys(){
-  const tabs=['balance','coach','record'];
+  const tabs=['balance','coach','record','compare'];
   document.querySelector('.panel-tabs .tablist').addEventListener('keydown',e=>{
     const cur=tabs.findIndex(t=>document.getElementById('tab-'+t).classList.contains('active'));
     let next=-1;
@@ -1540,6 +1599,10 @@ async function loadMap(){
     // otherwise Chase notices the new payload when the view is next opened.
     if(S.view==='chase'&&window.Chase&&Chase.state().ready)Chase.build(S.mapData);
     syncViewOpts();                    // this lap's car class / track-limits availability
+    // Ghosts follow your lap: re-aligned to it, or dropped (another track or
+    // class, or the ghost IS your new lap). After Chase.build (a draw before
+    // it made the chase view build this lap twice), before the draw below.
+    if(window.CMP)CMP.onMainLap();
     hideOverlay();resizeDraw();updateBalance();showHud();drawHUD();
   }catch(e){setOverlay(`<span style="color:var(--warn)">${e.message}</span>`);}
 }
@@ -1628,6 +1691,7 @@ function drawMap(){
     }
   }
 
+  if(window.CMP)CMP.drawLines2D(mapCtx);              // ghost lines, under yours
   // Driven line heatmap
   const n=dl.x.length;
   mapCtx.lineWidth=2.5;mapCtx.lineCap='round';
@@ -1686,6 +1750,7 @@ function drawMap(){
   // dotF is fractional during playback (interpolated between points, see
   // lerpAt) and a whole index when hovering, which reads that exact point.
   const dotF=(S.hoverIdx!=null)?S.hoverIdx:clamp(S.playhead*(n-1),0,n-1);
+  if(window.CMP)CMP.drawMarkers2D(mapCtx);            // ghost markers, under your chevron
   if(n>0&&dotF>=0&&dotF<=n-1){
     const[hx,hz]=toScreen(lerpAt(dl.x,dotF),lerpAt(dl.z,dotF));
     const m=carMarkerAt(dotF);
@@ -2285,6 +2350,7 @@ function updateTraceDots(){
   redrawAbsTcTrace('abstc-canvas',dl.abs_active,dl.tc_active,70,S.playhead);
   redrawTraceWithDot('yaw-canvas',dl.yaw,90,'rgba(251,146,60,.8)','rgba(96,165,250,.8)',S.playhead);
   redrawTraceWithDot('bal-canvas',dl.balance,110,'rgba(96,165,250,.8)','rgba(251,146,60,.8)',S.playhead);
+  if(window.CMP)CMP.onPlayhead();                     // live deltas (list + map pill)
 }
 function redrawTraceWithDot(id,arr,h,colTop,colBot,headFrac){
   const cv2=document.getElementById(id);
@@ -2560,6 +2626,7 @@ function updateLegend(){
   const mode=document.getElementById('heatmap-mode').value;
   const lo=document.getElementById('leg-lo'),hi=document.getElementById('leg-hi'),bar=document.getElementById('leg-bar');
   if(mode==='throttle_brake'){lo.textContent='Brake';hi.textContent='Throttle';bar.style.background='linear-gradient(to right,var(--c-brk),#E8ECF6,var(--c-thr))';}
+  else if(mode==='delta'){lo.textContent='Gaining';hi.textContent='Losing';bar.style.background='linear-gradient(to right,var(--c-thr),#E8ECF6,var(--c-brk))';}
   else if(mode==='balance'){lo.textContent='Oversteer';hi.textContent='Understeer';bar.style.background='linear-gradient(to right,var(--os),#E8ECF6,var(--us))';}
   else{lo.textContent='Low';hi.textContent='High';bar.style.background='linear-gradient(to right,var(--surface-4),var(--info))';}
 }
@@ -2911,6 +2978,462 @@ new ResizeObserver(()=>{if(window.Chase)Chase.resize();if(S.mapData)resizeDraw()
   await loadConfigBoot();await ping();updateLegend();await loadSessions();
   if(document.fonts&&document.fonts.ready)document.fonts.ready.then(()=>{if(S.mapData){drawMap();drawHUD();updateBalance();}});setInterval(ping,15000);
 })();
+</script>
+<script>
+// ════════════════════════════════════════════════════════════════════════════
+// Lap comparison (Compare tab): up to four ghost laps against yours.
+// Ghosts come from this file or other files of the same track, car class
+// and layout, picked from /sessions/index (metadata only: no lap is loaded
+// to search). Laps are lined up by the game's lap distance (driven_line.
+// lap_dist) and timed by the game clock (driven_line.t); in one coordinate
+// frame per track (/trackmap coordinate_origin). Everything here is an
+// estimate from 10 Hz position and says so where it shows numbers.
+// Session-only: nothing is saved. Task 5 (traces) and Task 6 (chase view
+// ghosts) build on window.CMP, so keep its names and signatures.
+// ════════════════════════════════════════════════════════════════════════════
+const CMP=(()=>{
+// Canvas literals in sync with :root --ghost-1..4 and --you (DESIGN.md).
+const PALETTE=['#F472B6','#A3E635','#FB923C','#A78BFA'];
+const ME_COL='#E8ECF6';
+const MAX_GHOSTS=PALETTE.length;
+const GREY='rgba(120,132,156,0.32)';
+const EST='Estimate from 10 Hz position and game lap distance';
+const st={
+  ghosts:[],pending:[],align:'time',seq:0,
+  me:null,          // your lap, prepared (prepLap)
+  // Bumped by every main-lap change; a ghost payload that arrives for an
+  // older generation is dropped (it was lined up against a lap that is no
+  // longer on screen).
+  gen:0,
+  index:null,indexReq:null,fillTok:0,prevTrack:null,
+};
+
+// ── small helpers ──
+// Fractional index of value v in a non-decreasing array (clamped to the ends;
+// a plateau resolves to its first point).
+function fAt(arr,v){
+  const n=arr.length;if(n<2)return 0;
+  if(!(v>arr[0]))return 0;if(v>=arr[n-1])return n-1;
+  let lo=0,hi=n-1;
+  while(hi-lo>1){const m=(lo+hi)>>1;if(arr[m]<v)lo=m;else hi=m;}
+  const d=arr[hi]-arr[lo];return lo+(d>1e-12?(v-arr[lo])/d:0);
+}
+// Non-decreasing copy: the game's lap distance repeats on held scoring rows
+// and can step back a few cm; binary search needs it monotonic.
+function monotonic(a){const o=new Float64Array(a.length);let m=-Infinity;for(let i=0;i<a.length;i++){m=Math.max(m,+a[i]);o[i]=m;}return o;}
+// Lap distance per point, monotonic. The game wraps it to 0 at the line, and
+// a lap's first or last point can sit on the other side of that wrap: a
+// first point still reading ~the lap length (seen on Fuji 10/15), or the
+// point ON the closing line reading 0. Through the running max either one
+// flattened the lap (the first: the whole lap read as its start, a +43 s
+// delta). Fix: a drop of more than 100 m between two points is the wrap;
+// the points before it (first half of the lap) or after it (second half)
+// are moved to continue from the neighbouring step.
+function lapDistArr(a){
+  const v=Array.from(a,Number),n=v.length;
+  for(let i=1;i<n;i++){
+    if(!(v[i]<v[i-1]-100))continue;
+    if(i<n/2){
+      const step=i+1<n?Math.max(0,v[i+1]-v[i]):0,off=v[i-1]-(v[i]-step);
+      for(let j=0;j<i;j++)v[j]-=off;
+    }else{
+      const step=i>1?Math.max(0,v[i-1]-v[i-2]):0,off=v[i-1]+step-v[i];
+      for(let j=i;j<n;j++)v[j]+=off;
+    }
+  }
+  return monotonic(v);
+}
+const fmtD=v=>(v>0.0005?'+':v<-0.0005?'−':'±')+Math.abs(v).toFixed(3);
+const dCls=v=>v>0.0005?'pos':v<-0.0005?'neg':'';
+const clsLabel=c=>!c||c==='unknown'?'class unknown':c;
+const key=(src,file)=>src+'|'+file;
+const dateKey=f=>{const m=String(f).match(/(\d{4})-(\d{2})-(\d{2})T(\d{2})[_:](\d{2})[_:](\d{2})Z/);return m?m.slice(1).join(''):'';};
+const kindOf=d=>(d.coordinate_origin&&d.coordinate_origin.kind)||(d.coordinate_system==='world_metres'?'world':'file');
+
+// Per-lap arrays from a /trackmap payload. s: the game's lap distance when
+// the file has it (sLd), else null; cum: distance driven along the line.
+function prepLap(d,lapTime){
+  const dl=d.driven_line,n=dl.x.length;
+  const cum=new Float64Array(n);
+  for(let i=1;i<n;i++)cum[i]=cum[i-1]+Math.hypot(dl.x[i]-dl.x[i-1],dl.z[i]-dl.z[i-1]);
+  const len=cum[n-1]||1;
+  const T=lapTime||((dl.t&&dl.t.length===n)?dl.t[n-1]:0)||1;
+  const t=(dl.t&&dl.t.length===n)?monotonic(dl.t):Float64Array.from({length:n},(_,i)=>i*T/Math.max(1,n-1));
+  const sLd=(dl.lap_dist&&dl.lap_dist.length===n)?lapDistArr(dl.lap_dist):null;
+  const lapLen=(d.lap_len_m>0)?d.lap_len_m:null;
+  const L={d,n,x:dl.x,z:dl.z,heading:dl.heading||[],t,sLd,cum,len,lapLen};
+  // the lap distance that meAtDist reads: the game's, else driven distance
+  // scaled to the lap's game length (or left as driven metres)
+  const k=(lapLen||len)/len;
+  L.sPrim=sLd||cum.map(v=>v*k);
+  return L;
+}
+
+// ── index (/sessions/index) ──
+async function loadIndex(force){
+  if(st.index&&!force)return st.index;
+  if(!st.indexReq)st.indexReq=fetch('/sessions/index').then(r=>{if(!r.ok)throw new Error('index '+r.status);return r.json();})
+    .then(j=>{const m=new Map();(j.files||[]).forEach(e=>m.set(key(e.source,e.file),e));st.index={list:j.files||[],map:m};return st.index;})
+    .finally(()=>{st.indexReq=null;});
+  return st.indexReq;
+}
+const entryOf=(src,file)=>st.index?st.index.map.get(key(src,file))||null:null;
+const myEntry=()=>S.file?entryOf(S.source,S.file):null;
+function myClass(){const e=myEntry();return e?e.car_class||'unknown':((S.mapData&&S.mapData.car&&S.mapData.car.requested)||'unknown');}
+function trackKeyOf(e,file){return e?(e.track_slug||e.track||''):parseSession(file||'').track;}
+const myTrack=()=>trackKeyOf(myEntry(),S.file);
+function myCoords(){const e=myEntry();return (e&&e.coordinate_system)||(S.mapData&&S.mapData.coordinate_system)||null;}
+// Why file e cannot be compared with your lap, from the index alone; null if it can.
+function entryRefusal(e){
+  if(e.error)return'That file cannot be read';
+  if(trackKeyOf(e,e.file)!==myTrack())return`Another track (${e.track||parseSession(e.file).track})`;
+  const mc=myClass(),gc=e.car_class||'unknown';
+  if(gc!==mc)return`${clsLabel(gc)} lap: only ${clsLabel(mc)} laps can be compared`;
+  const mine=myEntry(),a=e.layout_len_m,b=mine&&mine.layout_len_m;
+  if(a>0&&b>0&&Math.abs(a/b-1)>0.01)return`Another layout (${Math.round(a)} m vs your ${Math.round(b)} m)`;
+  const mcs=myCoords();
+  if(mcs&&e.coordinate_system&&e.coordinate_system!==mcs)
+    return e.coordinate_system==='world_metres'?'Different position data (this file has no GPS)':'Different position data (your file has no GPS)';
+  return null;
+}
+const isMine=(src,file)=>src===S.source&&file===S.file;
+const onScreen=(src,file,lap)=>[...st.ghosts,...st.pending].some(g=>g.src===src&&g.file===file&&g.lap===lap);
+
+// ── one ghost against your lap ──
+// Checks what only the payload can tell (class as loaded, coordinate frame,
+// layout), then builds the per-point arrays once, so drawing is O(ghosts).
+// Returns a refusal reason, or null when attached.
+function attach(g,me){
+  const G=g.L,d=g.d;
+  const gc=(d.car&&d.car.requested)||g.cls||'unknown',mc=myClass();
+  if(gc!==mc)return`${clsLabel(gc)} lap: only ${clsLabel(mc)} laps can be compared`;
+  // Frame. Both on the track's fixed origin, the same file, or both in game
+  // world metres: one frame. Both projected around their own file's centre
+  // (a track without a sources centre): close but not shared, so the ghost
+  // is shifted by the mean position difference at 200 matching lap
+  // distances and marked approximate. World against GPS: refused.
+  const why=[];let shift=false;
+  if(!isMine(g.src,g.file)){
+    const ko=kindOf(me.d),kg=kindOf(d);
+    if((ko==='world')!==(kg==='world'))
+      return kg==='world'?'Different position data (this file has no GPS)':'Different position data (your file has no GPS)';
+    const o1=me.d.coordinate_origin,o2=d.coordinate_origin;
+    const sameTrackOrigin=ko==='track'&&kg==='track'&&o1&&o2&&Math.abs(o1.lat-o2.lat)<1e-9&&Math.abs(o1.lon-o2.lon)<1e-9;
+    if(ko!=='world'&&!sameTrackOrigin){shift=true;why.push('no shared frame');}
+  }
+  // Layout: the game's lap length within 1 % (two layouts of one track name
+  // differ there), else the driven length within 3 %.
+  if(me.lapLen&&G.lapLen){
+    if(Math.abs(G.lapLen/me.lapLen-1)>0.01)return`Another layout (${Math.round(G.lapLen)} m vs your ${Math.round(me.lapLen)} m)`;
+  }else if(Math.abs(G.len/me.len-1)>0.03)return`Another layout (${Math.round(G.len)} m vs your ${Math.round(me.len)} m)`;
+  // Alignment: the game's lap distance when both laps have it, else the
+  // distance driven, scaled to your lap (approximate: a wider line is longer).
+  let sMe,sG;
+  if(me.sLd&&G.sLd){sMe=me.sLd;sG=G.sLd;}
+  else{const Lr=me.lapLen||me.len;sMe=me.cum.map(v=>v/me.len*Lr);sG=G.cum.map(v=>v/G.len*Lr);why.push('no lap distance');}
+  let dx=0,dz=0;
+  if(shift){
+    const a=sMe[0],b=sMe[me.n-1];
+    for(let k=0;k<200;k++){const s=a+(b-a)*k/199,fm=fAt(sMe,s),fg=fAt(sG,s);
+      dx+=lerpAt(me.x,fm)-lerpAt(G.x,fg);dz+=lerpAt(me.z,fm)-lerpAt(G.z,fg);}
+    dx/=200;dz/=200;
+  }
+  // delta at your point i = your time there - the ghost's time at the same
+  // lap distance (+ = you are slower). lat: nearest ghost point within +-20
+  // points of that distance, signed by your heading's right (-sin h, cos h).
+  const n=me.n,delta=new Float64Array(n),lat=new Float64Array(n);
+  for(let i=0;i<n;i++){
+    const fg=fAt(sG,sMe[i]);
+    delta[i]=me.t[i]-lerpAt(G.t,fg);
+    const c=Math.round(fg);let best=Infinity,bj=c;
+    for(let j=Math.max(0,c-20);j<=Math.min(G.n-1,c+20);j++){
+      const q=(G.x[j]+dx-me.x[i])**2+(G.z[j]+dz-me.z[i])**2;if(q<best){best=q;bj=j;}
+    }
+    const h=me.heading.length===n?me.heading[i]:0;
+    lat[i]=(G.x[bj]+dx-me.x[i])*-Math.sin(h)+(G.z[bj]+dz-me.z[i])*Math.cos(h);
+  }
+  // largest |d delta / d s| of the lap: the "Time vs ghost 1" overlay scale
+  let mx=1e-9;
+  for(let i=0;i<n-1;i++){const v=Math.abs((delta[i+1]-delta[i])/Math.max(sMe[i+1]-sMe[i],0.5));if(v>mx)mx=v;}
+  Object.assign(g,{s:sG,t:G.t,delta,lat,approx:why.length>0,approxWhy:why,dx,dz,sMe,slopeMx:mx});
+  return null;
+}
+
+// ── where things are at the playhead ──
+function playF(){const n=st.me?st.me.n:1;return(S.hoverIdx!=null)?S.hoverIdx:clamp(S.playhead*(n-1),0,n-1);}
+// Same time: the ghost where its clock reads your elapsed time (held at its
+// last point once past its lap time). Same distance: at your lap distance.
+function ghostPose(g){
+  const me=st.me,G=g.L,f=Math.min(playF(),me.n-1);
+  const gf=st.align==='time'?fAt(g.t,lerpAt(me.t,f)):fAt(g.s,lerpAt(g.sMe,f));
+  return{x:lerpAt(G.x,gf)+g.dx,z:lerpAt(G.z,gf)+g.dz,yaw:G.heading.length===G.n?angleAt(G.heading,gf):0,
+         f:gf,fMe:fAt(g.sMe,lerpAt(g.s,gf))};
+}
+// you, likewise, stay at your last point past your lap time (playF clamps)
+const deltaAt=g=>g.delta?lerpAt(g.delta,Math.min(playF(),g.delta.length-1)):0;
+const meAtDist=s=>st.me?fAt(st.me.sPrim,s):0;
+const live=()=>st.me&&S.mapData===st.me.d;
+
+// ── 2D map ──
+function drawLines2D(ctx){
+  if(!live())return;
+  st.ghosts.forEach(g=>{
+    const G=g.L;
+    ctx.save();ctx.strokeStyle=g.col;ctx.globalAlpha=.75;ctx.lineWidth=1.6;ctx.setLineDash([5,4]);ctx.beginPath();
+    for(let i=0;i<G.n;i++){const[sx,sz]=toScreen(G.x[i]+g.dx,G.z[i]+g.dz);i?ctx.lineTo(sx,sz):ctx.moveTo(sx,sz);}
+    ctx.stroke();ctx.restore();
+  });
+}
+function drawMarkers2D(ctx){
+  if(!live())return;
+  // last ghost first, so G1 ends on top of the others (yours is drawn after)
+  for(let k=st.ghosts.length-1;k>=0;k--){
+    const g=st.ghosts[k],p=ghostPose(g),[sx,sz]=toScreen(p.x,p.z);
+    ctx.save();ctx.translate(sx,sz);ctx.rotate(p.yaw);
+    ctx.fillStyle=g.col;ctx.strokeStyle=g.col;ctx.lineWidth=2;ctx.globalAlpha=.55;
+    ctx.beginPath();ctx.moveTo(11,0);ctx.lineTo(-8,-7);ctx.lineTo(-4,0);ctx.lineTo(-8,7);ctx.closePath();ctx.fill();
+    ctx.globalAlpha=1;ctx.stroke();ctx.restore();
+    ctx.save();ctx.font=fontData(9,true);ctx.fillStyle=g.col;ctx.fillText(`G${k+1}`,sx+10,sz-8);ctx.restore();
+  }
+}
+// Your segment i coloured by the slope of ghost 1's delta there (per metre),
+// normalised to the lap's largest slope: teal = gaining, coral = losing,
+// grey below 8 % (flat).
+function deltaColAt(i){
+  const g=st.ghosts[0];
+  if(!live()||!g||i>=g.delta.length-1)return GREY;
+  const v=(g.delta[i+1]-g.delta[i])/Math.max(g.sMe[i+1]-g.sMe[i],0.5)/g.slopeMx,t=Math.abs(v);
+  if(t<0.08)return'rgba(200,206,220,0.45)';
+  const a=(0.45+0.55*clamp((t-0.08)/0.5,0,1)).toFixed(2);
+  return v<0?`rgba(45,212,167,${a})`:`rgba(255,107,107,${a})`;
+}
+
+// ── list, pill, status ──
+function setStatus(msg){const e=document.getElementById('cmp-status');if(e)e.textContent=msg||'';}
+function rowTitle(g,k){return`<span class="nw">G${k+1} · L${g.lap} ·</span> <span class="nw">${fmtTime(g.lapTime)}</span>`;}
+function rowSub(g){
+  const q=parseSession(g.file);
+  const parts=[isMine(g.src,g.file)?'this session':escHtml([g.model||q.car,q.when].filter(Boolean).join(' · '))];
+  let h=parts.join('');
+  if(g.src==='reference_laps')h+=' · <span class="cmp-tag">kept</span>';
+  if(g.approx)h+=` · <span class="cmp-approx" title="${escHtml(EST+' ('+g.approxWhy.join(' / ')+')')}">approximate</span>`;
+  return h;
+}
+function deltaTitle(g){return EST+(g.approx?` (${g.approxWhy.join(' / ')})`:'');}
+function renderList(){
+  const el=document.getElementById('cmp-list');if(!el)return;
+  const meLap=S.laps.find(l=>l.lap_number===S.lap),p=S.file?parseSession(S.file):null;
+  let h=`<div class="cmp-row"><i class="cmp-sw" style="background:${ME_COL}"></i><div style="min-width:0"><div class="cmp-t"><span class="nw">You · L${S.lap??'—'} ·</span> <span class="nw">${meLap?fmtTime(meLap.lap_time_s):'—'}</span></div>`+
+        `<div class="cmp-sub">${p?escHtml([(myEntry()||{}).car_model||p.car,p.when].filter(Boolean).join(' · ')):'select a lap'}</div></div><span class="cmp-d">ref</span><span></span></div>`;
+  st.ghosts.forEach((g,k)=>{
+    const d=live()?deltaAt(g):0;
+    h+=`<div class="cmp-row" data-ghost="${g.id}"><i class="cmp-sw" style="background:${g.col}"></i><div style="min-width:0"><div class="cmp-t">${rowTitle(g,k)}</div>`+
+       `<div class="cmp-sub" title="${escHtml(g.file)}">${rowSub(g)}</div></div>`+
+       `<span class="cmp-d ${dCls(d)}" data-g="${g.id}" title="${escHtml(deltaTitle(g))}">${fmtD(d)}</span>`+
+       `<button type="button" class="cmp-x ghost" onclick="CMP.remove(${g.id})" aria-label="Remove ghost ${k+1}"><svg class="i sm" aria-hidden="true"><use href="#i-x"/></svg></button></div>`;
+  });
+  st.pending.forEach(g=>{
+    h+=`<div class="cmp-row pending"><i class="cmp-sw" style="background:${g.col}"></i><div style="min-width:0"><div class="cmp-t">L${g.lap} · ${fmtTime(g.lapTime)}</div>`+
+       `<div class="cmp-sub">loading…</div></div><span class="cmp-d"><span class="spinner"></span></span>`+
+       `<button type="button" class="cmp-x ghost" onclick="CMP.remove(${g.id})" aria-label="Cancel loading L${g.lap}"><svg class="i sm" aria-hidden="true"><use href="#i-x"/></svg></button></div>`;
+  });
+  if(!st.ghosts.length&&!st.pending.length)
+    h+=`<div class="dimtext" style="padding:8px 6px">No ghosts yet. Add a lap from this file or another file of the same track and class (up to ${MAX_GHOSTS}).</div>`;
+  el.innerHTML=h;
+}
+function updatePill(){
+  const pill=document.getElementById('cmp-pill');if(!pill)return;
+  const on=live()&&st.ghosts.length>0;
+  pill.style.display=on?'flex':'none';
+  if(!on){pill.innerHTML='';return;}
+  pill.innerHTML=st.ghosts.map(g=>{const d=deltaAt(g);return`<span><i style="background:${g.col}"></i><b class="${dCls(d)}">${fmtD(d)}</b></span>`;}).join('');
+}
+function onPlayhead(){
+  if(!live())return;
+  updatePill();
+  document.querySelectorAll('#cmp-list .cmp-d[data-g]').forEach(e=>{
+    const g=st.ghosts.find(x=>String(x.id)===e.dataset.g);if(!g)return;
+    const d=deltaAt(g);e.textContent=fmtD(d);e.className='cmp-d '+dCls(d);
+  });
+}
+// The "Time vs ghost 1" overlay exists only while there is a ghost; when the
+// last one goes the map falls back to Throttle / Brake.
+// draw=false: the caller (loadMap) draws next anyway.
+function syncOverlay(draw=true){
+  const sel=document.getElementById('heatmap-mode'),opt=sel&&sel.querySelector('option[value="delta"]');if(!opt)return;
+  opt.disabled=!st.ghosts.length;
+  if(opt.disabled&&sel.value==='delta'){
+    sel.value='throttle_brake';
+    if(draw)onModeChange();else{updateLegend();if(window.Chase)Chase.setOverlayColors();}
+    return;
+  }
+  if(sel.value==='delta'&&window.Chase)Chase.setOverlayColors();
+}
+function changed(draw=true){renderList();updatePill();syncOverlay(draw);if(draw&&S.mapData)drawMap();}
+
+// ── picker ──
+async function fillFiles(force){
+  const sel=document.getElementById('cmp-file');if(!sel)return;
+  const tok=++st.fillTok;
+  if(!S.file){sel.innerHTML='';document.getElementById('cmp-lap').innerHTML='';document.getElementById('cmp-filter').textContent='';return;}
+  try{await loadIndex(force||(st.index&&!myEntry()));}
+  catch(e){if(tok===st.fillTok)setStatus('Could not read the session list: '+e.message);return;}
+  if(tok!==st.fillTok)return;
+  const list=offered();
+  const prev=sel.value;
+  sel.innerHTML=list.map(e=>{
+    const mine=isMine(e.source,e.file),q=parseSession(e.file);
+    const txt=mine?'This session':[e.car_model||q.car,q.when].filter(Boolean).join(' · ')+(e.source==='reference_laps'?' · kept':'');
+    return`<option value="${escHtml(key(e.source,e.file))}">${escHtml(txt)}</option>`;
+  }).join('');
+  if(prev&&list.some(e=>key(e.source,e.file)===prev))sel.value=prev;
+  document.getElementById('cmp-filter').textContent=`${clsLabel(myClass())} only${myClass()==='unknown'?' (unverified)':''} · ${list.length} file${list.length===1?'':'s'} on this track`;
+  fillLaps();
+}
+// Index entries a ghost may come from: this session first, then newest first.
+function offered(){
+  if(!st.index)return[];
+  const out=st.index.list.filter(e=>isMine(e.source,e.file)||(!entryRefusal(e)&&e.laps.some(l=>l.complete)));
+  if(!out.some(e=>isMine(e.source,e.file))&&myEntry())out.unshift(myEntry());
+  return out.sort((a,b)=>(isMine(b.source,b.file)-isMine(a.source,a.file))||dateKey(b.file).localeCompare(dateKey(a.file))||a.file.localeCompare(b.file));
+}
+function fillLaps(){
+  const sel=document.getElementById('cmp-file'),ls=document.getElementById('cmp-lap');
+  const[src,file]=(sel.value||'').split(/\|(.*)/s),e=sel.value?entryOf(src,file):null;
+  if(!e){ls.innerHTML='';return;}
+  const laps=e.laps.filter(l=>l.complete&&!(isMine(src,file)&&l.lap_number===S.lap));
+  const real=laps.filter(l=>l.real),best=real.length?real.reduce((a,b)=>b.lap_time_s<a.lap_time_s?b:a):null;
+  ls.innerHTML=laps.map(l=>`<option value="${l.lap_number}">L${l.lap_number} · ${fmtTime(l.lap_time_s)}${l===best?' ★':''}</option>`).join('');
+  if(best)ls.value=String(best.lap_number);
+}
+function addSelected(){
+  const sel=document.getElementById('cmp-file'),ls=document.getElementById('cmp-lap');
+  if(!sel.value||!ls.value){setStatus('Pick a file and a lap first');return;}
+  const[src,file]=sel.value.split(/\|(.*)/s);
+  return add(src,file,+ls.value);
+}
+function addBestHere(){
+  const c=S.laps.filter(l=>l.real&&l.lap_number!==S.lap&&!onScreen(S.source,S.file,l.lap_number));
+  if(!c.length){setStatus('No other real lap in this session');return;}
+  const b=c.reduce((a,x)=>x.lap_time_s<a.lap_time_s?x:a);
+  return add(S.source,S.file,b.lap_number);
+}
+// Fastest real lap across the other offered files, from the index only.
+// Faster laps that are refused for their layout are counted, so the status
+// can say why the pick is not the fastest lap on this track name.
+async function addBestOther(){
+  if(!S.file){setStatus('Load a lap first');return;}
+  setStatus('Looking through the other files on this track…');
+  try{await loadIndex(!myEntry());}catch(e){setStatus('Could not read the session list: '+e.message);return;}
+  const cands=[];
+  offered().forEach(e=>{if(isMine(e.source,e.file))return;
+    e.laps.forEach(l=>{if(l.real&&!onScreen(e.source,e.file,l.lap_number))cands.push({e,l});});});
+  if(!cands.length){setStatus('No comparable lap in another file on this track');return;}
+  const best=cands.reduce((a,c)=>c.l.lap_time_s<a.l.lap_time_s?c:a);
+  const mc=myClass(),mt=myTrack();
+  let skipped=0;
+  st.index.list.forEach(e=>{
+    if(isMine(e.source,e.file)||e.error||trackKeyOf(e,e.file)!==mt||(e.car_class||'unknown')!==mc)return;
+    if(!/layout/.test(entryRefusal(e)||''))return;
+    skipped+=e.laps.filter(l=>l.real&&l.lap_time_s<best.l.lap_time_s).length;
+  });
+  const r=await add(best.e.source,best.e.file,best.l.lap_number);
+  if(r&&r.ok&&skipped)setStatus(`Skipped ${skipped} faster lap${skipped>1?'s':''} on another layout`);
+  return r;
+}
+
+// ── adding and removing ghosts ──
+function refuse(reason){setStatus(reason);return{ok:false,reason};}
+async function add(src,file,lap){
+  lap=+lap;
+  const me=st.me;
+  if(!me||!live())return refuse('Load a lap first');
+  if(st.ghosts.length+st.pending.length>=MAX_GHOSTS)return refuse(`Up to ${MAX_GHOSTS} ghosts: remove one to add another`);
+  if((isMine(src,file)&&lap===S.lap)||onScreen(src,file,lap))return refuse('That lap is already on screen');
+  const gen=st.gen;
+  try{if(!entryOf(src,file)||!myEntry())await loadIndex(true);}
+  catch(e){return refuse('Could not read the session list: '+e.message);}
+  if(gen!==st.gen||st.me!==me)return{ok:false,reason:'Your lap changed'};
+  const e=entryOf(src,file);
+  if(!e)return refuse('That file is not in the session list');
+  const why=entryRefusal(e);if(why)return refuse(why);
+  const le=e.laps.find(l=>l.lap_number===lap);
+  if(!le||!le.complete)return refuse(`L${lap} is not a complete lap`);
+  const used=[...st.ghosts,...st.pending].map(g=>g.col);
+  const g={id:++st.seq,src,file,lap,lapTime:le.lap_time_s,col:PALETTE.find(c=>!used.includes(c)),
+           cls:e.car_class||'unknown',model:e.car_model||'',trackKey:trackKeyOf(e,file),d:null,L:null};
+  st.pending.push(g);renderList();setStatus('');
+  let d=null,err=null;
+  try{
+    const r=await fetch(`/sessions/${src}/${encodeURIComponent(file)}/trackmap?lap_number=${lap}`);
+    if(!r.ok)throw new Error(await r.text());
+    d=await r.json();
+  }catch(x){err=x;}
+  const wanted=st.pending.includes(g);
+  st.pending=st.pending.filter(x=>x!==g);
+  // Race guard: your lap changed (or this load was cancelled) while the
+  // payload was on its way. It would be lined up against a lap that is no
+  // longer on screen, so it is dropped without a word.
+  if(!wanted||gen!==st.gen||st.me!==me||!live()){renderList();return{ok:false,reason:'Your lap changed'};}
+  if(err){renderList();return refuse(`Could not load L${lap}: ${String(err.message||err).slice(0,160)}`);}
+  g.d=d;g.L=prepLap(d,g.lapTime);
+  const why2=attach(g,me);
+  if(why2){renderList();return refuse(why2);}
+  st.ghosts.push(g);changed();
+  return{ok:true};
+}
+function remove(id){
+  const n=st.ghosts.length+st.pending.length;
+  st.ghosts=st.ghosts.filter(g=>g.id!==id);st.pending=st.pending.filter(g=>g.id!==id);
+  if(st.ghosts.length+st.pending.length!==n)changed();
+}
+function setAlign(mode){
+  if(mode!=='time'&&mode!=='dist')return;
+  st.align=mode;
+  [['time','cmp-al-time'],['dist','cmp-al-dist']].forEach(([m,id])=>{
+    const b=document.getElementById(id);if(!b)return;
+    b.setAttribute('aria-checked',m===mode?'true':'false');b.tabIndex=m===mode?0:-1;
+  });
+  if(S.mapData)drawMap();
+}
+// Radiogroup keys, as the view switch: arrows move AND select.
+document.getElementById('cmp-align').addEventListener('keydown',e=>{
+  if(!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key))return;
+  e.preventDefault();
+  const next=st.align==='time'?'dist':'time';setAlign(next);
+  document.getElementById(next==='time'?'cmp-al-time':'cmp-al-dist').focus();
+});
+
+// ── your lap changed ──
+// Other track: every ghost goes. Other class: the ghosts of the old class
+// go. A ghost that is your new lap goes. The rest are lined up again
+// (and dropped, with the reason, if they no longer fit, e.g. a layout).
+function onMainLap(){
+  st.gen++;
+  st.pending=[];                       // their payloads are dropped on arrival
+  if(!S.mapData){st.me=null;changed(false);return;}
+  st.me=prepLap(S.mapData,S.lapDur);
+  const tk=myTrack(),mc=myClass();
+  if(st.prevTrack!=null&&tk!==st.prevTrack)st.ghosts=[];
+  st.prevTrack=tk;
+  st.ghosts=st.ghosts.filter(g=>g.cls===mc&&g.trackKey===tk&&!(isMine(g.src,g.file)&&g.lap===S.lap));
+  const dropped=[];
+  st.ghosts=st.ghosts.filter(g=>{const why=attach(g,st.me);if(why)dropped.push(`L${g.lap}: ${why}`);return!why;});
+  setStatus(dropped.length?'Removed '+dropped.join('; '):'');
+  changed(false);
+  if(st.index||!document.getElementById('body-compare').classList.contains('hidden'))fillFiles();
+}
+function onTab(){fillFiles(true);renderList();}
+
+renderList();
+return{
+  get ghosts(){return Object.freeze(st.ghosts.slice());},   // read-only view
+  get align(){return st.align;},
+  add,remove,setAlign,ghostPose,meAtDist,deltaAt,onMainLap,onPlayhead,drawLines2D,drawMarkers2D,deltaColAt,
+  fillLaps,addSelected,addBestHere,addBestOther,onTab,
+};
+})();
+window.CMP=CMP;   // the hooks test window.CMP (a top-level const is not a window property)
 </script>
 <script type="module">
 // ════════════════════════════════════════════════════════════════════════════

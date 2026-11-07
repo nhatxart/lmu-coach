@@ -208,7 +208,9 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
                         vehicle_class=None, with_edges=True,
                         scoring_hold=False, slip_angles=False, out_lap=False,
                         trailing_partial_m: float = 0.0,
-                        lap_dist_scale: float = 1.0) -> Path:
+                        lap_dist_scale: float = 1.0, speed_scale: float = 1.0,
+                        speed_wave: float = 0.0, with_gps: bool = True,
+                        with_lap_dist: bool = True) -> Path:
     """cross_offset_ticks moves every crossing but the first off its 10 Hz row
     (-8: the first 10 Hz row after it reads ~3 m), like the real game, where
     the line falls anywhere between two rows. Default 0 keeps the crossings
@@ -232,11 +234,19 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
     Lap row then opens one more (incomplete) lap with no Lap Time row.
     lap_dist_scale: multiplies the written Lap Dist values only (geometry,
     times and the other channels unchanged), to stand in for another layout
-    of the same track name."""
+    of the same track name.
+    speed_scale: multiplies SPEED_MS for this file (0.97: every lap ~3 %
+    slower, the laps a lap comparison should show you gaining on).
+    speed_wave: amplitude a of a speed variation along each lap, s = L *
+    (u + a sin(2 pi u) / (2 pi)) at lap time fraction u: speed (1 + a cos
+    2 pi u) times the mean, lap time unchanged. Against a constant-speed lap
+    the time delta then rises in some parts of the lap and falls in others.
+    with_gps=False: no GPS Latitude/Longitude tables (positions only as Pos
+    X/Z, like recorder v1). with_lap_dist=False: no Lap Dist table."""
     path = Path(path)
     offsets = tuple(float(o) for o in lap_offsets)
     n_laps = len(offsets)
-    ticks_per_lap = int(round(L / SPEED_MS * 100))
+    ticks_per_lap = int(round(L / (SPEED_MS * float(speed_scale)) * 100))
     ms0 = int(round(T0_S * 1000))
     all_t = [(ms0 + 10 * k) / 1000.0 for k in range((n_laps + 1) * ticks_per_lap)]
     gate = slow_rows(all_t)
@@ -261,10 +271,13 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
     for i in range(n_laps):
         k = np.arange(cross[i], cross[i + 1] + (1 if i == n_laps - 1 else 0))
         span = cross[i + 1] - cross[i]
-        sl = L * (k - cross[i]) / span
+        u = (k - cross[i]) / span
+        a = float(speed_wave)
+        sl = L * (u + a * np.sin(2 * np.pi * u) / (2 * np.pi))
         if i == n_laps - 1:
             sl[-1] = L   # closing crossing: geometry at L, Lap Dist written as 0
-        s_lap[k], lap_idx[k], sdot[k] = sl, i, L / (span * 0.01)
+        s_lap[k], lap_idx[k] = sl, i
+        sdot[k] = L / (span * 0.01) * (1.0 + a * np.cos(2 * np.pi * u))
         lat[k] = _lap_lat(offsets, i, sl)
         dlat_ds[k] = (_lap_lat(offsets, i, sl + e) - _lap_lat(offsets, i, sl - e)) / (2 * e)
     if n_tail:
@@ -388,8 +401,9 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
         wheel("Surface Type", surface, hz, "0=dry 1=wet 2=grass 3=dirt 4=gravel 5=kerb 6=special")
 
     cos_lat = math.cos(math.radians(GPS_REF_LAT))
-    scalar("GPS Latitude", GPS_REF_LAT + pos[slow, 2] / R_DEG, shz, "deg")
-    scalar("GPS Longitude", GPS_REF_LON + pos[slow, 0] / (R_DEG * cos_lat), shz, "deg")
+    if with_gps:
+        scalar("GPS Latitude", GPS_REF_LAT + pos[slow, 2] / R_DEG, shz, "deg")
+        scalar("GPS Longitude", GPS_REF_LON + pos[slow, 0] / (R_DEG * cos_lat), shz, "deg")
     ld_slow, pl_slow = lap_dist[slow] * float(lap_dist_scale), lat[slow].copy()
     te_slow = np.where(lat[slow] < 0, -track_edge_m, track_edge_m)
     if scoring_hold:
@@ -400,7 +414,8 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
     if with_edges:
         scalar("Path Lateral", pl_slow, shz, "m")
         scalar("Track Edge", te_slow, shz, "m")
-    scalar("Lap Dist", ld_slow, shz, "m")
+    if with_lap_dist:
+        scalar("Lap Dist", ld_slow, shz, "m")
 
     if other_cars > 0:
         lats = (-2.5, 2.5, -1.0, 1.0, -4.0, 4.0)
