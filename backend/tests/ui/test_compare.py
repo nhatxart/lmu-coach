@@ -281,6 +281,39 @@ def test_delta_overlay_option(page, server):
     assert page.errors == []
 
 
+NON_GREY = """() => { const n = S.mapData.driven_line.x.length; let c = 0;
+  for (let i = 0; i < n - 1; i++) { const s = lineColorAt(i);
+    if (s.startsWith('rgba(45,212,167') || s.startsWith('rgba(255,107,107')) c++; }
+  return c / (n - 1); }"""
+
+
+def test_delta_overlay_ignores_a_single_spike(page, server):
+    """One jump in the ghost's game clock (a skipped tick: 0.5 s in one
+    segment, ~100x the wave's largest slope) must not set the overlay's
+    scale. Normalised to the largest slope it greys out every other
+    segment; to the 95th percentile the speed wave still colours most of
+    the lap (only segments near the wave's zero crossings stay grey)."""
+    _open(page, server, CMP_A, 1)
+    _compare_tab(page)
+
+    def step(route):
+        if CMP_WAVE not in route.request.url:
+            route.continue_()
+            return
+        resp = route.fetch()
+        j = resp.json()
+        t = j["driven_line"]["t"]
+        k = len(t) // 3
+        j["driven_line"]["t"] = t[:k] + [v + 0.5 for v in t[k:]]
+        route.fulfill(response=resp, json=j)
+    page.route(re.compile(r".*/trackmap.*"), step)
+    assert _add(page, CMP_WAVE, 0)["ok"] is True
+    page.select_option("#heatmap-mode", "delta")
+    share = page.evaluate(NON_GREY)
+    assert share > 0.6, share
+    assert page.errors == []
+
+
 # ── Main lap changes ─────────────────────────────────────────────────────────
 
 def test_main_lap_change_rules(page, server):

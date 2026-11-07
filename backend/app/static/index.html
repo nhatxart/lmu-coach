@@ -3152,9 +3152,15 @@ function attach(g,me){
     const h=me.heading.length===n?me.heading[i]:0;
     lat[i]=(G.x[bj]+dx-me.x[i])*-Math.sin(h)+(G.z[bj]+dz-me.z[i])*Math.cos(h);
   }
-  // largest |d delta / d s| of the lap: the "Time vs ghost 1" overlay scale
-  let mx=1e-9;
-  for(let i=0;i<n-1;i++){const v=Math.abs((delta[i+1]-delta[i])/Math.max(sMe[i+1]-sMe[i],0.5));if(v>mx)mx=v;}
+  // The "Time vs ghost 1" overlay scale: the 95th percentile of
+  // |d delta / d s| over the lap's segments. PREVIOUSLY the largest slope:
+  // one spike (a skipped game tick, a 10 Hz kink, a lap-distance step) set
+  // the scale, and on real Fuji laps most of the line fell under the grey
+  // threshold. Segments above the p95 are clamped (deltaColAt).
+  const sl=new Float64Array(Math.max(0,n-1));
+  for(let i=0;i<n-1;i++)sl[i]=Math.abs((delta[i+1]-delta[i])/Math.max(sMe[i+1]-sMe[i],0.5));
+  sl.sort();
+  const mx=Math.max(sl.length?sl[Math.min(sl.length-1,Math.floor(0.95*(sl.length-1)))]:0,1e-9);
   Object.assign(g,{s:sG,t:G.t,delta,lat,approx:why.length>0,approxWhy:why,dx,dz,sMe,slopeMx:mx});
   return null;
 }
@@ -3197,12 +3203,12 @@ function drawMarkers2D(ctx){
   }
 }
 // Your segment i coloured by the slope of ghost 1's delta there (per metre),
-// normalised to the lap's largest slope: teal = gaining, coral = losing,
-// grey below 8 % (flat).
+// normalised to the lap's 95th-percentile slope (slopeMx, see attach) and
+// clamped to [-1, 1]: teal = gaining, coral = losing, grey below 8 % (flat).
 function deltaColAt(i){
   const g=st.ghosts[0];
   if(!live()||!g||i>=g.delta.length-1)return GREY;
-  const v=(g.delta[i+1]-g.delta[i])/Math.max(g.sMe[i+1]-g.sMe[i],0.5)/g.slopeMx,t=Math.abs(v);
+  const v=clamp((g.delta[i+1]-g.delta[i])/Math.max(g.sMe[i+1]-g.sMe[i],0.5)/g.slopeMx,-1,1),t=Math.abs(v);
   if(t<0.08)return'rgba(200,206,220,0.45)';
   const a=(0.45+0.55*clamp((t-0.08)/0.5,0,1)).toFixed(2);
   return v<0?`rgba(45,212,167,${a})`:`rgba(255,107,107,${a})`;
