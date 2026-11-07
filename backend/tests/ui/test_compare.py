@@ -397,3 +397,173 @@ def test_compare_tab_keyboard_and_narrow_panel(page, server):
     btn = page.locator("#panel-float-btn").bounding_box()
     assert tab["width"] >= 30 and tab["x"] + tab["width"] <= btn["x"] + 0.5
     assert page.errors == []
+
+
+# ── Traces over lap distance: synced zoom, pan, click to scrub ───────────────
+
+TRACES = ["cmp-delta", "cmp-spd", "cmp-thr", "cmp-brk", "cmp-str", "cmp-lat"]
+# Your lap distance at the playhead (CMP_A has the game's lap distance).
+PLAY_DIST = """() => { const dl = S.mapData.driven_line, n = dl.x.length;
+  return lerpAt(dl.lap_dist, clamp(S.playhead * (n - 1), 0, n - 1)); }"""
+
+
+def _frames(page, k=2):
+    """Let k animation frames pass (trace redraws are rAF-throttled)."""
+    page.evaluate("k => new Promise(r => { const f = i => i ? requestAnimationFrame(() => f(i - 1)) : r(); f(k); })", k)
+
+
+def _with_ghost(page, server):
+    _open(page, server, CMP_A, 1)
+    _compare_tab(page)
+    assert _add(page, CMP_B, 0)["ok"] is True
+    _frames(page)
+    v = page.evaluate("CMP.view")
+    assert v["s0"] == 0 and v["s1"] > 100          # whole lap to begin with
+    return v["s1"]
+
+
+def _view(page):
+    v = page.evaluate("CMP.view")
+    return v["s0"], v["s1"]
+
+
+def _hover(page, sel, fx=0.5):
+    loc = page.locator(sel)
+    loc.scroll_into_view_if_needed()
+    b = loc.bounding_box()
+    page.mouse.move(b["x"] + b["width"] * fx, b["y"] + b["height"] / 2)
+    return b
+
+
+def _drawn_windows(page):
+    return page.evaluate("ids => ids.map(id => document.getElementById(id).dataset.view || '')", TRACES)
+
+
+def test_wheel_zoom_syncs_all_traces(page, server):
+    L = _with_ghost(page, server)
+    assert page.locator("#h-cmp-delta").get_attribute("title") == "Estimate from 10 Hz position and game lap distance"
+    assert page.inner_text("#cmp-range") == ""            # whole lap: no range label
+    _hover(page, "#cmp-delta")
+    page.mouse.wheel(0, -100)
+    _frames(page)
+    s0, s1 = _view(page)
+    assert abs((s1 - s0) - 0.8 * L) < 1e-6 and abs(s0 - 0.1 * L) < 0.02 * L   # x0.8 around the cursor
+    want = f"{s0:.1f},{s1:.1f}"
+    assert _drawn_windows(page) == [want] * len(TRACES)   # every graph drawn with the same window
+    assert page.inner_text("#cmp-range") == f"{round(s0)}–{round(s1)} m"
+    page.mouse.wheel(0, 100)                               # x1.25 back out
+    _frames(page)
+    s0, s1 = _view(page)
+    assert abs(s0) < 1e-6 and abs(s1 - L) < 1e-6
+    assert page.errors == []
+
+
+def test_drag_pans_and_dblclick_resets(page, server):
+    L = _with_ghost(page, server)
+    page.evaluate("CMP.setView(100, 300)")
+    _frames(page)
+    play0 = page.evaluate("S.playhead")
+    b = _hover(page, "#cmp-spd")
+    x, y = b["x"] + b["width"] / 2, b["y"] + b["height"] / 2
+    page.mouse.down()
+    page.mouse.move(x - 40, y, steps=4)
+    page.mouse.move(x - 100, y, steps=4)
+    page.mouse.up()
+    _frames(page)
+    s0, s1 = _view(page)
+    assert abs((s1 - s0) - 200) < 1e-6                     # the span is kept
+    assert abs(s0 - (100 + 100 / b["width"] * 200)) < 3    # dragged left = later in the lap
+    assert page.evaluate("S.playhead") == play0            # a drag is not a click
+    assert _drawn_windows(page) == [f"{s0:.1f},{s1:.1f}"] * len(TRACES)
+    page.mouse.dblclick(x, y)
+    _frames(page)
+    s0, s1 = _view(page)
+    assert s0 == 0 and abs(s1 - L) < 1e-6
+    assert page.inner_text("#cmp-range") == ""
+    assert page.errors == []
+
+
+def test_click_scrubs_to_distance(page, server):
+    L = _with_ghost(page, server)
+    b = _hover(page, "#cmp-thr")
+    page.mouse.click(b["x"] + b["width"] / 2, b["y"] + b["height"] / 2)
+    assert abs(page.evaluate(PLAY_DIST) - L / 2) < 0.02 * L
+    assert page.evaluate("+document.getElementById('pb-scrub').value") == round(page.evaluate("S.playhead") * 1000)
+    # zoomed: a click lands on the distance under the cursor, not on the lap fraction
+    page.evaluate("CMP.setView(200, 400)")
+    page.mouse.click(b["x"] + b["width"] * 0.25, b["y"] + b["height"] / 2)
+    assert abs(page.evaluate(PLAY_DIST) - 250) < 0.02 * L
+    assert page.errors == []
+
+
+def test_ctrl_wheel_still_scales_panel(page, server):
+    _with_ghost(page, server)
+    v0 = _view(page)
+    _hover(page, "#cmp-spd")
+    page.keyboard.down("Control")
+    page.mouse.wheel(0, -100)
+    page.mouse.wheel(0, -100)
+    page.keyboard.up("Control")
+    page.wait_for_timeout(50)
+    assert page.inner_text("#panel-scale-val") == "110%"
+    assert _view(page) == v0
+    assert page.errors == []
+
+
+def test_trace_keyboard_zoom(page, server):
+    L = _with_ghost(page, server)
+    for id_ in TRACES:
+        c = page.locator("#" + id_)
+        assert c.get_attribute("tabindex") == "0" and c.get_attribute("aria-label")
+    page.locator("#cmp-str").focus()
+    page.keyboard.press("+")
+    s0, s1 = _view(page)
+    assert abs((s1 - s0) - 0.8 * L) < 1e-6 and abs((s0 + s1) / 2 - L / 2) < 1e-6   # about the centre
+    page.keyboard.press("-")
+    s0, s1 = _view(page)
+    assert abs(s0) < 1e-6 and abs(s1 - L) < 1e-6
+    page.keyboard.press("+")
+    page.keyboard.press("+")
+    a0, a1 = _view(page)
+    page.keyboard.press("ArrowRight")
+    s0, s1 = _view(page)
+    assert abs(s0 - (a0 + 0.1 * (a1 - a0))) < 1e-6 and abs((s1 - s0) - (a1 - a0)) < 1e-6
+    page.keyboard.press("ArrowLeft")
+    page.keyboard.press("ArrowLeft")
+    s0, _ = _view(page)
+    assert abs(s0 - (a0 - 0.1 * (a1 - a0))) < 1e-6
+    page.keyboard.press("Enter")                           # the playhead to the window's centre
+    s0, s1 = _view(page)
+    assert abs(page.evaluate(PLAY_DIST) - (s0 + s1) / 2) < 0.02 * L
+    page.keyboard.press("0")
+    s0, s1 = _view(page)
+    assert s0 == 0 and abs(s1 - L) < 1e-6
+    assert page.errors == []
+
+
+def test_min_span_25m(page, server):
+    L = _with_ghost(page, server)
+    page.evaluate("CMP.setView(100, 101)")
+    s0, s1 = _view(page)
+    assert abs((s1 - s0) - 25) < 1e-6 and 75 <= s0 <= 100
+    page.evaluate("CMP.setView(-50, 10 * " + str(L) + ")")   # clamped to the lap
+    s0, s1 = _view(page)
+    assert s0 == 0 and abs(s1 - L) < 1e-6
+    _hover(page, "#cmp-lat")
+    for _ in range(40):
+        page.mouse.wheel(0, -100)
+    _frames(page)
+    s0, s1 = _view(page)
+    assert abs((s1 - s0) - 25) < 1e-6
+    assert page.errors == []
+
+
+def test_traces_follow_panel_scale(page, server):
+    _with_ghost(page, server)
+    h1 = page.evaluate("document.getElementById('cmp-delta').getBoundingClientRect().height")
+    assert 118 <= h1 <= 124                               # 120 panel units (+ border)
+    page.evaluate("PanelSize.setScale(2)")
+    _frames(page)
+    h2 = page.evaluate("document.getElementById('cmp-delta').getBoundingClientRect().height")
+    assert abs(h2 / h1 - 2.0) < 0.05
+    assert page.errors == []

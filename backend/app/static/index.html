@@ -364,6 +364,10 @@ canvas.tire-cv{display:block;margin:0 auto;}
 .cmp-quick button{font-size:var(--fs-xs);min-height:36px;}
 .cmp-status{margin-top:6px;font-size:var(--fs-xs);color:var(--text-2);min-height:1.2em;}
 .cmp-align-row{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:10px;}
+.cmp-hint{display:flex;flex-wrap:wrap;gap:4px 10px;margin:-4px 0 6px;font-size:var(--fs-xs);color:var(--text-3);}
+.cmp-range{margin-left:auto;font:600 var(--fs-xs) var(--font-data);font-variant-numeric:tabular-nums;color:var(--warn);}
+canvas.cmp-tr{cursor:crosshair;touch-action:none;}
+canvas.cmp-tr.grabbing{cursor:grabbing;}
 /* Delta pill over the map: below the chase view's notices (#chase-note z 22,
    #chase-msg z 26, both at the top), so it never covers them. */
 #cmp-pill{position:absolute;top:58px;left:50%;transform:translateX(-50%);z-index:21;display:none;gap:14px;padding:6px 12px;border-radius:999px;
@@ -809,6 +813,24 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
             </div>
           </div>
         </section>
+        <!-- Traces over YOUR lap distance, one shared zoom window (CMP.view).
+             Each canvas is focusable: the hint below says how to drive it. -->
+        <section class="card" aria-labelledby="h-cmp-delta">
+          <h3 class="sec" id="h-cmp-delta" title="Estimate from 10 Hz position and game lap distance">Time delta<span class="sec-unit">s · + = you are slower</span></h3>
+          <div class="cmp-hint"><span id="cmp-hint">Scroll to zoom all graphs · drag to pan · double-click for the whole lap · click to move the playhead</span><span class="cmp-range" id="cmp-range"></span></div>
+          <canvas class="trace cmp-tr" id="cmp-delta" height="120" tabindex="0" role="img" aria-describedby="cmp-hint cmp-keys" aria-label="Time delta to each ghost over lap distance"></canvas>
+          <span class="sr-only" id="cmp-keys">Keys: plus and minus zoom, left and right arrows pan, 0 shows the whole lap, Enter moves the playhead to the middle.</span>
+        </section>
+        <section class="card" aria-labelledby="h-cmp-spd"><h3 class="sec" id="h-cmp-spd">Ground speed<span class="sec-unit">km/h</span></h3>
+          <canvas class="trace cmp-tr" id="cmp-spd" height="100" tabindex="0" role="img" aria-describedby="cmp-hint cmp-keys" aria-label="Ground speed of every lap over lap distance"></canvas></section>
+        <section class="card" aria-labelledby="h-cmp-thr"><h3 class="sec" id="h-cmp-thr">Throttle<span class="sec-unit">%</span></h3>
+          <canvas class="trace cmp-tr" id="cmp-thr" height="64" tabindex="0" role="img" aria-describedby="cmp-hint cmp-keys" aria-label="Throttle of every lap over lap distance"></canvas></section>
+        <section class="card" aria-labelledby="h-cmp-brk"><h3 class="sec" id="h-cmp-brk">Brake<span class="sec-unit">%</span></h3>
+          <canvas class="trace cmp-tr" id="cmp-brk" height="64" tabindex="0" role="img" aria-describedby="cmp-hint cmp-keys" aria-label="Brake of every lap over lap distance"></canvas></section>
+        <section class="card" aria-labelledby="h-cmp-str"><h3 class="sec" id="h-cmp-str">Steering</h3>
+          <canvas class="trace cmp-tr" id="cmp-str" height="76" tabindex="0" role="img" aria-describedby="cmp-hint cmp-keys" aria-label="Steering of every lap over lap distance"></canvas></section>
+        <section class="card" aria-labelledby="h-cmp-lat"><h3 class="sec" id="h-cmp-lat" title="Estimate from 10 Hz position and game lap distance">Line offset to you<span class="sec-unit">m · + = ghost to your right</span></h3>
+          <canvas class="trace cmp-tr" id="cmp-lat" height="76" tabindex="0" role="img" aria-describedby="cmp-hint cmp-keys" aria-label="Distance of each ghost's line from yours over lap distance"></canvas></section>
       </div>
     </div></div>
     <div class="panel-resize-handle" id="panel-resize-handle" tabindex="0" role="button" aria-label="Resize telemetry window with arrow keys"></div>
@@ -3214,6 +3236,168 @@ function deltaColAt(i){
   return v<0?`rgba(45,212,167,${a})`:`rgba(255,107,107,${a})`;
 }
 
+// ── traces over lap distance ──
+// x is YOUR lap distance (me.sPrim, the basis meAtDist reads); one window
+// st.view = {s0, s1} in metres is shared by all six graphs. Each ghost is
+// plotted on the basis its alignment used (attach): its own channels at
+// g.s (its points), delta and line offset at g.sMe (your points). Mixing
+// sPrim with g.s would shift a ghost without game lap distance against
+// yours by the difference between the game's and the driven distance.
+const TRACES=[['cmp-delta',120],['cmp-spd',100],['cmp-thr',64],['cmp-brk',64],['cmp-str',76],['cmp-lat',76]];
+const MIN_SPAN=25;                   // metres: below that 10 Hz points are a few pixels apart
+const lapLen=()=>st.me?(st.me.lapLen||Math.max(st.me.sPrim[st.me.n-1],1)):0;
+Object.assign(st,{view:{s0:0,s1:0},full:true,viewFile:null,raf:null});
+function updateRange(){
+  const e=document.getElementById('cmp-range');
+  if(e)e.textContent=st.me&&!st.full?`${Math.round(st.view.s0)}–${Math.round(st.view.s1)} m`:'';
+}
+// The window, clamped to the lap and to MIN_SPAN. Drawing waits for the
+// next frame, so a burst of wheel or pointer events costs one redraw.
+function setView(s0,s1,draw=true){
+  const L=lapLen();if(!L)return;
+  const span=clamp(s1-s0,Math.min(MIN_SPAN,L),L);
+  s0=clamp(s0,0,L-span);
+  st.view={s0,s1:s0+span};st.full=span>=L-1e-9;
+  updateRange();
+  if(draw)scheduleDraw();
+}
+// Zoom by k keeping distance c at the same place on screen.
+function zoomAt(c,k){
+  const{s0,s1}=st.view,L=lapLen(),span=clamp((s1-s0)*k,Math.min(MIN_SPAN,L),L),a=(c-s0)/((s1-s0)||1);
+  setView(c-a*span,c-a*span+span);
+}
+// Move the playhead to your lap distance s (the scrubber is 0..1000 of your points).
+function scrubTo(s){
+  const me=st.me;if(!me)return;
+  const v=Math.round(meAtDist(s)/Math.max(1,me.n-1)*1000);
+  setScrub(v);onScrub(String(v));
+}
+function scheduleDraw(){if(st.raf==null)st.raf=requestAnimationFrame(drawTraces);}
+
+// One graph. Series: {x, v, k (value scale), col, w, a, dot(f) -> {s, v}}.
+// Scale-aware like redrawTraceWithDot: drawn in panel units (W x h), the
+// bitmap sized for the on-screen pixels (x panelScale x dpr).
+function plotTrace(id,h,series,opt){
+  const cv=document.getElementById(id);if(!cv)return;
+  const rect=cv.getBoundingClientRect();if(!(rect.width>0))return;
+  const dpr=devicePixelRatio||1,sc=panelScale();
+  cv.width=rect.width*dpr;cv.height=h*sc*dpr;
+  const ctx=cv.getContext('2d');ctx.scale(dpr*sc,dpr*sc);
+  const W=rect.width/sc,H=h;ctx.clearRect(0,0,W,H);
+  const me=st.me,{s0,s1}=st.view,span=(s1-s0)||1,xOf=s=>(s-s0)/span*W;
+  cv.dataset.view=`${s0.toFixed(1)},${s1.toFixed(1)}`;   // the window this graph shows (tests read it)
+  // Index window per series: binary search on its (monotonic) distance,
+  // plus one point either side so lines run to the edges.
+  series.forEach(s=>{s.i0=Math.max(0,Math.floor(fAt(s.x,s0)));s.i1=Math.min(s.v.length-1,Math.ceil(fAt(s.x,s1)));});
+  let lo=opt.lo,hi=opt.hi;
+  if(lo==null||hi==null){
+    // y fits what is visible, so zooming into a corner also stretches it vertically
+    lo=Infinity;hi=-Infinity;
+    series.forEach(s=>{for(let i=s.i0;i<=s.i1;i++){if(s.x[i]<s0||s.x[i]>s1)continue;const v=s.v[i]*s.k;if(v<lo)lo=v;if(v>hi)hi=v;}});
+    if(!isFinite(lo)){lo=-1;hi=1;}
+    if(opt.sym){const m=Math.max(Math.abs(lo),Math.abs(hi),1e-3);lo=-m;hi=m;}
+    const mg=(hi-lo)*0.06||1;lo-=mg;hi+=mg;
+  }
+  const yOf=v=>H-4-(v-lo)/(hi-lo)*(H-8);
+  if(lo<0&&hi>0){ctx.strokeStyle='rgba(255,255,255,.14)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(0,yOf(0));ctx.lineTo(W,yOf(0));ctx.stroke();}
+  series.forEach(s=>{
+    ctx.strokeStyle=s.col;ctx.lineWidth=s.w||1.3;ctx.globalAlpha=s.a||1;ctx.beginPath();
+    for(let i=s.i0;i<=s.i1;i++){const x=xOf(s.x[i]),y=yOf(s.v[i]*s.k);i===s.i0?ctx.moveTo(x,y):ctx.lineTo(x,y);}
+    ctx.stroke();ctx.globalAlpha=1;
+  });
+  const fmt=opt.fmt||(v=>v.toFixed(1));
+  ctx.fillStyle='rgba(255,255,255,.3)';ctx.font=fontData(8,false);ctx.textAlign='left';
+  ctx.fillText(fmt(hi),2,9);ctx.fillText(fmt(lo),2,H-2);
+  if(opt.empty){ctx.textAlign='center';ctx.fillStyle='rgba(255,255,255,.45)';ctx.fillText(opt.empty,W/2,H/2+4);}
+  // the visible range on every graph too (the label above is out of sight lower down)
+  if(!st.full){ctx.textAlign='center';ctx.fillStyle='rgba(251,191,36,.75)';ctx.fillText(`${Math.round(s0)}–${Math.round(s1)} m`,W/2,H-2);}
+  if(!me)return;
+  // playhead at YOUR distance; a dot on every lap at that distance
+  const f=Math.min(playF(),me.n-1),sp=lerpAt(me.sPrim,f);
+  ctx.textAlign='right';ctx.fillStyle='rgba(255,255,255,.45)';ctx.fillText(`${Math.round(sp)} m`,W-3,9);
+  if(sp>=s0&&sp<=s1){
+    const px=xOf(sp);
+    ctx.strokeStyle='rgba(255,255,255,.25)';ctx.lineWidth=1;ctx.setLineDash([3,3]);
+    ctx.beginPath();ctx.moveTo(px,0);ctx.lineTo(px,H);ctx.stroke();ctx.setLineDash([]);
+  }
+  series.forEach(s=>{
+    if(!s.dot)return;const p=s.dot(f);if(!(p.s>=s0&&p.s<=s1))return;
+    ctx.fillStyle=s.col;ctx.strokeStyle='#000';ctx.lineWidth=1;
+    ctx.beginPath();ctx.arc(xOf(p.s),yOf(p.v*s.k),3.5,0,Math.PI*2);ctx.fill();ctx.stroke();
+  });
+}
+// All six graphs. Ghosts under yours, the last ghost first (G1 on top), as on the map.
+function drawTraces(){
+  if(st.raf!=null){cancelAnimationFrame(st.raf);st.raf=null;}
+  const body=document.getElementById('body-compare');
+  if(!body||body.classList.contains('hidden'))return;        // drawn when the tab is shown (onTab)
+  const me=live()?st.me:null,gs=me?st.ghosts.slice().reverse():[];
+  const meDot=k=>f=>({s:lerpAt(me.sPrim,f),v:lerpAt(me.d.driven_line[k],f)});
+  // a ghost's own channel at your distance: its point at the same aligned distance
+  const gDot=(g,arr)=>f=>{const s=lerpAt(g.sMe,f);return{s,v:lerpAt(arr,fAt(g.s,s))};};
+  const chan=(k,scale)=>{
+    if(!me)return[];
+    const out=gs.map(g=>({g,arr:g.d.driven_line[k]||[]})).filter(o=>o.arr.length===o.g.s.length)
+      .map(({g,arr})=>({x:g.s,v:arr,k:scale,col:g.col,w:1.3,a:.9,dot:gDot(g,arr)}));
+    const mine=me.d.driven_line[k]||[];
+    if(mine.length===me.n)out.push({x:me.sPrim,v:mine,k:scale,col:ME_COL,w:1.6,dot:meDot(k)});
+    return out;
+  };
+  const perMe=key=>gs.map(g=>({x:g.sMe,v:g[key],k:1,col:g.col,w:1.6,dot:f=>({s:lerpAt(g.sMe,f),v:lerpAt(g[key],f)})}));
+  const noGhost=me&&!gs.length?'Add a ghost to compare':(!me?'Load a lap':null);
+  plotTrace('cmp-delta',120,perMe('delta'),{sym:true,fmt:fmtD,empty:noGhost});
+  plotTrace('cmp-spd',100,chan('speed',1),{fmt:v=>v.toFixed(0),empty:me?null:'Load a lap'});
+  plotTrace('cmp-thr',64,chan('throttle',100),{lo:-4,hi:104,fmt:v=>v.toFixed(0)});
+  plotTrace('cmp-brk',64,chan('brake',100),{lo:-4,hi:104,fmt:v=>v.toFixed(0)});
+  plotTrace('cmp-str',76,chan('steering',1),{sym:true,fmt:v=>v.toFixed(2)});
+  plotTrace('cmp-lat',76,perMe('lat'),{sym:true,fmt:v=>v.toFixed(1),empty:noGhost});
+}
+// Synced zoom and pan on every graph: wheel = zoom around the cursor, drag
+// = pan, double-click = whole lap, click (< 4 px of movement) = playhead
+// there. Ctrl+wheel is left alone: it bubbles to the panel's Size
+// (PanelSize). Keyboard on a focused graph: + / - zoom about the centre,
+// Left / Right pan 10 %, 0 = whole lap, Enter = playhead to the centre.
+TRACES.forEach(([id])=>{
+  const cv=document.getElementById(id);if(!cv)return;
+  const sAt=e=>{const r=cv.getBoundingClientRect();return st.view.s0+(e.clientX-r.left)/(r.width||1)*(st.view.s1-st.view.s0);};
+  cv.addEventListener('wheel',e=>{
+    if(e.ctrlKey||!live()||!e.deltaY)return;
+    e.preventDefault();
+    zoomAt(sAt(e),e.deltaY<0?0.8:1.25);
+  },{passive:false});
+  let drag=null;
+  cv.addEventListener('pointerdown',e=>{
+    if(!live()||e.button!==0)return;
+    drag={x:e.clientX,v:{...st.view},w:cv.getBoundingClientRect().width||1,moved:false};
+    cv.setPointerCapture(e.pointerId);
+  });
+  cv.addEventListener('pointermove',e=>{
+    if(!drag)return;const dx=e.clientX-drag.x;
+    if(!drag.moved&&Math.abs(dx)<4)return;
+    drag.moved=true;cv.classList.add('grabbing');
+    const ds=-dx/drag.w*(drag.v.s1-drag.v.s0);
+    setView(drag.v.s0+ds,drag.v.s1+ds);
+  });
+  cv.addEventListener('pointerup',e=>{
+    if(!drag)return;const d=drag;drag=null;cv.classList.remove('grabbing');
+    if(!d.moved&&live())scrubTo(sAt(e));
+  });
+  cv.addEventListener('pointercancel',()=>{drag=null;cv.classList.remove('grabbing');});
+  cv.addEventListener('dblclick',()=>{if(live())setView(0,lapLen());});
+  cv.addEventListener('keydown',e=>{
+    if(!live()||e.ctrlKey||e.altKey||e.metaKey)return;
+    const{s0,s1}=st.view,span=s1-s0,c=(s0+s1)/2;
+    if(e.key==='+'||e.key==='=')zoomAt(c,0.8);
+    else if(e.key==='-'||e.key==='_')zoomAt(c,1.25);
+    else if(e.key==='ArrowLeft')setView(s0-span*0.1,s1-span*0.1);
+    else if(e.key==='ArrowRight')setView(s0+span*0.1,s1+span*0.1);
+    else if(e.key==='0')setView(0,lapLen());
+    else if(e.key==='Enter')scrubTo(c);
+    else return;
+    e.preventDefault();
+  });
+});
+
 // ── list, pill, status ──
 function setStatus(msg){const e=document.getElementById('cmp-status');if(e)e.textContent=msg||'';}
 function rowTitle(g,k){return`<span class="nw">G${k+1} · L${g.lap} ·</span> <span class="nw">${fmtTime(g.lapTime)}</span>`;}
@@ -3261,6 +3445,7 @@ function onPlayhead(){
     const g=st.ghosts.find(x=>String(x.id)===e.dataset.g);if(!g)return;
     const d=deltaAt(g);e.textContent=fmtD(d);e.className='cmp-d '+dCls(d);
   });
+  drawTraces();                        // playhead line and dots (and Size changes, via applyPanelScale)
 }
 // The "Time vs ghost 1" overlay exists only while there is a ghost; when the
 // last one goes the map falls back to Throttle / Brake.
@@ -3275,7 +3460,7 @@ function syncOverlay(draw=true){
   }
   if(sel.value==='delta'&&window.Chase)Chase.setOverlayColors();
 }
-function changed(draw=true){renderList();updatePill();syncOverlay(draw);if(draw&&S.mapData)drawMap();}
+function changed(draw=true){renderList();updatePill();syncOverlay(draw);drawTraces();if(draw&&S.mapData)drawMap();}
 
 // ── picker ──
 async function fillFiles(force){
@@ -3417,8 +3602,13 @@ document.getElementById('cmp-align').addEventListener('keydown',e=>{
 function onMainLap(){
   st.gen++;
   st.pending=[];                       // their payloads are dropped on arrival
-  if(!S.mapData){st.me=null;changed(false);return;}
+  if(!S.mapData){st.me=null;updateRange();changed(false);return;}
   st.me=prepLap(S.mapData,S.lapDur);
+  // The trace window survives ghost changes and another lap of the same
+  // file (clamped to the new lap); a lap from another file starts whole.
+  const vf=key(S.source,S.file);
+  if(vf!==st.viewFile){st.viewFile=vf;st.full=true;}
+  if(st.full){st.view={s0:0,s1:lapLen()};updateRange();}else setView(st.view.s0,st.view.s1,false);
   const tk=myTrack(),mc=myClass();
   if(st.prevTrack!=null&&tk!==st.prevTrack)st.ghosts=[];
   st.prevTrack=tk;
@@ -3429,12 +3619,14 @@ function onMainLap(){
   changed(false);
   if(st.index||!document.getElementById('body-compare').classList.contains('hidden'))fillFiles();
 }
-function onTab(){fillFiles(true);renderList();}
+function onTab(){fillFiles(true);renderList();drawTraces();}
 
 renderList();
 return{
   get ghosts(){return Object.freeze(st.ghosts.slice());},   // read-only view
   get align(){return st.align;},
+  get view(){return{s0:st.view.s0,s1:st.view.s1};},          // metres of your lap distance
+  setView:(s0,s1)=>setView(+s0,+s1),
   add,remove,setAlign,ghostPose,meAtDist,deltaAt,onMainLap,onPlayhead,drawLines2D,drawMarkers2D,deltaColAt,
   fillLaps,addSelected,addBestHere,addBestOther,onTab,
 };
