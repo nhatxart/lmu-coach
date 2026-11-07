@@ -3183,7 +3183,17 @@ function attach(g,me){
   for(let i=0;i<n-1;i++)sl[i]=Math.abs((delta[i+1]-delta[i])/Math.max(sMe[i+1]-sMe[i],0.5));
   sl.sort();
   const mx=Math.max(sl.length?sl[Math.min(sl.length-1,Math.floor(0.95*(sl.length-1)))]:0,1e-9);
-  Object.assign(g,{s:sG,t:G.t,delta,lat,approx:why.length>0,approxWhy:why,dx,dz,sMe,slopeMx:mx});
+  // Each ghost point on YOUR lap-distance axis (me.sPrim, what the traces
+  // and the playhead use): its aligned distance, read through your points.
+  // Without lap distance on the ghost, sMe/sG are driven distance scaled to
+  // the lap while sPrim is the game's lap distance; drawing sG on that axis
+  // shifted the ghost by sMe - sPrim (up to tens of metres). Points past
+  // your ends continue at the same offset (non-decreasing, so fAt works).
+  // Both laps with lap distance: sMe is sPrim and xMe equals sG.
+  const xMe=new Float64Array(G.n),a0=sMe[0],a1=sMe[n-1];
+  for(let j=0;j<G.n;j++){const v=sG[j];
+    xMe[j]=v<a0?me.sPrim[0]-(a0-v):v>a1?me.sPrim[n-1]+(v-a1):lerpAt(me.sPrim,fAt(sMe,v));}
+  Object.assign(g,{s:sG,t:G.t,delta,lat,approx:why.length>0,approxWhy:why,dx,dz,sMe,xMe,slopeMx:mx});
   return null;
 }
 
@@ -3238,15 +3248,17 @@ function deltaColAt(i){
 
 // ── traces over lap distance ──
 // x is YOUR lap distance (me.sPrim, the basis meAtDist reads); one window
-// st.view = {s0, s1} in metres is shared by all six graphs. Each ghost is
-// plotted on the basis its alignment used (attach): its own channels at
-// g.s (its points), delta and line offset at g.sMe (your points). Mixing
-// sPrim with g.s would shift a ghost without game lap distance against
-// yours by the difference between the game's and the driven distance.
+// st.view = {s0, s1} in metres is shared by all six graphs. Every series is
+// drawn on that one axis: delta and line offset at your sPrim (they are
+// values at your points), a ghost's own channels at g.xMe (its points
+// mapped onto your axis through its alignment, see attach). PREVIOUSLY
+// ghosts were drawn at their alignment distance (g.s / g.sMe): for a ghost
+// without game lap distance that is driven distance, so on your game-
+// distance axis it sat up to tens of metres off your lines and playhead.
 const TRACES=[['cmp-delta',120],['cmp-spd',100],['cmp-thr',64],['cmp-brk',64],['cmp-str',76],['cmp-lat',76]];
 const MIN_SPAN=25;                   // metres: below that 10 Hz points are a few pixels apart
 const lapLen=()=>st.me?(st.me.lapLen||Math.max(st.me.sPrim[st.me.n-1],1)):0;
-Object.assign(st,{view:{s0:0,s1:0},full:true,viewFile:null,raf:null});
+Object.assign(st,{view:{s0:0,s1:0},full:true,viewFile:null,raf:null,plotted:{}});
 function updateRange(){
   const e=document.getElementById('cmp-range');
   if(e)e.textContent=st.me&&!st.full?`${Math.round(st.view.s0)}–${Math.round(st.view.s1)} m`:'';
@@ -3314,6 +3326,7 @@ function plotTrace(id,h,series,opt){
   if(!me)return;
   // playhead at YOUR distance; a dot on every lap at that distance
   const f=Math.min(playF(),me.n-1),sp=lerpAt(me.sPrim,f);
+  st.plotted[id]={sp,f,series};        // what was drawn, for CMP._plotted (tests)
   ctx.textAlign='right';ctx.fillStyle='rgba(255,255,255,.45)';ctx.fillText(`${Math.round(sp)} m`,W-3,9);
   if(sp>=s0&&sp<=s1){
     const px=xOf(sp);
@@ -3333,17 +3346,19 @@ function drawTraces(){
   if(!body||body.classList.contains('hidden'))return;        // drawn when the tab is shown (onTab)
   const me=live()?st.me:null,gs=me?st.ghosts.slice().reverse():[];
   const meDot=k=>f=>({s:lerpAt(me.sPrim,f),v:lerpAt(me.d.driven_line[k],f)});
-  // a ghost's own channel at your distance: its point at the same aligned distance
-  const gDot=(g,arr)=>f=>{const s=lerpAt(g.sMe,f);return{s,v:lerpAt(arr,fAt(g.s,s))};};
+  // a ghost's own channel at the playhead: its point at your aligned distance
+  // (the lookup ghostPose makes), drawn on the playhead
+  const gDot=(g,arr)=>f=>({s:lerpAt(me.sPrim,f),v:lerpAt(arr,fAt(g.s,lerpAt(g.sMe,f)))});
   const chan=(k,scale)=>{
     if(!me)return[];
-    const out=gs.map(g=>({g,arr:g.d.driven_line[k]||[]})).filter(o=>o.arr.length===o.g.s.length)
-      .map(({g,arr})=>({x:g.s,v:arr,k:scale,col:g.col,w:1.3,a:.9,dot:gDot(g,arr)}));
+    const out=gs.map(g=>({g,arr:g.d.driven_line[k]||[]})).filter(o=>o.arr.length===o.g.xMe.length)
+      .map(({g,arr})=>({x:g.xMe,v:arr,k:scale,col:g.col,w:1.3,a:.9,dot:gDot(g,arr)}));
     const mine=me.d.driven_line[k]||[];
     if(mine.length===me.n)out.push({x:me.sPrim,v:mine,k:scale,col:ME_COL,w:1.6,dot:meDot(k)});
     return out;
   };
-  const perMe=key=>gs.map(g=>({x:g.sMe,v:g[key],k:1,col:g.col,w:1.6,dot:f=>({s:lerpAt(g.sMe,f),v:lerpAt(g[key],f)})}));
+  // delta and line offset are values AT your point i: x is your sPrim[i]
+  const perMe=key=>gs.map(g=>({x:me.sPrim,v:g[key],k:1,col:g.col,w:1.6,dot:f=>({s:lerpAt(me.sPrim,f),v:lerpAt(g[key],f)})}));
   const noGhost=me&&!gs.length?'Add a ghost to compare':(!me?'Load a lap':null);
   plotTrace('cmp-delta',120,perMe('delta'),{sym:true,fmt:fmtD,empty:noGhost});
   plotTrace('cmp-spd',100,chan('speed',1),{fmt:v=>v.toFixed(0),empty:me?null:'Load a lap'});
@@ -3627,6 +3642,13 @@ return{
   get align(){return st.align;},
   get view(){return{s0:st.view.s0,s1:st.view.s1};},          // metres of your lap distance
   setView:(s0,s1)=>setView(+s0,+s1),
+  // Debug read of the last drawing of one graph: playhead distance, and per
+  // series (ghosts first, yours last) the x it was drawn at, the values and
+  // the playhead dot's x. Plain arrays; tests only.
+  _plotted(id){
+    const p=st.plotted[id];if(!p)return null;
+    return{sp:p.sp,series:p.series.map(s=>({col:s.col,x:Array.from(s.x),v:Array.from(s.v,v=>v*s.k),dotS:s.dot?s.dot(p.f).s:null}))};
+  },
   add,remove,setAlign,ghostPose,meAtDist,deltaAt,onMainLap,onPlayhead,drawLines2D,drawMarkers2D,deltaColAt,
   fillLaps,addSelected,addBestHere,addBestOther,onTab,
 };

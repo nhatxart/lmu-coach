@@ -558,6 +558,59 @@ def test_min_span_25m(page, server):
     assert page.errors == []
 
 
+def _dip_at_driven_fraction(dl, frac=0.4):
+    """Index of the point at fraction `frac` of the distance driven, with the
+    speed there halved: a feature at one place on the track in every lap."""
+    cum = [0.0]
+    for i in range(1, len(dl["x"])):
+        cum.append(cum[-1] + math.hypot(dl["x"][i] - dl["x"][i - 1], dl["z"][i] - dl["z"][i - 1]))
+    k = min(range(len(cum)), key=lambda i: abs(cum[i] - frac * cum[-1]))
+    dl["speed"][k] *= 0.5
+    return k
+
+
+def test_ghost_without_lap_dist_on_your_axis(page, server):
+    """Your lap has the game's lap distance, the ghost (CMP_NOLD) has not, so
+    attach aligns on driven distance. The graphs' x axis is your game lap
+    distance (sPrim). Every ghost series must be mapped onto that axis, not
+    drawn at its driven distance. Your lap distance is warped here (+60 m
+    sin(pi s / L), same ends) so the two bases differ by up to 60 m."""
+    def route(r):
+        url = r.request.url
+        if CMP_A not in url and CMP_NOLD not in url:
+            r.continue_()
+            return
+        resp = r.fetch()
+        j = resp.json()
+        dl = j["driven_line"]
+        _dip_at_driven_fraction(dl)
+        if CMP_A in url:
+            L = j["lap_len_m"]
+            dl["lap_dist"] = [s + 60 * math.sin(math.pi * s / L) for s in dl["lap_dist"]]
+        r.fulfill(response=resp, json=j)
+    page.route(re.compile(r".*/trackmap.*"), route)
+    _open(page, server, CMP_A, 1)
+    _compare_tab(page)
+    assert _add(page, CMP_NOLD, 0)["ok"] is True
+    assert page.evaluate("CMP.ghosts[0].approx") is True
+    _scrub(page, 400)
+    sprim = page.evaluate("CMP._plotted('cmp-spd').series.at(-1).x")      # yours: drawn last
+    for id_ in ("cmp-delta", "cmp-lat", "cmp-spd", "cmp-thr"):
+        p = page.evaluate(f"CMP._plotted('{id_}')")
+        ghost = p["series"][0]
+        assert abs(ghost["dotS"] - p["sp"]) < 1e-6, (id_, ghost["dotS"], p["sp"])   # dot on the playhead
+        if id_ in ("cmp-delta", "cmp-lat"):
+            assert ghost["x"] == sprim                     # values at your points: your axis
+    # the speed dip (one place on the track) lands where yours does. Tolerance
+    # 6 m: one 10 Hz point is ~5 m apart here, plus the small difference in
+    # driven length between the two lines (both scaled to the lap).
+    spd = page.evaluate("""() => { const p = CMP._plotted('cmp-spd');
+      return p.series.map(s => { let k = 0; for (let i = 1; i < s.v.length; i++) if (s.v[i] < s.v[k]) k = i;
+        return s.x[k]; }); }""")
+    assert abs(spd[0] - spd[-1]) < 6, spd
+    assert page.errors == []
+
+
 def test_traces_follow_panel_scale(page, server):
     _with_ghost(page, server)
     h1 = page.evaluate("document.getElementById('cmp-delta').getBoundingClientRect().height")
