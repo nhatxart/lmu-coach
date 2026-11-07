@@ -3649,7 +3649,7 @@ return{
     const p=st.plotted[id];if(!p)return null;
     return{sp:p.sp,series:p.series.map(s=>({col:s.col,x:Array.from(s.x),v:Array.from(s.v,v=>v*s.k),dotS:s.dot?s.dot(p.f).s:null}))};
   },
-  add,remove,setAlign,ghostPose,meAtDist,deltaAt,onMainLap,onPlayhead,drawLines2D,drawMarkers2D,deltaColAt,
+  add,remove,setAlign,ghostPose,meAtDist,deltaAt,live,onMainLap,onPlayhead,drawLines2D,drawMarkers2D,deltaColAt,
   fillLaps,addSelected,addBestHere,addBestOther,onTab,
 };
 })();
@@ -3916,6 +3916,7 @@ function disposeWorld(){
   ribbon=null;surf=null;surfRow=0;
   disposeCar();                               // per lap: the class may change
   disposeSlip();                              // per lap: other slip angles, maybe none
+  disposeGhosts();                            // per lap: lined up against your new lap and surface
   labelLayer.textContent='';cornerPills=[];betaPill=null;
 }
 
@@ -4001,7 +4002,12 @@ function ensureCarModels(){
     if(!r.ok)throw new Error('car_models.json: HTTP '+r.status);return r.json();})])
     .then(([mod,json])=>{carModels={mod,json};return true;})
     .catch(e=>{console.warn('[chase] car model not available:',e);st.carFailed=true;
-      showMsg("Car model didn't load. Showing the chevron.");return false;});
+      // the ghosts load the models too (whatever the Car option says), so
+      // the one message names what falls back
+      const mine=S.chaseOpts&&S.chaseOpts.car==='car',gh=ghostList().length>0;
+      showMsg(mine&&gh?"Car model didn't load. Showing the chevron; ghosts as boxes."
+        :gh?"Car model didn't load. Ghosts are drawn as boxes.":"Car model didn't load. Showing the chevron.");
+      return false;});
   return carLoading;
 }
 function disposeCar(){
@@ -4048,6 +4054,154 @@ function buildCarOrThrow(d){
   carContacts.set([r,-dims.track_front/2,r,dims.track_front/2,-r,-dims.track_rear/2,-r,dims.track_rear/2]);
   car={...c,cls,dims,source,tail:r+dims.overhang_front-dims.length,mask:-1};
   carFor=d;st.carBuilds++;
+}
+
+// ── ghosts (Compare tab, window.CMP) ─────────────────────────────────────────
+// One see-through car per ghost, of the ghost payload's own class (the same
+// classDims rule as yours), every material a tinted clone in the ghost's
+// colour; a see-through box with an outline when the car models are not
+// there. Plus the ghost's driven line on the surface. The Compare pill and
+// list carry the numbers, so there are no 3D labels.
+// Built only when the ghost set, your payload, the surface or the model
+// state changes (ghostKey/ghostFor/ghostSurf); per frame only the poses.
+const GHOST_OPACITY=0.35,GHOST_BOX_H=1.1,GHOST_LINE_LIFT=0.08,GHOST_LINE_OPACITY=0.85;
+// ghostObjs: {g, group, line, contacts (along, right) x 4, kind 'car'|'box', fMe}
+let ghostObjs=[],ghostKey=null,ghostFor=null,ghostSurf=null;
+// Only ghosts lined up against the lap on screen: between a lap change and
+// CMP.onMainLap they still point at the old lap's indices.
+const ghostList=()=>window.CMP&&CMP.live()?CMP.ghosts.filter(g=>g.L):[];
+function disposeGhosts(){
+  ghostObjs.forEach(o=>[o.group,o.line].forEach(obj=>{
+    if(!obj)return;
+    obj.traverse(q=>{
+      if(q.geometry)q.geometry.dispose();
+      if(q.material)[].concat(q.material).forEach(m=>m.dispose());
+    });
+    scene.remove(obj);
+  }));
+  ghostObjs=[];ghostKey=null;ghostFor=null;ghostSurf=null;
+}
+// Car models for the ghosts: 'car' once loaded, 'box' when they failed,
+// 'wait' while loading (nothing is drawn for that moment; one frame follows
+// when they are in, like your car).
+let ghostWaiting=false;                      // one waiter, not one per frame
+function ghostModels(){
+  if(carModels)return'car';
+  if(st.carFailed)return'box';                // the files did not load
+  if(!ghostWaiting){
+    ghostWaiting=true;
+    ensureCarModels().then(()=>{ghostWaiting=false;if(st.mix>=1&&!(S.playing&&!S.holdPause)&&!tween)render();});
+  }
+  return'wait';
+}
+function ghostCar(g,col,contacts){
+  const{mod,json}=carModels,d=g.d;
+  const want=d.car&&(d.car.requested||d.car.class);
+  const{cls,dims}=mod.classDims(json,want);
+  if(!dims||!(dims.wheelbase>0)||!(dims.track_front>0)||!(dims.track_rear>0))throw new Error(`no usable dimensions for ${cls}`);
+  const c=mod.buildCar(T,cls,dims);
+  // Clone and tint every material (a material shared by parts, like the
+  // body's, is cloned once); the originals were never drawn.
+  const clones=new Map();
+  c.group.traverse(o=>{
+    if(!o.material)return;
+    let m=clones.get(o.material);
+    if(!m){
+      m=o.material.clone();m.color.copy(col);m.transparent=true;m.opacity=GHOST_OPACITY;m.depthWrite=false;
+      clones.set(o.material,m);
+    }
+    o.material=m;
+  });
+  clones.forEach((m,orig)=>orig.dispose());
+  const r=dims.wheelbase/2;
+  contacts.set([r,-dims.track_front/2,r,dims.track_front/2,-r,-dims.track_rear/2,-r,dims.track_rear/2]);
+  return c.group;
+}
+function ghostBox(col,contacts){
+  const geo=new T.BoxGeometry(CAR_LEN,GHOST_BOX_H,CAR_W);
+  geo.translate(0,GHOST_BOX_H/2,0);                     // origin on the ground, like the car model
+  const grp=new T.Group();
+  grp.add(new T.Mesh(geo,new T.MeshBasicMaterial({color:col,transparent:true,opacity:GHOST_OPACITY,depthWrite:false})));
+  grp.add(new T.LineSegments(new T.EdgesGeometry(geo),new T.LineBasicMaterial({color:col})));
+  const a=CAR_LEN*0.4,w=CAR_W/2;
+  contacts.set([a,-w,a,w,-a,-w,-a,w]);
+  return grp;
+}
+// The ghost's driven line, GHOST_LINE_LIFT above the surface. Each point's
+// surface search starts at YOUR point at the same lap distance: g.xMe is the
+// ghost point on your lap-distance axis (sPrim, what meAtDist reads), so
+// this holds for a ghost aligned on driven distance too (CMP attach).
+// Without a surface: your line's height there.
+function ghostLine(g,col,dl){
+  const G=g.L,n=G.n;if(n<2||!g.xMe)return null;
+  const nMe=dl.x.length,hasY=dl.y&&dl.y.length===nMe,pos=new Float32Array(n*3);
+  for(let j=0;j<n;j++){
+    const x=G.x[j]+g.dx,z=G.z[j]+g.dz,fMe=CMP.meAtDist(g.xMe[j]);
+    let h=0;
+    if(surf){surfRow=surfRowAt(fMe);h=surfH(x,z);}
+    else if(hasY)h=lerpAt(dl.y,fMe);
+    pos[3*j]=x;pos[3*j+1]=h+GHOST_LINE_LIFT;pos[3*j+2]=z;
+  }
+  const geo=new T.BufferGeometry();geo.setAttribute('position',new T.BufferAttribute(pos,3));
+  return new T.Line(geo,new T.LineBasicMaterial({color:col,transparent:true,opacity:GHOST_LINE_OPACITY}));
+}
+function buildGhosts(list,mode,dl){
+  disposeGhosts();
+  list.forEach(g=>{
+    const col=new T.Color(g.col),contacts=new Float64Array(8);
+    let group=null,kind='box';
+    if(mode==='car'){
+      // a class this car_models.json cannot build costs that ghost its
+      // model, not the view (your car's fallback is separate)
+      try{group=ghostCar(g,col,contacts);kind='car';}
+      catch(e){console.warn('[chase] ghost drawn as a box:',e);group=null;}
+    }
+    if(!group)group=ghostBox(col,contacts);
+    group.rotation.order='YZX';group.name='ghost:'+g.id;
+    scene.add(group);
+    const line=ghostLine(g,col,dl);if(line)scene.add(line);
+    ghostObjs.push({g,group,line,contacts,kind,fMe:0});
+  });
+}
+// Per frame: (re)build if needed, then rest each ghost on the surface like
+// your car (placeOnSurface by its tyre contacts), the search seeded from
+// YOUR point at the ghost's lap distance (ghostPose().fMe, the alignment
+// basis). surfRow and `place` are your marker's: both are put back, so the
+// ghosts do not move your car's search or its state().placement.
+function placeGhosts(dl){
+  const list=ghostList(),mode=list.length?ghostModels():'none';
+  if(mode==='wait'){if(ghostObjs.length)disposeGhosts();return;}
+  const keyNow=list.map(g=>g.id).join(',')+'|'+mode;
+  const keepRow=surfRow;
+  if(keyNow!==ghostKey||ghostFor!==S.mapData||ghostSurf!==surf){
+    buildGhosts(list,mode,dl);
+    ghostKey=keyNow;ghostFor=S.mapData;ghostSurf=surf;
+  }
+  if(!ghostObjs.length){surfRow=keepRow;return;}
+  const ph=place.h,pgx=place.gx,pgy=place.gy,pp=place.pitch,pr=place.roll;
+  const nMe=dl.x.length,hasY=dl.y&&dl.y.length===nMe;
+  for(const o of ghostObjs){
+    const p=CMP.ghostPose(o.g),fm=isFinite(p.fMe)?clamp(p.fMe,0,nMe-1):0;
+    let y=0,pitch=0,roll=0;
+    if(surf){
+      surfRow=surfRowAt(fm);
+      placeOnSurface(p.x,p.z,p.yaw,o.contacts,4);
+      y=place.h;pitch=place.pitch;roll=place.roll;
+    }else if(hasY)y=lerpAt(dl.y,fm);                    // no surface: your line's height, flat
+    o.fMe=fm;
+    o.group.position.set(p.x,y,p.z);
+    o.group.rotation.set(roll,-p.yaw,pitch,'YZX');
+  }
+  surfRow=keepRow;
+  place.h=ph;place.gx=pgx;place.gy=pgy;place.pitch=pp;place.roll=pr;
+}
+// Test hook: ghost i's drawn height against the rendered surface under its
+// origin (null without a surface), and what it is drawn as.
+function ghostProbe(i){
+  const o=ghostObjs[i];if(!o)return null;
+  const q=o.group.position;let ground=null;
+  if(surf){const keep=surfRow;surfRow=surfRowAt(o.fMe);ground=surfH(q.x,q.z);surfRow=keep;}
+  return{x:q.x,y:q.y,z:q.z,ground,kind:o.kind,id:o.g.id};
 }
 
 // ── surface contact ─────────────────────────────────────────────────────────
@@ -4684,6 +4838,8 @@ function render(){
     else car.outline.material.color.setRGB(r/255,g/255,b/255,T.SRGBColorSpace);
   }else if(mask===15)carEdgeMat.color.set(LIMIT_COL);  // the chevron has no wheels: outline only
 
+  placeGhosts(dl);                                      // Compare tab ghosts (keeps your surfRow and place)
+
   cam.car.x=x;cam.car.y=y;cam.car.z=z;
   const settled=chaseCamera(dl,f,n,x,y,z,course,locked);
   poseCamera(x,y,z);
@@ -4846,7 +5002,7 @@ function state(){
     marker:car&&carRig&&!carRig.visible?'car':'chevron',
     carModel:car?{cls:car.cls,source:car.source,wheelbase:car.dims.wheelbase}:null,
     wheelColours:car?['fl','fr','rl','rr'].map(k=>'#'+car.wheels[k].userData.material.color.getHexString()):null,
-    carBuilds:st.carBuilds,carDisposals:st.carDisposals,carFailed:st.carFailed,
+    carBuilds:st.carBuilds,carDisposals:st.carDisposals,carFailed:st.carFailed,ghosts:ghostObjs.length,
     geometries:renderer?renderer.info.memory.geometries:0,
     limitsMask:st.limitsMask,limitFrames:st.limitFrames,
     placement:{h:place.h,pitch:place.pitch,roll:place.roll},contacts:contacts(),forwardYaw:forwardYaw(),
@@ -4872,7 +5028,7 @@ function slipState(){
 
 // covers(): the chase canvas fully covers the 2D map (cheap, per frame).
 const covers=()=>st.mix>=1;
-window.Chase={ensure,build,render,setOverlayColors,resize,state,covers,lineColorAt,activate,deactivate,optionsChanged,benchPlacement};
+window.Chase={ensure,build,render,setOverlayColors,resize,state,covers,lineColorAt,activate,deactivate,optionsChanged,benchPlacement,ghostProbe};
 if(S.view==='chase')activate();               // the view was remembered from last time
 </script>
 </body>

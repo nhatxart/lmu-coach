@@ -611,6 +611,98 @@ def test_ghost_without_lap_dist_on_your_axis(page, server):
     assert page.errors == []
 
 
+def _to_chase(page):
+    page.get_by_role("radio", name="Chase", exact=True).click()
+    page.wait_for_function("() => window.Chase && Chase.state().built", timeout=30000)
+    page.wait_for_function("() => Chase.state().mix === 1 && !Chase.state().tweening", timeout=10000)
+
+
+def _render_at(page, f):
+    """Put the playhead at fractional point f and draw one chase frame."""
+    page.evaluate("f => { const n = S.mapData.driven_line.x.length;"
+                  " S.playhead = f / (n - 1); Chase.render(); }", f)
+
+
+# ── Chase view ghosts ────────────────────────────────────────────────────────
+
+def test_chase_builds_one_ghost_per_lap(page, server):
+    _open(page, server, CMP_A, 1)
+    _compare_tab(page)
+    _to_chase(page)
+    assert page.evaluate("Chase.state().ghosts") == 0
+    assert _add(page, CMP_A, 0)["ok"] is True
+    assert _add(page, CMP_B, 0)["ok"] is True
+    page.wait_for_function("() => Chase.state().ghosts === 2", timeout=10000)
+    assert page.evaluate("Chase.ghostProbe(0).kind") == "car"
+    page.get_by_role("button", name="Remove ghost 1").click()
+    page.wait_for_function("() => Chase.state().ghosts === 1", timeout=10000)
+    assert page.errors == []
+
+
+def test_chase_ghost_rests_on_surface(page, server, shot_dir):
+    """The ghost car sits on the rendered surface like yours: seeded from
+    your point at the ghost's lap distance, on the hill ring's crest, slopes
+    and banked corner."""
+    _open(page, server, CMP_A, 1)
+    assert page.evaluate("!!S.mapData.surface && S.mapData.surface.rows > 1")
+    _compare_tab(page)
+    assert _add(page, CMP_A, 0)["ok"] is True       # same class, lat 0 against your lat 1
+    _to_chase(page)
+    page.wait_for_function("() => Chase.state().ghosts === 1", timeout=10000)
+    n = page.evaluate("S.mapData.driven_line.x.length")
+    worst = 0.0
+    for frac in [0.05 + 0.1 * k for k in range(10)]:
+        _render_at(page, frac * (n - 1))
+        p = page.evaluate("Chase.ghostProbe(0)")
+        assert p["ground"] is not None, p
+        worst = max(worst, abs(p["y"] - p["ground"]))
+    assert worst < 0.05, worst
+    if shot_dir:
+        _render_at(page, 0.92 * (n - 1))
+        page.screenshot(path=str(shot_dir / "chase-ghost.png"))
+    assert page.errors == []
+
+
+def test_chase_ghost_falls_back_to_box(page, server):
+    page.route("**/static/car_models.js", lambda route: route.fulfill(status=404, body="not found"))
+    _open(page, server, CMP_A, 1)
+    _compare_tab(page)
+    # count every message the chase view shows
+    page.evaluate("""() => { window._msgs = 0; new MutationObserver(() => window._msgs++)
+      .observe(document.getElementById('chase-msg'), {childList: true, characterData: true, subtree: true}); }""")
+    _to_chase(page)
+    assert _add(page, CMP_A, 0)["ok"] is True
+    assert _add(page, CMP_B, 0)["ok"] is True
+    page.wait_for_function("() => Chase.state().ghosts === 2", timeout=10000)
+    n = page.evaluate("S.mapData.driven_line.x.length")
+    for frac in (0.2, 0.4, 0.6, 0.8):
+        _render_at(page, frac * (n - 1))
+    assert [page.evaluate(f"Chase.ghostProbe({i}).kind") for i in (0, 1)] == ["box", "box"]
+    assert page.evaluate("window._msgs") == 1
+    assert "box" in page.locator("#chase-msg").inner_text()
+    errs = [e for e in page.errors if "Failed to load resource" not in e]
+    assert errs == [], errs
+
+
+def test_chase_ghost_disposed_on_lap_change(page, server):
+    _open(page, server, CMP_A, 1)
+    _compare_tab(page)
+    _to_chase(page)
+    _render_at(page, 10)
+    g0 = page.evaluate("Chase.state().geometries")
+    assert _add(page, CMP_A, 0)["ok"] is True
+    assert _add(page, CMP_B, 0)["ok"] is True
+    page.wait_for_function("() => Chase.state().ghosts === 2", timeout=10000)
+    _render_at(page, 20)
+    assert page.evaluate("Chase.state().geometries") > g0
+    page.get_by_role("button", name="Remove ghost 2").click()
+    page.get_by_role("button", name="Remove ghost 1").click()
+    page.wait_for_function("() => Chase.state().ghosts === 0", timeout=10000)
+    _render_at(page, 30)
+    assert page.evaluate("Chase.state().geometries") == g0
+    assert page.errors == []
+
+
 def test_traces_follow_panel_scale(page, server):
     _with_ghost(page, server)
     h1 = page.evaluate("document.getElementById('cmp-delta').getBoundingClientRect().height")
