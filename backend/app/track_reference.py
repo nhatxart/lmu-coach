@@ -561,9 +561,12 @@ def load_reference(track_name: str, lap_length_m: float | None = None) -> dict |
 
 
 # Keyed by the sources file's path (so a test's TRACK_REFERENCE_DIR does not
-# read another directory's answer); None is cached too: the folder is
-# read-only at run time.
-_ORIGIN_CACHE: dict[str, tuple[float, float] | None] = {}
+# read another directory's answer), holding (mtime_ns, origin), like the
+# topography loader. PREVIOUSLY a miss was cached for good: when
+# BUILD_TRACK_REFERENCE wrote the sources file while the backend was up,
+# that track stayed in the per-file frame until a restart. A missing file
+# is not cached (one stat per call), so it is seen as soon as it appears.
+_ORIGIN_CACHE: dict[str, tuple[int, tuple[float, float] | None]] = {}
 
 
 def track_origin(track_name: str) -> tuple[float, float] | None:
@@ -583,7 +586,13 @@ def track_origin(track_name: str) -> tuple[float, float] | None:
         return None
     p = _reference_dir() / "sources" / f"{slug}.json"
     key = str(p)
-    if key not in _ORIGIN_CACHE:
+    try:
+        mtime = p.stat().st_mtime_ns
+    except OSError:
+        _ORIGIN_CACHE.pop(key, None)
+        return None                   # no sources file (yet)
+    hit = _ORIGIN_CACHE.get(key)
+    if hit is None or hit[0] != mtime:
         origin = None
         try:
             c = json.loads(p.read_text(encoding="utf-8")).get("center")
@@ -591,9 +600,10 @@ def track_origin(track_name: str) -> tuple[float, float] | None:
             if np.isfinite(lat) and np.isfinite(lon):
                 origin = (lat, lon)
         except Exception:
-            origin = None             # missing, malformed, or no usable centre
-        _ORIGIN_CACHE[key] = origin
-    return _ORIGIN_CACHE[key]
+            origin = None             # malformed, or no usable centre
+        hit = (mtime, origin)
+        _ORIGIN_CACHE[key] = hit
+    return hit[1]
 
 
 def locate_ex(layout: dict, dist_m: float) -> tuple[str, str] | None:

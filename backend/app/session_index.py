@@ -140,7 +140,10 @@ def build_index(folders: list[tuple[str, Path]]) -> list[dict]:
             path = folder / name
             seen.add(str(path.resolve()))
             out.append(file_entry(path, source))
-    # forget files that are gone, so the cache does not grow without bound
-    for key in [k for k in _CACHE if k not in seen]:
-        del _CACHE[key]
+    # forget files that are gone, so the cache does not grow without bound.
+    # list() first: another threadpool request may insert while this runs
+    # ("dictionary changed size during iteration"); pop, as two requests
+    # may prune the same key.
+    for key in [k for k in list(_CACHE) if k not in seen]:
+        _CACHE.pop(key, None)
     return out

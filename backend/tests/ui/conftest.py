@@ -21,7 +21,8 @@ sys.path.insert(0, str(HERE.parent))        # synthetic_track / synthetic_sessio
 sys.path.insert(0, str(HERE))               # serve_for_ui (file names)
 
 from serve_for_ui import (CMP_A, CMP_B, CMP_HYPER, CMP_KEPT, CMP_LAYOUT, CMP_NOLD,  # noqa: E402
-                          CMP_V1, CMP_WAVE, HILLY, LEGACY, LIMITS, PARTIAL, SLIP)
+                          CMP_V1, CMP_WAVE, FUJI_A, FUJI_B, HILLY, LEGACY, LIMITS, PARTIAL,
+                          SLIP)
 
 # SwiftShader: software WebGL, so the chase view renders without a GPU.
 # Verified with Chromium 156 headless (Playwright 1.5x) on Windows 11.
@@ -54,6 +55,11 @@ def _write_compare_files(sessions: Path, kept: Path | None) -> None:
     # along the lap, so the delta to it both rises and falls
     write_hilly_session(sessions / CMP_WAVE, vehicle_class="LMGT3", lap_offsets=(0.5, 0.5),
                         speed_scale=0.95, speed_wave=0.1)
+    # a catalog track (see serve_for_ui.FUJI_A); its frame is sources/fuji.json
+    write_hilly_session(sessions / FUJI_A, vehicle_class="LMGT3", lap_offsets=(0.0, 1.0, -1.0),
+                        track_name="Fuji Speedway", cross_offset_ticks=-4)
+    write_hilly_session(sessions / FUJI_B, vehicle_class="LMGT3", lap_offsets=(2.0, 2.0),
+                        speed_scale=0.97, track_name="Fuji Speedway")
 
 
 def _start(sessions: Path, ref: Path, kept: Path | None = None):
@@ -99,6 +105,9 @@ def server(tmp_path_factory):
     # centre alone builds no topography.
     (ref / "sources").mkdir()
     (ref / "sources" / "synthetic_hill_ring.json").write_text(
+        json.dumps({"center": [GPS_REF_LAT, GPS_REF_LON]}), encoding="utf-8")
+    # the catalog slug of "Fuji Speedway" (FUJI_A / FUJI_B), same centre
+    (ref / "sources" / "fuji.json").write_text(
         json.dumps({"center": [GPS_REF_LAT, GPS_REF_LON]}), encoding="utf-8")
     write_hilly_session(sessions / HILLY, with_pose=True)
     write_hilly_session(sessions / LEGACY, with_pose=False)

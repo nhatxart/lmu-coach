@@ -31,6 +31,12 @@ CMP_KEPT = "Synthetic_Hill_Ring-Synthetic_Car_1-2026-11-05T10_00_00Z.duckdb"    
 CMP_V1 = "Synthetic_Hill_Ring-Synthetic_Car_1-2026-11-06T10_00_00Z.duckdb"      # LMGT3, no GPS tables
 CMP_NOLD = "Synthetic_Hill_Ring-Synthetic_Car_1-2026-11-07T10_00_00Z.duckdb"    # LMGT3, no Lap Dist
 CMP_WAVE = "Synthetic_Hill_Ring-Synthetic_Car_1-2026-11-08T10_00_00Z.duckdb"    # LMGT3, 5 % slower, speed varies
+# The same ring under a CATALOG track name ("Fuji Speedway", slug "fuji"): the
+# index names it by slug, the file name by "Fuji Speedway". FUJI_A's crossings
+# after the first fall 0.04 s before a 10 Hz row (cross_offset_ticks -4), as
+# in real files; FUJI_B's sit on rows.
+FUJI_A = "Fuji_Speedway-Synthetic_Car_1-2026-11-09T10_00_00Z.duckdb"     # LMGT3, laps at lat 0 / 1 / -1
+FUJI_B = "Fuji_Speedway-Synthetic_Car_1-2026-11-10T10_00_00Z.duckdb"     # LMGT3, 3 % slower
 
 
 def main(argv: list[str]) -> None:

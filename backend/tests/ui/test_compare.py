@@ -9,7 +9,7 @@ import pytest
 pytest.importorskip("playwright.sync_api")
 
 from serve_for_ui import (CMP_A, CMP_B, CMP_HYPER, CMP_KEPT, CMP_LAYOUT, CMP_NOLD, CMP_V1,
-                          CMP_WAVE, HILLY, PARTIAL)
+                          CMP_WAVE, FUJI_A, FUJI_B, HILLY, PARTIAL)
 
 TEAL, CORAL = "rgb(45, 212, 167)", "rgb(255, 107, 107)"
 LOADED = "() => S.mapData && document.getElementById('map-overlay').classList.contains('hidden')"
@@ -335,6 +335,145 @@ def test_main_lap_change_rules(page, server):
     assert page.errors == []
 
 
+# ── A catalog track: the index names it by slug ("fuji"), the file name by
+# "Fuji Speedway". PREVIOUSLY the first lap change after adding a ghost
+# compared the two and dropped every ghost without a word (final review 1).
+
+def _other_lap(page, *taken):
+    return next(l["lap_number"] for l in page.evaluate("S.laps")
+                if l["real"] and l["lap_number"] not in taken)
+
+
+def _change_lap(page, lap):
+    page.locator(f'.lap-chip[data-lap="{lap}"]').click()
+    page.wait_for_function(f"() => S.lap === {lap} && ({LOADED})()")
+
+
+def test_lap_change_keeps_ghost_on_catalog_track(page, server):
+    _open(page, server, FUJI_A, 1)
+    assert page.evaluate("parseSession(S.file).track") == "Fuji Speedway"
+    _compare_tab(page)
+    page.get_by_role("button", name="Best lap of this session").click()
+    page.wait_for_function("() => CMP.ghosts.length === 1")
+    g = page.evaluate("CMP.ghosts[0].lap")
+    for _ in range(2):
+        nxt = _other_lap(page, g, page.evaluate("S.lap"))
+        _change_lap(page, nxt)
+        page.wait_for_timeout(300)
+        assert page.evaluate("CMP.ghosts.length") == 1, nxt
+        assert page.evaluate("CMP.ghosts[0].delta.length") == page.evaluate("S.mapData.driven_line.x.length")
+        assert page.inner_text("#cmp-status") == ""
+    assert page.errors == []
+
+
+def test_lap_change_keeps_ghost_when_index_lacks_your_file(page, server):
+    # A fresh recording that the cached index does not have yet: the track
+    # check waits for a fresh index instead of reading the file name.
+    _open(page, server, FUJI_A, 1)
+    _compare_tab(page)
+    assert _add(page, FUJI_B, 0)["ok"] is True
+    calls = []
+
+    def strip(route):
+        calls.append(route.request.url)
+        resp = route.fetch()
+        j = resp.json()
+        if len(calls) == 1:          # the reload below: without your file
+            j["files"] = [e for e in j["files"] if e["file"] != FUJI_A]
+        route.fulfill(response=resp, json=j)
+    page.route(re.compile(r".*/sessions/index.*"), strip)
+    page.locator("#tab-balance").click()
+    page.locator("#tab-compare").click()             # onTab: index reloaded
+    for _ in range(100):
+        if calls:
+            break
+        page.wait_for_timeout(50)
+    page.wait_for_timeout(300)
+    _change_lap(page, _other_lap(page, 1))
+    page.wait_for_timeout(800)
+    assert len(calls) >= 2                           # the index was asked again
+    assert page.evaluate("CMP.ghosts.length") == 1
+    assert page.evaluate("CMP.ghosts[0].delta.length") == page.evaluate("S.mapData.driven_line.x.length")
+    assert page.inner_text("#cmp-status") == ""
+    assert page.errors == []
+
+
+def test_late_ghost_dropped_on_same_class_lap_change(page, server):
+    _open(page, server, FUJI_A, 1)
+    _compare_tab(page)
+    held = []
+
+    def hold(route):
+        if FUJI_B in route.request.url:
+            held.append(route)
+        else:
+            route.continue_()
+    page.route(re.compile(r".*/trackmap.*"), hold)
+    page.evaluate(f"() => {{ window._late = CMP.add('sessions', {FUJI_B!r}, 0); }}")
+    for _ in range(100):
+        if held:
+            break
+        page.wait_for_timeout(50)
+    assert held, "the ghost's /trackmap request never went out"
+    _change_lap(page, 2)                              # same file, same class
+    page.wait_for_timeout(500)
+    held[0].continue_()
+    r = page.evaluate("window._late")
+    page.wait_for_timeout(300)
+    assert r["ok"] is False
+    assert page.evaluate("CMP.ghosts.length") == 0
+    assert _ghost_rows(page).count() == 0
+    assert page.errors == []
+
+
+def test_delta_at_closing_line_is_lap_time_difference(page, server):
+    # FUJI_A's crossings fall 0.04 s before a 10 Hz row, FUJI_B's on rows:
+    # time counted from the first position row put 0.04 s into the delta
+    # (final review 2). At the closing line and at your last point (past
+    # the line) the delta is the official lap-time difference.
+    _open(page, server, FUJI_A, 1)
+    _compare_tab(page)
+    assert _add(page, FUJI_B, 0)["ok"] is True
+    mine = next(l["lap_time_s"] for l in page.evaluate("S.laps") if l["lap_number"] == 1)
+    want = mine - page.evaluate("CMP.ghosts[0].lapTime")
+    at_line = page.evaluate("""() => { const g = CMP.ghosts[0], L = S.mapData.lap_len_m;
+      let i = 0; while (i < g.sMe.length - 1 && g.sMe[i + 1] < L) i++;
+      const f = (L - g.sMe[i]) / (g.sMe[i + 1] - g.sMe[i]);
+      return g.delta[i] + (g.delta[i + 1] - g.delta[i]) * f; }""")
+    assert abs(at_line - want) < 0.02, (at_line, want)
+    _scrub(page, 1000)
+    end = page.evaluate("CMP.deltaAt(CMP.ghosts[0])")
+    assert abs(end - want) < 0.02, (end, want)
+    assert page.errors == []
+
+
+def test_delta_at_finish_anchored_when_lap_dist_lags(page, server):
+    # Real files: Lap Dist lags and holds near the line (one Fuji 10/19 file
+    # reads 4523-4539 m at the line). The ghost's last 4 points read 10 m
+    # short here; the delta at your finish is still the lap-time difference.
+    def lag(route):
+        if FUJI_B not in route.request.url:
+            route.continue_()
+            return
+        resp = route.fetch()
+        j = resp.json()
+        ld = j["driven_line"]["lap_dist"]
+        j["driven_line"]["lap_dist"] = ld[:-4] + [max(v - 10.0, ld[-5]) if v > 100 else v for v in ld[-4:]]
+        route.fulfill(response=resp, json=j)
+    _open(page, server, FUJI_A, 1)
+    _compare_tab(page)
+    page.route(re.compile(r".*/trackmap.*"), lag)
+    assert _add(page, FUJI_B, 0)["ok"] is True
+    mine = next(l["lap_time_s"] for l in page.evaluate("S.laps") if l["lap_number"] == 1)
+    want = mine - page.evaluate("CMP.ghosts[0].lapTime")
+    _scrub(page, 1000)
+    end = page.evaluate("CMP.deltaAt(CMP.ghosts[0])")
+    assert abs(end - want) < 0.02, (end, want)
+    _scrub(page, 500)                                    # mid-lap: untouched by the anchor
+    assert page.evaluate("CMP.deltaAt(CMP.ghosts[0])") < -0.3
+    assert page.errors == []
+
+
 # ── Accuracy: shared frame, lap distance, coordinate system ──────────────────
 
 def test_no_shared_frame_is_approximate(page, server_no_origin):
@@ -455,6 +594,31 @@ def test_wheel_zoom_syncs_all_traces(page, server):
     _frames(page)
     s0, s1 = _view(page)
     assert abs(s0) < 1e-6 and abs(s1 - L) < 1e-6
+    assert page.errors == []
+
+
+def test_wheel_down_at_full_lap_scrolls_panel(page, server):
+    # The traces cover most of the tab: at the whole-lap view a zoom-out
+    # step has nothing to do, so it scrolls the panel (final review 5).
+    page.set_viewport_size({"width": 1600, "height": 600})
+    L = _with_ghost(page, server)
+    body = "document.getElementById('body-compare')"
+    assert page.evaluate(f"{body}.scrollHeight - {body}.clientHeight") > 150
+    page.evaluate(f"{body}.scrollTop = 0")
+    _hover(page, "#cmp-spd")                               # brings it into view
+    top0 = page.evaluate(f"{body}.scrollTop")
+    assert page.evaluate(f"{body}.scrollHeight - {body}.clientHeight") - top0 > 50
+    page.mouse.wheel(0, 100)
+    page.wait_for_timeout(300)
+    _frames(page)
+    assert page.evaluate(f"{body}.scrollTop") > top0
+    s0, s1 = _view(page)
+    assert s0 == 0 and abs(s1 - L) < 1e-6
+    _hover(page, "#cmp-spd")
+    page.mouse.wheel(0, -100)                              # zoom in still zooms
+    _frames(page)
+    s0, s1 = _view(page)
+    assert abs((s1 - s0) - 0.8 * L) < 1e-6
     assert page.errors == []
 
 

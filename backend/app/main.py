@@ -603,10 +603,11 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
             lap_number = min(candidates)[1]
 
     lap_span_s = None   # game seconds of the chosen lap (Lap rows); driven_line.t fallback
+    lap_t0 = None       # game time of the lap's start crossing (its Lap row); driven_line.t origin
 
     def _lap_slice() -> tuple[int, int]:
         """Return (start_idx, end_idx) into pos_x/pos_z for the chosen lap."""
-        nonlocal lap_span_s
+        nonlocal lap_span_s, lap_t0
         if len(lap_events) < 2:
             # Single-lap recorder file — use the whole array
             return 0, len(pos_x) - 1
@@ -619,6 +620,7 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
         later    = [ts for ts, _ in lap_events if ts > ts_start]
         ts_end   = later[0] if later else (gps_time[-1] if gps_time else ts_start + 600)
         lap_span_s = float(ts_end - ts_start)
+        lap_t0 = float(ts_start)
 
         if t_pos is not None:
             s = int(np.searchsorted(t_pos, ts_start, side="left"))
@@ -1092,14 +1094,22 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
     # ── 10. Lap distance and time per line point (lap comparison) ────────────
     # A comparison lines laps up by the game's lap distance and reads time
     # deltas off it, so both come with the line, through the same line_idx.
-    # t is game clock seconds from the lap's first position row: skipped
-    # ticks show as a jump instead of being spread over the lap. Fail closed.
+    # t is game clock seconds from the lap's start crossing (its Lap row),
+    # stepped on the position rows' own game times: skipped ticks show as a
+    # jump instead of being spread over the lap. Fail closed.
+    # PREVIOUSLY t counted from the lap's first 10 Hz position row, which
+    # comes 0..0.1 s after the line: each lap carried that lag, and a delta
+    # between two laps a constant bias of up to ~0.1 s (real Fuji 10/19,
+    # L0 vs L9: -72.903 s at the finish vs -72.760 s official). From the
+    # crossing, the first point's t is >= 0 and the time at the closing line
+    # (lap distance = lap length, read between the rows that straddle it) is
+    # the official lap time.
     line_lap_dist, line_t = [], []
     try:
         if s_lap is not None and len(s_lap) == lap_len:
             line_lap_dist = [round(float(s_lap[i]), 2) for i in line_idx]
         if t_pos is not None:
-            t0 = float(t_pos[s_idx])
+            t0 = lap_t0 if lap_t0 is not None else float(t_pos[s_idx])
             line_t = [round(float(t_pos[s_idx + i]) - t0, 3) for i in line_idx]
         else:
             span = lap_span_s if lap_span_s is not None else (lap_len - 1) / pos_hz

@@ -4,6 +4,7 @@ distance and time per driven-line point."""
 
 import json
 import math
+import os
 import shutil
 from pathlib import Path
 from urllib.parse import quote
@@ -85,6 +86,19 @@ def test_track_origin_reads_sources_center(reference_dir):
     assert track_reference.track_origin("No Centre") is None
 
 
+def test_track_origin_sees_a_sources_file_written_later(reference_dir):
+    # BUILD_TRACK_REFERENCE may run while the backend is up: a first miss
+    # must not stick (final review 3), nor an old centre.
+    assert track_reference.track_origin("Synthetic Hill Ring") is None
+    _write_origin(reference_dir)
+    assert track_reference.track_origin("Synthetic Hill Ring") == ORIGIN
+    p = reference_dir / "sources" / "synthetic_hill_ring.json"
+    st = p.stat()
+    _write_origin(reference_dir, center=(35.5, 139.0))
+    os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 10_000_000))
+    assert track_reference.track_origin("Synthetic Hill Ring") == (35.5, 139.0)
+
+
 def test_trackmap_uses_track_origin(tmp_path, monkeypatch, reference_dir):
     _write_origin(reference_dir)
     f = write_hilly_session(sess(tmp_path) / "Hill-origin.duckdb")
@@ -155,6 +169,47 @@ def test_driven_line_lap_dist_and_time(tmp_path, monkeypatch):
     assert dl["t"][0] == 0.0
     assert dl["t"][-1] == pytest.approx(lap_time, abs=0.05)
     assert d["lap_len_m"] == pytest.approx(RING_LENGTH_M, abs=15.0)
+
+
+def test_driven_line_time_from_line_crossing(tmp_path, monkeypatch):
+    # The line falls between two 10 Hz rows (0.04 s before one): t counts
+    # from the crossing (the Lap row), not from the lap's first position
+    # row. PREVIOUSLY t[0] was 0 there, a bias of up to 0.1 s per lap
+    # (final review 2).
+    f = write_hilly_session(sess(tmp_path) / "Hill-cross.duckdb", cross_offset_ticks=-4)
+    d = _trackmap(f, monkeypatch)
+    t = d["driven_line"]["t"]
+    _, _, laps, t_slow = _gps(f)
+    ts0 = next(ts for ts, v in laps if int(v) == 1)
+    ts1 = next(ts for ts, v in laps if ts > ts0)
+    s = int(np.searchsorted(t_slow, ts0, side="left"))
+    e = int(np.searchsorted(t_slow, ts1, side="left"))
+    assert t[0] == pytest.approx(t_slow[s] - ts0, abs=1e-3)
+    assert t[0] >= 0.03
+    assert t[-1] == pytest.approx(t_slow[e] - ts0, abs=0.02)
+
+
+def _closing_line_time(dl, lap_len):
+    """Seconds from the crossing at which the line reaches lap distance
+    lap_len (the closing row may read 0: the wrap, unwrapped here)."""
+    ld = np.array(dl["lap_dist"], dtype=float)
+    k = int(np.argmax(np.diff(ld) < -100)) + 1 if np.any(np.diff(ld) < -100) else len(ld)
+    ld[k:] += lap_len
+    return float(np.interp(lap_len, ld, dl["t"]))
+
+
+def test_delta_at_closing_line_matches_lap_times(tmp_path, monkeypatch):
+    a = write_hilly_session(sess(tmp_path) / "Hill-ca.duckdb", cross_offset_ticks=-4)
+    b = write_hilly_session(sess(tmp_path) / "Hill-cb.duckdb", speed_scale=0.97)
+    out = []
+    for f in (a, b):
+        d = _trackmap(f, monkeypatch)
+        _, _, laps, _ = _gps(f)
+        ts0 = next(ts for ts, v in laps if int(v) == 1)
+        ts1 = next(ts for ts, v in laps if ts > ts0)
+        out.append((_closing_line_time(d["driven_line"], RING_LENGTH_M), ts1 - ts0))
+    (ta, la), (tb, lb) = out
+    assert (ta - tb) == pytest.approx(la - lb, abs=0.02)
 
 
 def _drop_ticks(path: Path, start_tick: int, n_ticks: int) -> int:

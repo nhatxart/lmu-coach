@@ -3020,6 +3020,7 @@ const ME_COL='#E8ECF6';
 const MAX_GHOSTS=PALETTE.length;
 const GREY='rgba(120,132,156,0.32)';
 const EST='Estimate from 10 Hz position and game lap distance';
+const ANCHOR_S=1;      // seconds before your closing line over which the delta joins the official lap-time difference (attach)
 const st={
   ghosts:[],pending:[],align:'time',seq:0,
   me:null,          // your lap, prepared (prepLap)
@@ -3027,7 +3028,8 @@ const st={
   // older generation is dropped (it was lined up against a lap that is no
   // longer on screen).
   gen:0,
-  index:null,indexReq:null,fillTok:0,prevTrack:null,
+  index:null,indexReq:null,fillTok:0,
+  held:[],          // ghosts waiting for a fresh index after a lap change (onMainLap)
 };
 
 // ── small helpers ──
@@ -3083,7 +3085,8 @@ function prepLap(d,lapTime){
   const t=(dl.t&&dl.t.length===n)?monotonic(dl.t):Float64Array.from({length:n},(_,i)=>i*T/Math.max(1,n-1));
   const sLd=(dl.lap_dist&&dl.lap_dist.length===n)?lapDistArr(dl.lap_dist):null;
   const lapLen=(d.lap_len_m>0)?d.lap_len_m:null;
-  const L={d,n,x:dl.x,z:dl.z,heading:dl.heading||[],t,sLd,cum,len,lapLen};
+  // lapT: the official lap time, for the finish anchor (attach); 0 when unknown
+  const L={d,n,x:dl.x,z:dl.z,heading:dl.heading||[],t,sLd,cum,len,lapLen,lapT:lapTime>0?lapTime:0};
   // the lap distance that meAtDist reads: the game's, else driven distance
   // scaled to the lap's game length (or left as driven metres)
   const k=(lapLen||len)/len;
@@ -3119,7 +3122,7 @@ function entryRefusal(e){
   return null;
 }
 const isMine=(src,file)=>src===S.source&&file===S.file;
-const onScreen=(src,file,lap)=>[...st.ghosts,...st.pending].some(g=>g.src===src&&g.file===file&&g.lap===lap);
+const onScreen=(src,file,lap)=>[...st.ghosts,...st.pending,...st.held].some(g=>g.src===src&&g.file===file&&g.lap===lap);
 
 // ── one ghost against your lap ──
 // Checks what only the payload can tell (class as loaded, coordinate frame,
@@ -3163,16 +3166,43 @@ function attach(g,me){
   // delta at your point i = your time there - the ghost's time at the same
   // lap distance (+ = you are slower). lat: nearest ghost point within +-20
   // points of that distance, signed by your heading's right (-sin h, cos h).
+  // Past the ghost's first or last point the ghost's time is extended at
+  // its pace over the 5 end points (one held 5 Hz step alone gives a
+  // near-zero distance and a wild pace). PREVIOUSLY it was held at the end
+  // point, which put up to a 10 Hz step of time into the delta there.
+  const gm=G.n-1,kE=Math.min(5,gm),gT=s=>{
+    if(gm<1)return G.t[0];
+    if(s<sG[0]){const ds=sG[kE]-sG[0];return ds>1e-6?G.t[0]-(sG[0]-s)*(G.t[kE]-G.t[0])/ds:G.t[0];}
+    if(s>sG[gm]){const ds=sG[gm]-sG[gm-kE];return ds>1e-6?G.t[gm]+(s-sG[gm])*(G.t[gm]-G.t[gm-kE])/ds:G.t[gm];}
+    return lerpAt(G.t,fAt(sG,s));
+  };
   const n=me.n,delta=new Float64Array(n),lat=new Float64Array(n);
   for(let i=0;i<n;i++){
     const fg=fAt(sG,sMe[i]);
-    delta[i]=me.t[i]-lerpAt(G.t,fg);
+    delta[i]=me.t[i]-gT(sMe[i]);
     const c=Math.round(fg);let best=Infinity,bj=c;
     for(let j=Math.max(0,c-20);j<=Math.min(G.n-1,c+20);j++){
       const q=(G.x[j]+dx-me.x[i])**2+(G.z[j]+dz-me.z[i])**2;if(q<best){best=q;bj=j;}
     }
     const h=me.heading.length===n?me.heading[i]:0;
     lat[i]=(G.x[bj]+dx-me.x[i])*-Math.sin(h)+(G.z[bj]+dz-me.z[i])*Math.cos(h);
+  }
+  // The finish is anchored to the official lap times. t counts from each
+  // lap's start crossing (/trackmap), so at your closing crossing (t = your
+  // lap time) the ghost crossed at its lap time: the delta there IS the
+  // lap-time difference, timed by the game at the line. Lap distance is
+  // not good enough there: it lags the car (~0.1 s), repeats on held 5 Hz
+  // rows and wraps at the line, and one Fuji 10/19 file reads 4523-4539 m
+  // at the line lap to lap (~0.24 s at 67 m/s). Measured there before the
+  // anchor: up to 0.17 s off at the line and 0.33 s at your last point. So
+  // over your last ANCHOR_S seconds the delta is blended linearly into the
+  // official difference, and it is that difference from the line on.
+  // Skipped when either lap's times do not end at its lap time (no lap
+  // time, or t is not on the crossing clock).
+  const Tm=me.lapT,Tg=G.lapT;
+  if(Tm>0&&Tg>0&&Math.abs(me.t[n-1]-Tm)<0.25&&Math.abs(G.t[gm]-Tg)<0.25){
+    const off=Tm-Tg;
+    for(let i=0;i<n;i++){const w=clamp((me.t[i]-(Tm-ANCHOR_S))/ANCHOR_S,0,1);if(w>0)delta[i]+=(off-delta[i])*w;}
   }
   // The "Time vs ghost 1" overlay scale: the 95th percentile of
   // |d delta / d s| over the lap's segments. PREVIOUSLY the largest slope:
@@ -3377,6 +3407,10 @@ TRACES.forEach(([id])=>{
   const sAt=e=>{const r=cv.getBoundingClientRect();return st.view.s0+(e.clientX-r.left)/(r.width||1)*(st.view.s1-st.view.s0);};
   cv.addEventListener('wheel',e=>{
     if(e.ctrlKey||!live()||!e.deltaY)return;
+    // At the whole lap a zoom-out step has nothing to do: let it scroll the
+    // panel. PREVIOUSLY every wheel step zoomed, and as the graphs cover
+    // most of the tab, scrolling the panel mostly zoomed instead.
+    if(e.deltaY>0&&st.full)return;
     e.preventDefault();
     zoomAt(sAt(e),e.deltaY<0?0.8:1.25);
   },{passive:false});
@@ -3437,12 +3471,12 @@ function renderList(){
        `<span class="cmp-d ${dCls(d)}" data-g="${g.id}" title="${escHtml(deltaTitle(g))}">${fmtD(d)}</span>`+
        `<button type="button" class="cmp-x ghost" onclick="CMP.remove(${g.id})" aria-label="Remove ghost ${k+1}"><svg class="i sm" aria-hidden="true"><use href="#i-x"/></svg></button></div>`;
   });
-  st.pending.forEach(g=>{
+  [...st.held,...st.pending].forEach(g=>{
     h+=`<div class="cmp-row pending"><i class="cmp-sw" style="background:${g.col}"></i><div style="min-width:0"><div class="cmp-t">L${g.lap} · ${fmtTime(g.lapTime)}</div>`+
        `<div class="cmp-sub">loading…</div></div><span class="cmp-d"><span class="spinner"></span></span>`+
        `<button type="button" class="cmp-x ghost" onclick="CMP.remove(${g.id})" aria-label="Cancel loading L${g.lap}"><svg class="i sm" aria-hidden="true"><use href="#i-x"/></svg></button></div>`;
   });
-  if(!st.ghosts.length&&!st.pending.length)
+  if(!st.ghosts.length&&!st.pending.length&&!st.held.length)
     h+=`<div class="dimtext" style="padding:8px 6px">No ghosts yet. Add a lap from this file or another file of the same track and class (up to ${MAX_GHOSTS}).</div>`;
   el.innerHTML=h;
 }
@@ -3554,7 +3588,7 @@ async function add(src,file,lap){
   lap=+lap;
   const me=st.me;
   if(!me||!live())return refuse('Load a lap first');
-  if(st.ghosts.length+st.pending.length>=MAX_GHOSTS)return refuse(`Up to ${MAX_GHOSTS} ghosts: remove one to add another`);
+  if(st.ghosts.length+st.pending.length+st.held.length>=MAX_GHOSTS)return refuse(`Up to ${MAX_GHOSTS} ghosts: remove one to add another`);
   if((isMine(src,file)&&lap===S.lap)||onScreen(src,file,lap))return refuse('That lap is already on screen');
   const gen=st.gen;
   try{if(!entryOf(src,file)||!myEntry())await loadIndex(true);}
@@ -3565,7 +3599,7 @@ async function add(src,file,lap){
   const why=entryRefusal(e);if(why)return refuse(why);
   const le=e.laps.find(l=>l.lap_number===lap);
   if(!le||!le.complete)return refuse(`L${lap} is not a complete lap`);
-  const used=[...st.ghosts,...st.pending].map(g=>g.col);
+  const used=[...st.ghosts,...st.pending,...st.held].map(g=>g.col);
   const g={id:++st.seq,src,file,lap,lapTime:le.lap_time_s,col:PALETTE.find(c=>!used.includes(c)),
            cls:e.car_class||'unknown',model:e.car_model||'',trackKey:trackKeyOf(e,file),d:null,L:null};
   st.pending.push(g);renderList();setStatus('');
@@ -3589,9 +3623,9 @@ async function add(src,file,lap){
   return{ok:true};
 }
 function remove(id){
-  const n=st.ghosts.length+st.pending.length;
-  st.ghosts=st.ghosts.filter(g=>g.id!==id);st.pending=st.pending.filter(g=>g.id!==id);
-  if(st.ghosts.length+st.pending.length!==n)changed();
+  const cnt=()=>st.ghosts.length+st.pending.length+st.held.length,n=cnt();
+  st.ghosts=st.ghosts.filter(g=>g.id!==id);st.pending=st.pending.filter(g=>g.id!==id);st.held=st.held.filter(g=>g.id!==id);
+  if(cnt()!==n)changed();
 }
 function setAlign(mode){
   if(mode!=='time'&&mode!=='dist')return;
@@ -3614,25 +3648,51 @@ document.getElementById('cmp-align').addEventListener('keydown',e=>{
 // Other track: every ghost goes. Other class: the ghosts of the old class
 // go. A ghost that is your new lap goes. The rest are lined up again
 // (and dropped, with the reason, if they no longer fit, e.g. a layout).
+// The track and class are read from the index entry of your file, the
+// same place each ghost's trackKey came from. PREVIOUSLY the track was
+// compared with the one at the last lap change (st.prevTrack); that one was
+// first taken before the index had loaded, from the file name ("Fuji
+// Speedway"), while the index names a catalog track by its slug ("fuji"):
+// the first lap change after adding a ghost dropped every ghost without a
+// word, on every catalog track. When the index does not have your file
+// (a recording newer than the cached index), the ghosts are held (shown
+// as loading) until a fresh index is in, then checked; a later lap change
+// (st.gen) drops that check, as it re-checks them itself.
 function onMainLap(){
   st.gen++;
   st.pending=[];                       // their payloads are dropped on arrival
-  if(!S.mapData){st.me=null;updateRange();changed(false);return;}
+  const keep=st.ghosts.concat(st.held);st.held=[];st.ghosts=[];
+  if(!S.mapData){st.me=null;st.ghosts=keep;updateRange();changed(false);return;}
   st.me=prepLap(S.mapData,S.lapDur);
   // The trace window survives ghost changes and another lap of the same
   // file (clamped to the new lap); a lap from another file starts whole.
   const vf=key(S.source,S.file);
   if(vf!==st.viewFile){st.viewFile=vf;st.full=true;}
   if(st.full){st.view={s0:0,s1:lapLen()};updateRange();}else setView(st.view.s0,st.view.s1,false);
-  const tk=myTrack(),mc=myClass();
-  if(st.prevTrack!=null&&tk!==st.prevTrack)st.ghosts=[];
-  st.prevTrack=tk;
-  st.ghosts=st.ghosts.filter(g=>g.cls===mc&&g.trackKey===tk&&!(isMine(g.src,g.file)&&g.lap===S.lap));
-  const dropped=[];
-  st.ghosts=st.ghosts.filter(g=>{const why=attach(g,st.me);if(why)dropped.push(`L${g.lap}: ${why}`);return!why;});
-  setStatus(dropped.length?'Removed '+dropped.join('; '):'');
-  changed(false);
+  if(!keep.length||myEntry())refit(keep,false);
+  else{
+    st.held=keep;setStatus('');changed(false);
+    const gen=st.gen;
+    loadIndex(true).catch(()=>null).then(()=>{
+      if(gen!==st.gen)return;
+      const h=st.held;st.held=[];refit(h,true);
+    });
+  }
   if(st.index||!document.getElementById('body-compare').classList.contains('hidden'))fillFiles();
+}
+// Keep the ghosts that fit your lap (class, track, not your lap itself,
+// attach) in front of any added meanwhile. Without an index entry for your
+// file (the index could not be read) the track is not checked here: the
+// file-name track does not match a catalog slug; attach's layout check
+// still refuses another track's lap.
+function refit(list,draw){
+  const e=myEntry(),tk=myTrack(),mc=myClass();
+  list=list.filter(g=>g.cls===mc&&(!e||g.trackKey===tk)&&!(isMine(g.src,g.file)&&g.lap===S.lap));
+  const dropped=[];
+  list=list.filter(g=>{const why=attach(g,st.me);if(why)dropped.push(`L${g.lap}: ${why}`);return!why;});
+  st.ghosts=list.concat(st.ghosts).slice(0,MAX_GHOSTS);
+  setStatus(dropped.length?'Removed '+dropped.join('; '):'');
+  changed(draw);
 }
 function onTab(){fillFiles(true);renderList();drawTraces();}
 
