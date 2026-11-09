@@ -4263,6 +4263,21 @@ function ghostProbe(i){
   if(surf){const keep=surfRow;surfRow=surfRowAt(o.fMe);ground=surfH(q.x,q.z);surfRow=keep;}
   return{x:q.x,y:q.y,z:q.z,ground,kind:o.kind,id:o.g.id};
 }
+// Test hook: the driven-line ribbon's height above the rendered surface,
+// over every vertex (vertex 2i and 2i+1 belong to line point i). null
+// without a ribbon or a surface.
+function ribbonProbe(){
+  if(!ribbon||!surf)return null;
+  const p=ribbon.geometry.getAttribute('position').array,keep=surfRow;
+  let min=Infinity,below=0;const n=p.length/3;
+  for(let k=0;k<n;k++){
+    surfRow=surfRowAt(k>>1);
+    const lift=p[3*k+1]-surfH(p[3*k],p[3*k+2]);
+    if(lift<min)min=lift;if(lift<0)below++;
+  }
+  surfRow=keep;
+  return{n,minLift:min,below};
+}
 
 // ── surface contact ─────────────────────────────────────────────────────────
 // lapPts: /trackmap lap_len_pts, the lap's position rows. Both the surface
@@ -4562,17 +4577,31 @@ function distanceMarks(s,surf){
   return new T.LineSegments(g,new T.LineBasicMaterial({color:COL.edge,transparent:true,opacity:0.06}));
 }
 
+// BUG FIX / PREVIOUSLY: the ribbon sat at the lap's own recorded height
+// (driven_line.y) + 3 cm, while the road is the fitted surface; the two
+// differ by centimetres either way, so the throttle/brake line sank under
+// the road wherever the fit ran higher (23 % of the line on the 11/8 COTA
+// #92 lap 4, 14 % on Road Atlanta 10/26 #92 lap 6). Fix: like the car
+// (10/27) and the ghost lines, each vertex rests on the DRAWN surface under
+// it (surfH, its search seeded at the point's own row) + RIBBON_LIFT. No
+// surface: the recorded height, as before.
+const RIBBON_LIFT=0.03;
 function drivenRibbon(dl){
   const n=dl.x.length;if(n<2)return null;
   const hasY=dl.y&&dl.y.length===n;
-  const pos=new Float32Array(n*6),idx=[];
+  const pos=new Float32Array(n*6),idx=[],keep=surfRow;
   for(let i=0;i<n;i++){
     const i0=Math.max(0,i-1),i1=Math.min(n-1,i+1);
     let dx=dl.x[i1]-dl.x[i0],dz=dl.z[i1]-dl.z[i0];const L=Math.hypot(dx,dz)||1;dx/=L;dz/=L;
-    const lx=-dz*LINE_HALF_W,lz=dx*LINE_HALF_W,y=(hasY?dl.y[i]:0)+0.03;   // left = (-dz, dx)
-    pos.set([dl.x[i]+lx,y,dl.z[i]+lz,dl.x[i]-lx,y,dl.z[i]-lz],6*i);
+    const lx=-dz*LINE_HALF_W,lz=dx*LINE_HALF_W;                        // left = (-dz, dx)
+    const ax=dl.x[i]+lx,az=dl.z[i]+lz,bx=dl.x[i]-lx,bz=dl.z[i]-lz;
+    let ya,yb;
+    if(surf){surfRow=surfRowAt(i);ya=surfH(ax,az);yb=surfH(bx,bz);}
+    else ya=yb=hasY?dl.y[i]:0;
+    pos.set([ax,ya+RIBBON_LIFT,az,bx,yb+RIBBON_LIFT,bz],6*i);
     if(i<n-1){const a=2*i;idx.push(a,a+1,a+2,a+2,a+1,a+3);}
   }
+  surfRow=keep;
   const g=new T.BufferGeometry();
   g.setAttribute('position',new T.BufferAttribute(pos,3));
   g.setAttribute('color',new T.BufferAttribute(new Float32Array(n*6),3));
@@ -5088,7 +5117,7 @@ function slipState(){
 
 // covers(): the chase canvas fully covers the 2D map (cheap, per frame).
 const covers=()=>st.mix>=1;
-window.Chase={ensure,build,render,setOverlayColors,resize,state,covers,lineColorAt,activate,deactivate,optionsChanged,benchPlacement,ghostProbe};
+window.Chase={ensure,build,render,setOverlayColors,resize,state,covers,lineColorAt,activate,deactivate,optionsChanged,benchPlacement,ghostProbe,ribbonProbe};
 if(S.view==='chase')activate();               // the view was remembered from last time
 </script>
 </body>

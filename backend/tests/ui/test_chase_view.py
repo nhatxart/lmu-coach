@@ -267,6 +267,26 @@ def _to_chase(page):
     page.wait_for_function("() => Chase.state().mix === 1 && !Chase.state().tweening", timeout=10000)
 
 
+def test_driven_line_rests_on_the_drawn_surface(page, server):
+    """BUG (11/8/2026, user screenshots: COTA 11/8 #92 lap 4, chase view):
+    the throttle/brake line sank into the road. It was drawn at the lap's
+    own recorded height + 3 cm, while the road is the fitted topography
+    surface; they differ by centimetres either way (23 % of that lap's line
+    was under the road). The car already rests on the drawn surface (10/27);
+    the line must too: every ribbon vertex at least 2 cm above it."""
+    for lap in (0, 1, 2):
+        _open_session(page, server, HILLY, lap=lap)
+        if lap == 0:
+            _to_chase(page)
+        else:
+            _wait_built(page)
+        page.wait_for_function("() => Chase.state().builtFor === S.mapData || Chase.ribbonProbe()", timeout=10000)
+        p = page.evaluate("Chase.ribbonProbe()")
+        assert p is not None and p["n"] > 100
+        assert p["below"] == 0 and p["minLift"] >= 0.02, (lap, p)
+    assert page.errors == []
+
+
 def test_transition_animates(page, server, shot_dir):
     _open_session(page, server, HILLY, lap=1)
     _radio(page, "Chase").click()
