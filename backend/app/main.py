@@ -507,25 +507,21 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
         # PREVIOUSLY each file was projected around its own session's
         # bounding-box centre, so the same corner sat metres apart between
         # two recordings of one track (a lap comparison overlays them). Fix:
-        # a fixed origin per track (track_reference.track_origin, the centre
-        # stored in data/track_reference/sources/<slug>.json) puts every file
-        # of a track in one frame. Without one the old bbox centre is kept,
-        # and any error finding it costs only the shared frame (fail closed).
-        origin = None
+        # a fixed origin in the file's own GPS frame
+        # (track_reference.projection_origin: LMU's GPS reference point,
+        # else the track's real-world centre if the file's GPS really is
+        # geographic) puts every file of a track in one frame. Otherwise,
+        # or on any error, the file's own bbox centre (fail closed).
+        file_lat = (min(lat_raw) + max(lat_raw)) / 2
+        file_lon = (min(lon_raw) + max(lon_raw)) / 2
+        coordinate_origin = {"kind": "file", "lat": file_lat, "lon": file_lon}
         try:
             meta_tn = (dict(con.execute("SELECT key, value FROM metadata").fetchall())
                        .get("TrackName", "") if "metadata" in tables else "")
-            origin = track_reference.track_origin(meta_tn) if meta_tn else None
+            coordinate_origin = track_reference.projection_origin(meta_tn, file_lat, file_lon)
         except Exception as e:
             print(f"[trackmap] track origin failed, using the file's own: {type(e).__name__}: {e}")
-            origin = None
-        if origin is not None:
-            centre_lat, centre_lon = origin
-            coordinate_origin = {"kind": "track", "lat": centre_lat, "lon": centre_lon}
-        else:
-            centre_lat = (min(lat_raw) + max(lat_raw)) / 2
-            centre_lon = (min(lon_raw) + max(lon_raw)) / 2
-            coordinate_origin = {"kind": "file", "lat": centre_lat, "lon": centre_lon}
+        centre_lat, centre_lon = coordinate_origin["lat"], coordinate_origin["lon"]
         cos_lat    = math.cos(math.radians(centre_lat))
         R          = 111_320.0
         # Screen-space projection: +lon (east) → +x (right), +lat (north) → -z

@@ -64,12 +64,13 @@ def test_trackmap_position_and_channels_share_one_clock(session, monkeypatch):
     # position back to game time and compare.
     x = np.array(dl["x"])
     t_from_speed = np.array(dl["speed"])
-    # The backend's projection: x = (lon - centre_lon) * R * cos(lat), with
-    # the centre halfway between the session's first and last 10 Hz rows.
-    t_slow = [tick_times()[i] for i in slow_rows(tick_times())]
-    centre = GPS_REF_LON + (t_slow[0] + t_slow[-1]) / 2 * LON_PER_S
-    per_s = LON_PER_S * 111_320.0 * math.cos(math.radians(GPS_REF_LAT))
-    x_expected = (GPS_REF_LON + t_from_speed * LON_PER_S - centre) / LON_PER_S * per_s
+    # The backend's projection: x = (lon - origin_lon) * R * cos(origin_lat),
+    # around the origin the payload reports (since 11/2026 a fixed one in the
+    # file's GPS frame, track_reference.projection_origin; before, the
+    # session's bbox centre). This test is about the clock, not the origin.
+    o = d["coordinate_origin"]
+    per_s = LON_PER_S * 111_320.0 * math.cos(math.radians(o["lat"]))
+    x_expected = (GPS_REF_LON + t_from_speed * LON_PER_S - o["lon"]) / LON_PER_S * per_s
     assert np.max(np.abs(x - x_expected)) / per_s < 0.15   # seconds
     # And the lap starts where the Lap event says it does (50.0 s).
     assert t_from_speed[0] == pytest.approx(50.0, abs=0.15)
@@ -79,7 +80,12 @@ def test_trackmap_position_and_channels_share_one_clock(session, monkeypatch):
 def test_trackmap_lap_start_position_is_at_lap_event_time(session, monkeypatch):
     d = _trackmap(session, monkeypatch, lap=1)
     x = np.array(d["driven_line"]["x"])
-    # Full session spans t=10..130, so the projection centre is t=70; lap 1
-    # starts at t=50, i.e. 20 s west of centre, and ends at t=90 (20 s east).
-    per_s = (x[-1] - x[0]) / 40.0
-    assert x[0] == pytest.approx(-20.0 * per_s, abs=0.15 * abs(per_s))
+    # The car moves east at a constant rate (lon = GPS_REF_LON + t*LON_PER_S),
+    # so x(t) is known around the payload's projection origin; lap 1 starts
+    # at t=50 and ends at t=90 (the Lap events). (Before 11/2026 the origin
+    # was the session's bbox centre, t=70; the test is about the clock.)
+    o = d["coordinate_origin"]
+    per_s = LON_PER_S * 111_320.0 * math.cos(math.radians(o["lat"]))
+    x_at = lambda t: (GPS_REF_LON + t * LON_PER_S - o["lon"]) / LON_PER_S * per_s
+    assert x[0] == pytest.approx(x_at(50.0), abs=0.15 * abs(per_s))
+    assert x[-1] == pytest.approx(x_at(90.0), abs=0.15 * abs(per_s))

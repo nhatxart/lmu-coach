@@ -210,7 +210,8 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
                         trailing_partial_m: float = 0.0,
                         lap_dist_scale: float = 1.0, speed_scale: float = 1.0,
                         speed_wave: float = 0.0, with_gps: bool = True,
-                        with_lap_dist: bool = True) -> Path:
+                        with_lap_dist: bool = True,
+                        gps_ref: tuple[float, float] = (GPS_REF_LAT, GPS_REF_LON)) -> Path:
     """cross_offset_ticks moves every crossing but the first off its 10 Hz row
     (-8: the first 10 Hz row after it reads ~3 m), like the real game, where
     the line falls anywhere between two rows. Default 0 keeps the crossings
@@ -400,10 +401,14 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
     if with_surface:
         wheel("Surface Type", surface, hz, "0=dry 1=wet 2=grass 3=dirt 4=gravel 5=kerb 6=special")
 
-    cos_lat = math.cos(math.radians(GPS_REF_LAT))
+    # gps_ref: where the game's GPS puts the world origin. LMU puts every
+    # track near (35.37, 138.92) (Fuji), whatever its real place; another
+    # gps_ref stands in for a file whose GPS is somewhere else.
+    ref_lat, ref_lon = float(gps_ref[0]), float(gps_ref[1])
+    cos_lat = math.cos(math.radians(ref_lat))
     if with_gps:
-        scalar("GPS Latitude", GPS_REF_LAT + pos[slow, 2] / R_DEG, shz, "deg")
-        scalar("GPS Longitude", GPS_REF_LON + pos[slow, 0] / (R_DEG * cos_lat), shz, "deg")
+        scalar("GPS Latitude", ref_lat + pos[slow, 2] / R_DEG, shz, "deg")
+        scalar("GPS Longitude", ref_lon + pos[slow, 0] / (R_DEG * cos_lat), shz, "deg")
     ld_slow, pl_slow = lap_dist[slow] * float(lap_dist_scale), lat[slow].copy()
     te_slow = np.where(lat[slow] < 0, -track_edge_m, track_edge_m)
     if scoring_hold:

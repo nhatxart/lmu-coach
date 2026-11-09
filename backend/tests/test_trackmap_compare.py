@@ -109,8 +109,56 @@ def test_trackmap_uses_track_origin(tmp_path, monkeypatch, reference_dir):
     assert d["driven_line"]["z"][0] == pytest.approx(z, abs=0.05)
 
 
+def _max_abs_xz(d):
+    dl, s = d["driven_line"], d["surface"]
+    return max(max(abs(v) for v in dl["x"]), max(abs(v) for v in dl["z"]),
+               max(abs(v) for v in s["x"]), max(abs(v) for v in s["z"]))
+
+
+def test_game_gps_frame_beats_real_world_centre(tmp_path, monkeypatch, reference_dir):
+    """BUG (11/8/2026, user screenshot: Road Atlanta 10/26 #92, chase view
+    jagged and jittering): LMU's GPS puts EVERY track near Fuji
+    (35.37, 138.92), but the per-track origin was the track's real-world
+    centre (sources/road_atlanta.json: 34.15, -83.81), so /trackmap sent
+    x ~ 20,500 km. three.js stores positions as float32 (~2 m steps there).
+    A recording whose GPS lies near the game's reference must be projected
+    around that reference: small coordinates, and still one frame for
+    every file of the track."""
+    _write_origin(reference_dir, "road_atlanta", (34.1494, -83.8139))
+    f = write_hilly_session(sess(tmp_path) / "Road-atl.duckdb",
+                            track_name="Michelin Raceway Road Atlanta")
+    d = _trackmap(f, monkeypatch)
+    assert d["coordinate_origin"]["kind"] == "track"
+    assert (d["coordinate_origin"]["lat"], d["coordinate_origin"]["lon"]) == track_reference.LMU_GPS_REF
+    assert _max_abs_xz(d) < 5000          # metres; the ring is ~400 m across
+
+
+def test_far_real_world_centre_is_not_used(tmp_path, monkeypatch, reference_dir):
+    """A centre more than GPS_FRAME_RADIUS_M from the file's own GPS is in
+    another frame: never project around it (the file's own centre instead)."""
+    _write_origin(reference_dir, "road_atlanta", (34.1494, -83.8139))
+    f = write_hilly_session(sess(tmp_path) / "Road-far.duckdb",
+                            track_name="Michelin Raceway Road Atlanta", gps_ref=(10.0, 20.0))
+    d = _trackmap(f, monkeypatch)
+    assert d["coordinate_origin"]["kind"] == "file"
+    assert _max_abs_xz(d) < 5000
+
+
+def test_geo_referenced_file_uses_its_real_world_centre(tmp_path, monkeypatch, reference_dir):
+    """Should a file's GPS be real-world (near the track's sources centre and
+    far from LMU's reference), that centre is the shared origin."""
+    _write_origin(reference_dir, "road_atlanta", (34.1494, -83.8139))
+    f = write_hilly_session(sess(tmp_path) / "Road-geo.duckdb",
+                            track_name="Michelin Raceway Road Atlanta", gps_ref=(34.15, -83.81))
+    d = _trackmap(f, monkeypatch)
+    assert d["coordinate_origin"] == {"kind": "track", "lat": 34.1494, "lon": -83.8139}
+    assert _max_abs_xz(d) < 5000
+
+
 def test_trackmap_without_origin_unchanged(tmp_path, monkeypatch):
-    f = write_hilly_session(sess(tmp_path) / "Hill-file.duckdb")
+    # GPS far from LMU's reference and no sources centre: the file's own
+    # bbox centre, exactly as before the per-track origin.
+    f = write_hilly_session(sess(tmp_path) / "Hill-file.duckdb", gps_ref=(10.0, 20.0))
     d = _trackmap(f, monkeypatch)
     lat, lon, _, _ = _gps(f)
     c_lat, c_lon = (lat.min() + lat.max()) / 2, (lon.min() + lon.max()) / 2

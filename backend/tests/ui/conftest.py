@@ -35,13 +35,15 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _write_compare_files(sessions: Path, kept: Path | None) -> None:
+def _write_compare_files(sessions: Path, kept: Path | None, gps_ref=None) -> None:
     """The lap-comparison fixtures (serve_for_ui.CMP_*), all on the
-    Synthetic Hill Ring. CMP_KEPT goes to the reference-laps folder."""
+    Synthetic Hill Ring. CMP_KEPT goes to the reference-laps folder.
+    gps_ref (only with kept=None): where CMP_A / CMP_B's GPS sits."""
     from synthetic_track import write_hilly_session
 
-    write_hilly_session(sessions / CMP_A, vehicle_class="LMGT3", lap_offsets=(0.0, 1.0, -1.0))
-    write_hilly_session(sessions / CMP_B, vehicle_class="LMGT3", lap_offsets=(2.0, 2.0), speed_scale=0.97)
+    g = {"gps_ref": gps_ref} if gps_ref else {}
+    write_hilly_session(sessions / CMP_A, vehicle_class="LMGT3", lap_offsets=(0.0, 1.0, -1.0), **g)
+    write_hilly_session(sessions / CMP_B, vehicle_class="LMGT3", lap_offsets=(2.0, 2.0), speed_scale=0.97, **g)
     if kept is None:
         return
     write_hilly_session(kept / CMP_KEPT, vehicle_class="LMGT3", lap_offsets=(2.0, 2.0), speed_scale=0.97)
@@ -123,15 +125,17 @@ def server(tmp_path_factory):
 
 @pytest.fixture(scope="session")
 def server_no_origin(tmp_path_factory):
-    """CMP_A and CMP_B with an EMPTY track reference dir: no track origin,
-    so each file is projected around its own centre (coordinate_origin
-    kind "file") and a comparison has no shared frame."""
+    """CMP_A and CMP_B with an EMPTY track reference dir and their GPS far
+    from LMU's reference point (track_reference.LMU_GPS_REF): no origin in
+    their GPS frame, so each file is projected around its own centre
+    (coordinate_origin kind "file") and a comparison has no shared frame.
+    (Near LMU's reference, every recording shares that frame.)"""
     pytest.importorskip("uvicorn")
     root = tmp_path_factory.mktemp("ui_no_origin")
     sessions, ref = root / "sessions", root / "ref"
     sessions.mkdir()
     ref.mkdir()
-    _write_compare_files(sessions, None)
+    _write_compare_files(sessions, None, gps_ref=(10.0, 20.0))
     proc, base = _start(sessions, ref)
     yield base
     _stop(proc)

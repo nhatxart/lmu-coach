@@ -606,6 +606,43 @@ def track_origin(track_name: str) -> tuple[float, float] | None:
     return hit[1]
 
 
+# LMU's GPS is not real-world: it lays EVERY track's world around one point
+# near Fuji. Measured 11/8/2026 on all 25 GPS recordings in data/sessions
+# (Fuji, Imola, Barcelona, Le Mans, COTA, Daytona, Road Atlanta, Sebring):
+# GPS bbox centres within 35.356-35.374 N, 138.915-138.934 E.
+LMU_GPS_REF = (35.37, 138.92)
+# A projection origin must lie in the file's own GPS frame: within this
+# distance of the file's GPS bbox centre (tracks are a few km across; the
+# frames that do not belong are 1,000s of km away).
+GPS_FRAME_RADIUS_M = 50_000.0
+
+
+def _gps_dist_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    c = np.cos(np.radians((lat1 + lat2) / 2))
+    return float(np.hypot((lon1 - lon2) * 111_320.0 * c, (lat1 - lat2) * 111_320.0))
+
+
+def projection_origin(track_name: str, file_lat: float, file_lon: float) -> dict:
+    """The /trackmap projection origin for a file whose GPS bbox centre is
+    (file_lat, file_lon): {"kind": "track"|"file", "lat", "lon"}.
+
+    BUG FIX / PREVIOUSLY (11/6/2026): the per-track origin was the track's
+    real-world centre (track_origin) for every file. LMU's GPS puts every
+    track near Fuji (LMU_GPS_REF), so only Fuji matched; Road Atlanta came
+    out ~20,500 km from its origin and the chase view (three.js float32
+    positions, ~2 m steps at that size) drew a jagged, jittering track.
+    Fix: an origin is used only if it lies in the file's own GPS frame
+    (within GPS_FRAME_RADIUS_M): first LMU's reference (one frame for every
+    LMU recording of every track), then the track's real-world centre (a
+    file whose GPS really is geographic), else the file's own centre."""
+    if _gps_dist_m(file_lat, file_lon, *LMU_GPS_REF) <= GPS_FRAME_RADIUS_M:
+        return {"kind": "track", "lat": LMU_GPS_REF[0], "lon": LMU_GPS_REF[1]}
+    osm = track_origin(track_name) if track_name else None
+    if osm is not None and _gps_dist_m(file_lat, file_lon, *osm) <= GPS_FRAME_RADIUS_M:
+        return {"kind": "track", "lat": osm[0], "lon": osm[1]}
+    return {"kind": "file", "lat": file_lat, "lon": file_lon}
+
+
 def locate_ex(layout: dict, dist_m: float) -> tuple[str, str] | None:
     """(label, place) for an event at LMU lap distance dist_m. `place` names the corner or the
     gap without the metre offset, so two events in the same corner compare equal.
