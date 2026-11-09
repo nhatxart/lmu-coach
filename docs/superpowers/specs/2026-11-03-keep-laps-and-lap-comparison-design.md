@@ -152,6 +152,17 @@ the Record tab uses.
 - **Delete on Windows** can fail while the backend has the file open. Report
   that plainly ("in use, try again"); never retry by force.
 
+### 4.4a Amendment (11/9/2026, user decision): the backend does it, no host agent
+"This should run on the backend with no LLM involvement" and "It should be
+able to remove it after a deliberate delete button and a warning". So the
+backend writes kept files and deletes originals itself; the host agent is not
+involved. `docker-compose.yml` mounts `/data/reference_laps` and
+`/data/sessions` read-write (comment why). The delete endpoint is the only
+code that may remove anything from `/data/sessions`, only after the user
+pressed a separate Delete button and confirmed a warning naming the file, and
+only when every kept lap from that action passed its check. 4.4 below is
+superseded where it names the agent; its checks and refusals still apply.
+
 ### 4.4 Host agent API (shape; names are the builder's call)
 - `POST` keep: `{source, file, laps:[n...]}` -> per lap `{lap, kept_file, ok,
   lap_time_original, lap_time_kept, error}`. Paths are resolved against the
