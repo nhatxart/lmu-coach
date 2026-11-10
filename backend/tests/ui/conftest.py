@@ -21,7 +21,7 @@ sys.path.insert(0, str(HERE.parent))        # synthetic_track / synthetic_sessio
 sys.path.insert(0, str(HERE))               # serve_for_ui (file names)
 
 from serve_for_ui import (CMP_A, CMP_B, CMP_HYPER, CMP_KEPT, CMP_LAYOUT, CMP_NOLD,  # noqa: E402
-                          CMP_V1, CMP_WAVE, FUJI_A, FUJI_B, HILLY, LEGACY, LIMITS, PARTIAL,
+                          CMP_V1, CMP_WAVE, FUJI_A, FUJI_B, FUJI_OTHER, HILLY, LEGACY, LIMITS, PARTIAL,
                           SLIP)
 
 # SwiftShader: software WebGL, so the chase view renders without a GPU.
@@ -62,6 +62,10 @@ def _write_compare_files(sessions: Path, kept: Path | None, gps_ref=None) -> Non
                         track_name="Fuji Speedway", cross_offset_ticks=-4)
     write_hilly_session(sessions / FUJI_B, vehicle_class="LMGT3", lap_offsets=(2.0, 2.0),
                         speed_scale=0.97, track_name="Fuji Speedway")
+    # another car model of the same class, slower than FUJI_B: never "Best
+    # other file", always "Best other car" from FUJI_A or FUJI_B
+    write_hilly_session(sessions / FUJI_OTHER, vehicle_class="LMGT3", vehicle_model="Synthetic Car Two LMGT3",
+                        lap_offsets=(1.0, 1.0), speed_scale=0.95, track_name="Fuji Speedway")
 
 
 def _start(sessions: Path, ref: Path, kept: Path | None = None):

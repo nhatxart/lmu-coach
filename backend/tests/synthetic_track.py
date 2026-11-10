@@ -205,7 +205,7 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
                         with_surface=True, other_cars=0,
                         track_name="Synthetic Hill Ring",
                         cross_offset_ticks=0, track_edge_m=TRACK_EDGE_M,
-                        vehicle_class=None, with_edges=True,
+                        vehicle_class=None, vehicle_model=None, with_edges=True,
                         scoring_hold=False, slip_angles=False, out_lap=False,
                         trailing_partial_m: float = 0.0,
                         lap_dist_scale: float = 1.0, speed_scale: float = 1.0,
@@ -219,6 +219,8 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
 
     track_edge_m: the Track Edge half-width (the kerb stays at KERB_LAT_M).
     vehicle_class: written as metadata VehicleClass (None: no such key).
+    vehicle_model: written as metadata VehicleModel (None: no such key, the
+    car model is then read from CarName).
     with_edges=False: no Path Lateral / Track Edge tables (recorder v1).
     scoring_hold: Lap Dist and Path Lateral repeat the previous 10 Hz row on
     every other row, as in real HF1 files: the game updates them with its
@@ -347,6 +349,8 @@ def write_hilly_session(path: Path, lap_offsets=(0.0, 1.5, -1.5), with_pose=True
         meta.append(("PoseChannels", "1"))
     if vehicle_class:
         meta.append(("VehicleClass", vehicle_class))
+    if vehicle_model:
+        meta.append(("VehicleModel", vehicle_model))
     con.executemany("INSERT INTO metadata VALUES (?, ?)", meta)
     con.execute("CREATE TABLE channelsList (channelName VARCHAR, frequency DOUBLE, unit VARCHAR)")
     con.execute("CREATE TABLE eventsList (eventName VARCHAR, unit VARCHAR)")

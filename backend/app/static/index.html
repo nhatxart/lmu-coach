@@ -803,7 +803,8 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
           </div>
           <div class="cmp-quick">
             <button type="button" onclick="CMP.addBestHere()"><svg class="i sm" aria-hidden="true"><use href="#i-plus"/></svg>Best lap of this session</button>
-            <button type="button" onclick="CMP.addBestOther()"><svg class="i sm" aria-hidden="true"><use href="#i-plus"/></svg>Best other file, same track</button>
+            <button type="button" onclick="CMP.addBestOther()"><svg class="i sm" aria-hidden="true"><use href="#i-plus"/></svg>Best other file, same class</button>
+            <button type="button" onclick="CMP.addBestOtherCar()" title="The fastest lap of a different car model in your class, on this track"><svg class="i sm" aria-hidden="true"><use href="#i-plus"/></svg>Best other car, same class</button>
           </div>
           <div class="cmp-status" id="cmp-status" role="status" aria-live="polite"></div>
           <div class="cmp-align-row"><span class="dimtext" id="cmp-al-lbl">Ghost position</span>
@@ -3561,19 +3562,27 @@ function addBestHere(){
 // Fastest real lap across the other offered files, from the index only.
 // Faster laps that are refused for their layout are counted, so the status
 // can say why the pick is not the fastest lap on this track name.
-async function addBestOther(){
-  if(!S.file){setStatus('Load a lap first');return;}
+// otherCar (11/9/2026, "Best other car, same class"): only files of a
+// DIFFERENT car model. The class button's pick is the fastest lap in the
+// class, which is often your own car model (Fuji BMW -> another BMW file),
+// so a lap of another car in the class was never reachable from a button.
+// A file without a known model is not counted as another car.
+async function addBestOther(otherCar){
+  if(!S.file)return refuse('Load a lap first');
   setStatus('Looking through the other files on this track…');
-  try{await loadIndex(!myEntry());}catch(e){setStatus('Could not read the session list: '+e.message);return;}
+  try{await loadIndex(!myEntry());}catch(e){return refuse('Could not read the session list: '+e.message);}
+  const mine=myEntry(),myModel=(mine&&mine.car_model)||'';
+  if(otherCar&&!myModel)return refuse('The car model of this file is unknown');
+  const want=e=>!otherCar||(!!e.car_model&&e.car_model!==myModel);
   const cands=[];
-  offered().forEach(e=>{if(isMine(e.source,e.file))return;
+  offered().forEach(e=>{if(isMine(e.source,e.file)||!want(e))return;
     e.laps.forEach(l=>{if(l.real&&!onScreen(e.source,e.file,l.lap_number))cands.push({e,l});});});
-  if(!cands.length){setStatus('No comparable lap in another file on this track');return;}
-  const best=cands.reduce((a,c)=>c.l.lap_time_s<a.l.lap_time_s?c:a);
   const mc=myClass(),mt=myTrack();
+  if(!cands.length)return refuse(otherCar?`No comparable lap of another car in ${clsLabel(mc)} on this track`:'No comparable lap in another file on this track');
+  const best=cands.reduce((a,c)=>c.l.lap_time_s<a.l.lap_time_s?c:a);
   let skipped=0;
   st.index.list.forEach(e=>{
-    if(isMine(e.source,e.file)||e.error||trackKeyOf(e,e.file)!==mt||(e.car_class||'unknown')!==mc)return;
+    if(isMine(e.source,e.file)||e.error||!want(e)||trackKeyOf(e,e.file)!==mt||(e.car_class||'unknown')!==mc)return;
     if(!/layout/.test(entryRefusal(e)||''))return;
     skipped+=e.laps.filter(l=>l.real&&l.lap_time_s<best.l.lap_time_s).length;
   });
@@ -3581,6 +3590,7 @@ async function addBestOther(){
   if(r&&r.ok&&skipped)setStatus(`Skipped ${skipped} faster lap${skipped>1?'s':''} on another layout`);
   return r;
 }
+const addBestOtherCar=()=>addBestOther(true);
 
 // ── adding and removing ghosts ──
 function refuse(reason){setStatus(reason);return{ok:false,reason};}
@@ -3710,7 +3720,7 @@ return{
     return{sp:p.sp,series:p.series.map(s=>({col:s.col,x:Array.from(s.x),v:Array.from(s.v,v=>v*s.k),dotS:s.dot?s.dot(p.f).s:null}))};
   },
   add,remove,setAlign,ghostPose,meAtDist,deltaAt,live,onMainLap,onPlayhead,drawLines2D,drawMarkers2D,deltaColAt,
-  fillLaps,addSelected,addBestHere,addBestOther,onTab,
+  fillLaps,addSelected,addBestHere,addBestOther,addBestOtherCar,onTab,
 };
 })();
 window.CMP=CMP;   // the hooks test window.CMP (a top-level const is not a window property)

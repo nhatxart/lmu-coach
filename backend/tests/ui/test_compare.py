@@ -9,7 +9,7 @@ import pytest
 pytest.importorskip("playwright.sync_api")
 
 from serve_for_ui import (CMP_A, CMP_B, CMP_HYPER, CMP_KEPT, CMP_LAYOUT, CMP_NOLD, CMP_V1,
-                          CMP_WAVE, FUJI_A, FUJI_B, HILLY, PARTIAL)
+                          CMP_WAVE, FUJI_A, FUJI_B, FUJI_OTHER, HILLY, PARTIAL)
 
 TEAL, CORAL = "rgb(45, 212, 167)", "rgb(255, 107, 107)"
 LOADED = "() => S.mapData && document.getElementById('map-overlay').classList.contains('hidden')"
@@ -122,6 +122,38 @@ def test_same_file_ghost_and_best_buttons(page, server):
     assert g2["file"] in (CMP_B, CMP_KEPT)
     maps = [u for u in urls if "/trackmap" in u]
     assert maps and all(g2["file"] in u for u in maps), maps
+    assert page.errors == []
+
+
+def test_best_other_car_button(page, server):
+    """11/9/2026 (user): "Best other file" looked limited to the same car. It
+    is not (class and track), but the fastest lap in the class is often your
+    own car model, so another car was never reachable from a button. "Best
+    other car" adds the fastest real lap of a DIFFERENT car model in your
+    class on this track and layout."""
+    _open(page, server, FUJI_A, 1)
+    _compare_tab(page)
+    # the class button still takes the fastest lap, here the same car model
+    page.get_by_role("button", name="Best other file, same class").click()
+    page.wait_for_function("() => CMP.ghosts.length === 1")
+    assert page.evaluate("CMP.ghosts[0].file") == FUJI_B
+    page.get_by_role("button", name="Best other car, same class").click()
+    page.wait_for_function("() => CMP.ghosts.length === 2")
+    g = page.evaluate("({file: CMP.ghosts[1].file, model: CMP.ghosts[1].model})")
+    assert g == {"file": FUJI_OTHER, "model": "Synthetic Car Two LMGT3"}
+    # its other lap is next; then nothing is left, and it says so
+    page.get_by_role("button", name="Best other car, same class").click()
+    page.wait_for_function("() => CMP.ghosts.length === 3")
+    assert page.evaluate("CMP.ghosts[2].file") == FUJI_OTHER
+    r = page.evaluate("CMP.addBestOtherCar()")
+    assert r["ok"] is False and "another car" in page.inner_text("#cmp-status")
+    # from the other car, every Synthetic Car 1 lap is "another car"
+    _open(page, server, FUJI_OTHER, goto=False)
+    page.evaluate("CMP.ghosts.slice().forEach(g => CMP.remove(g.id))")
+    page.wait_for_function("() => CMP.ghosts.length === 0")
+    r = page.evaluate("CMP.addBestOtherCar()")
+    assert r["ok"] is True, r
+    assert page.evaluate("CMP.ghosts.map(g => g.file)") == [FUJI_A]
     assert page.errors == []
 
 

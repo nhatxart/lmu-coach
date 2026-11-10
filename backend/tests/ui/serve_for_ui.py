@@ -37,6 +37,7 @@ CMP_WAVE = "Synthetic_Hill_Ring-Synthetic_Car_1-2026-11-08T10_00_00Z.duckdb"    
 # in real files; FUJI_B's sit on rows.
 FUJI_A = "Fuji_Speedway-Synthetic_Car_1-2026-11-09T10_00_00Z.duckdb"     # LMGT3, laps at lat 0 / 1 / -1
 FUJI_B = "Fuji_Speedway-Synthetic_Car_1-2026-11-10T10_00_00Z.duckdb"     # LMGT3, 3 % slower
+FUJI_OTHER = "Fuji_Speedway-Synthetic_Car_2-2026-11-11T10_00_00Z.duckdb"  # LMGT3, another car model, 5 % slower
 
 
 def main(argv: list[str]) -> None:
