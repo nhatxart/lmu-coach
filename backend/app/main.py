@@ -46,7 +46,7 @@ from .tire_model import TIRE_GRID_HZ, compute_grip_utilization_for_lap, file_loa
 from .vehicle_dynamics import (body_slip_from_local_vel_deg, compute_body_slip_deg,
                                handling_balance)
 from .telemetry import (load_telemetry_file, get_car_setup_json, session_time_axes, reference_lap_time,
-                        dehold, lap_index)
+                        dehold, lap_index, kept_lap)
 from . import track_limits
 
 log = logging.getLogger(__name__)
@@ -587,6 +587,22 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
         ).fetchall()
     except Exception:
         lap_events = []
+
+    # A kept file (keep laps) holds one lap; its trailing margin starts an
+    # open lap n+1 (the Lap row that ends lap n), which must not be picked
+    # or served. The auto-pick below would choose lap n anyway (n+1 is not
+    # closed), but an explicit other lap would get the margin or the whole file.
+    try:
+        keep = (kept_lap(dict(con.execute("SELECT key, value FROM metadata").fetchall()))
+                if "metadata" in tables else None)
+    except Exception:
+        keep = None
+    if keep is not None:
+        if lap_number is None:
+            lap_number = keep
+        elif lap_number != keep:
+            con.close()
+            raise HTTPException(404, f"Lap {lap_number} not in this kept file (it holds lap {keep})")
 
     # Auto-select fastest complete lap when none specified
     if lap_number is None and len(lap_events) >= 2:
