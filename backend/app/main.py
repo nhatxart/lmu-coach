@@ -541,6 +541,33 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
         # negating longitude (not latitude) reproduces that correctly.
         pos_x = [(lo - centre_lon) * R * cos_lat for lo in lon_raw]
         pos_z = [-(la - centre_lat) * R           for la in lat_raw]
+        # BUG FIX / PREVIOUSLY the recorder's pseudo-GPS was taken as one frame
+        # for every file of a track. It is not: recorder.py writes
+        # reference + (mPos - the car's FIRST position of that recording), so
+        # each file's frame is shifted by where its recording began (two COTA
+        # files: 18 m; the compare tab drew the ghost that far off the road).
+        # The origin is not always row 0's position (a recording that starts
+        # mid game-session keeps the origin of the session's first one: the
+        # 10/19 Fuji #92 file 22_49_27 starts 49 m from it), but GPS row 0 and
+        # Pos row 0 are the same instant, so origin = Pos[0] - (GPS[0] - ref).
+        # Adding it back puts the file in game world metres, the same for
+        # every recording of a track. Files whose GPS is ref + mPos (origin 0)
+        # come out unchanged; native files have no Pos X and are left alone.
+        try:
+            ref_lat, ref_lon = track_reference.LMU_GPS_REF
+            if (coordinate_origin["kind"] == "track"
+                    and (coordinate_origin["lat"], coordinate_origin["lon"]) == (ref_lat, ref_lon)
+                    and "Pos X" in tables and "Pos Z" in tables):
+                wx0 = con.execute('SELECT value FROM "Pos X" ORDER BY rowid LIMIT 1').fetchone()
+                wz0 = con.execute('SELECT value FROM "Pos Z" ORDER BY rowid LIMIT 1').fetchone()
+                if wx0 and wz0:
+                    gx0 = (lon_raw[0] - ref_lon) * R * cos_lat
+                    gz0 = (lat_raw[0] - ref_lat) * R
+                    # z keeps its single-axis flip (screen z = -world z)
+                    pos_x = [v + float(wx0[0]) - gx0 for v in pos_x]
+                    pos_z = [v - (float(wz0[0]) - gz0) for v in pos_z]
+        except Exception as e:
+            print(f"[trackmap] world-frame shift failed, GPS frame kept: {type(e).__name__}: {e}")
         pos_hz = 10.0
     else:
         # Pos X/Z fallback (recorder v1, no GPS reprojection available).
