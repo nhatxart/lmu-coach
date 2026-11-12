@@ -2,7 +2,8 @@
 MARGIN_S = 3 s either side. It keeps the Lap rows n and n+1 and lap n's
 Lap Time row, so the readers must list only lap n (not an open lap n+1 made
 of the trailing margin), and the 10 Hz gate must be replayed from the
-original's first GPS Time (metadata GateOrigin), not the cut's first row.
+original gate's due time at the cut (metadata GateDue), not from the cut's
+first row.
 
 The cut is made here by hand from a synthetic recording, the way the keep
 step will make it: rows outside [t_start - 3 s, t_end + 3 s] deleted.
@@ -34,11 +35,27 @@ def _times():
     return tick_times(start=10.0, end=130.0, drop_until=48.0)
 
 
-@pytest.fixture
-def original(tmp_path):
+def _jump_times():
+    """Clean 10 ms ticks from 10.0 s with one 0.537 s stall at 30.0 s:
+    recorder.py's gate re-anchors at et + 0.1 there, so after it the 10 Hz
+    phase (.x37) has nothing to do with the first tick (10.0) any more, and
+    the cut's first tick (47.057) is on neither phase."""
+    out, ms = [], 10_000
+    while ms <= 130_000:
+        out.append(ms / 1000.0)
+        ms += 537 if ms == 30_000 else 10
+    return out
+
+
+def _original(tmp_path, times):
     (tmp_path / "orig").mkdir()
     return write_session(tmp_path / "orig" / "Test Track-Test Car _1-2026-10-14T00_00_00Z.duckdb",
-                         laps=LAPS, lap_times=LAP_TIMES, times=_times())
+                         laps=LAPS, lap_times=LAP_TIMES, times=times)
+
+
+@pytest.fixture
+def original(tmp_path):
+    return _original(tmp_path, _times())
 
 
 def _axes(path):
@@ -49,7 +66,7 @@ def _axes(path):
         con.close()
 
 
-def _cut(src, dst, gate_origin=True):
+def _cut(src, dst, gate_due=True):
     """Copy src to dst and keep one lap of it, like a kept file."""
     t_fast, t_slow = _axes(src)
     t0, t1 = LAPS[KEPT][0] - MARGIN_S, LAPS[KEPT + 1][0] + MARGIN_S
@@ -75,8 +92,8 @@ def _cut(src, dst, gate_origin=True):
         con.execute(f'DELETE FROM "Lap Time" WHERE abs(ts - {LAPS[KEPT + 1][0]}) > 1e-3')
         meta = [("KeptFromFile", src.name), ("KeptLap", str(KEPT)),
                 ("KeptLapTime", "40.000"), ("KeptAt", "2026-11-10T00:00:00Z")]
-        if gate_origin:
-            meta.append(("GateOrigin", repr(float(t_fast[0]))))
+        if gate_due:
+            meta.append(("GateDue", repr(telemetry.slow_gate_due_at(t_fast, t0))))
         con.executemany("INSERT INTO metadata VALUES (?, ?)", meta)
     finally:
         con.close()
@@ -124,15 +141,48 @@ def test_trackmap_auto_pick_is_kept_lap(kept, monkeypatch):
     assert client.get(url, params={"lap_number": 2}).status_code == 404
 
 
-def test_gate_origin_keeps_slow_axis(original, kept, tmp_path):
+def test_trackmap_kept_lap_without_lap_row_is_422(kept, monkeypatch):
+    # A malformed kept file (KeptLap names a lap it has no Lap row for) must
+    # not be served as the whole file presented as that lap.
+    con = duckdb.connect(str(kept))
+    try:
+        con.execute("UPDATE metadata SET value = '5' WHERE key = 'KeptLap'")
+    finally:
+        con.close()
+    monkeypatch.setattr(main, "OWN_SESSIONS_DIR", kept.parent)
+    r = TestClient(main.app).get(f"/sessions/sessions/{quote(kept.name)}/trackmap")
+    assert r.status_code == 422, r.text[:300]
+
+
+def _assert_kept_slow_axis(original, kept, tmp_path):
     _, slow_orig = _axes(original)
     t0, t1 = LAPS[KEPT][0] - MARGIN_S, LAPS[KEPT + 1][0] + MARGIN_S
     expected = slow_orig[(slow_orig >= t0) & (slow_orig <= t1)]
     _, slow_kept = _axes(kept)
     assert len(slow_kept) == len(expected)
     assert np.max(np.abs(slow_kept - expected)) < 1e-9
-    # Guard: without GateOrigin the gate is anchored at the cut's first row
-    # and lands 0.04 s off, so the test above really exercises the anchor.
-    bare = _cut(original, tmp_path / "bare.duckdb", gate_origin=False)
+    # Guard: without GateDue the gate is anchored at the cut's first row and
+    # lands off the original's phase, so the test really exercises the anchor.
+    bare = _cut(original, tmp_path / "bare.duckdb", gate_due=False)
     _, slow_bare = _axes(bare)
     assert len(slow_bare) != len(expected) or np.max(np.abs(slow_bare - expected)) > 0.01
+
+
+def test_gate_due_keeps_slow_axis(original, kept, tmp_path):
+    _assert_kept_slow_axis(original, kept, tmp_path)
+
+
+def test_gate_due_after_clock_jump(tmp_path):
+    # PREVIOUSLY (6039d59, metadata GateOrigin) the reader walked 0.1 s steps
+    # from the original's first tick, so after this stall it replayed the
+    # wrong phase (0.04 s off) with the right row count, silently.
+    original = _original(tmp_path, _jump_times())
+    kept = _cut(original, tmp_path / "Test Track-Test Car _1 L1 0m40.000-2026-10-14T00_00_00Z.duckdb")
+    _assert_kept_slow_axis(original, kept, tmp_path)
+
+
+def test_slow_gate_due_at_cut_start_is_first_tick():
+    # A cut clamped at the recording start: the gate starts at the first tick.
+    t = np.array(_times())
+    assert telemetry.slow_gate_due_at(t, t[0] - 3.0) == t[0]
+    assert telemetry.slow_gate_due_at(t, t[0]) == t[0]

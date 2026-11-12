@@ -235,18 +235,42 @@ def dehold(values, speed_kmh=None) -> list:
     return np.interp(np.arange(len(v)), keep, v[keep]).tolist()
 
 
-def _replay_slow_gate(t_fast: np.ndarray, nxt: float | None = None) -> np.ndarray:
-    """Indices into t_fast where recorder.py wrote a 10 Hz row: the first
-    tick at or after each due time, re-anchored after a clock jump. `nxt` is
-    the first due time (default: the first tick, as recorder.py starts)."""
-    nxt, idx = (float(t_fast[0]) if nxt is None else nxt), []
-    for i, et in enumerate(t_fast.tolist()):
+def _run_slow_gate(ticks: list[float], nxt: float) -> tuple[list[int], float]:
+    """recorder.py's 10 Hz gate over `ticks` from due time `nxt`: (indices of
+    the ticks that wrote a 10 Hz row, due time after the last tick). The one
+    copy of the gate that _replay_slow_gate and slow_gate_due_at share."""
+    idx = []
+    for i, et in enumerate(ticks):
         if et >= nxt:
             nxt += SLOW_PERIOD_S
             if nxt <= et:
                 nxt = et + SLOW_PERIOD_S
             idx.append(i)
+    return idx, nxt
+
+
+def _replay_slow_gate(t_fast: np.ndarray, nxt: float | None = None) -> np.ndarray:
+    """Indices into t_fast where recorder.py wrote a 10 Hz row: the first
+    tick at or after each due time, re-anchored after a clock jump. `nxt` is
+    the first due time (default: the first tick, as recorder.py starts)."""
+    idx, _ = _run_slow_gate(t_fast.tolist(), float(t_fast[0]) if nxt is None else nxt)
     return np.asarray(idx, dtype=np.int64)
+
+
+def slow_gate_due_at(t_fast, cut_start_s: float) -> float:
+    """The recorder's 10 Hz gate due time in effect when the first tick at or
+    after `cut_start_s` is processed, on an original recording's GPS Time.
+
+    The keep-laps writer stores it as metadata GateDue in a kept file, and
+    session_time_axes replays the kept file's gate from it, so both use this
+    one copy of recorder.py's gate (_run_slow_gate). It must be computed
+    on the original: the gate re-anchors after every clock jump, so its
+    phase at the cut cannot be rebuilt from the cut alone. A cut at or before
+    the recording's start gets the first tick, where recorder.py starts."""
+    t = np.asarray(t_fast, dtype=np.float64)
+    i = int(np.searchsorted(t, cut_start_s, side="left"))
+    _, nxt = _run_slow_gate(t[:i].tolist(), float(t[0]))
+    return nxt
 
 
 def _row_count(con: duckdb.DuckDBPyConnection, table: str) -> int:
@@ -256,37 +280,13 @@ def _row_count(con: duckdb.DuckDBPyConnection, table: str) -> int:
         return 0
 
 
-def _gate_origin(con: duckdb.DuckDBPyConnection) -> float | None:
-    """metadata GateOrigin (kept files: the original's first GPS Time), or None."""
+def _gate_due(con: duckdb.DuckDBPyConnection) -> float | None:
+    """metadata GateDue (kept files: slow_gate_due_at on the original), or None."""
     try:
-        row = con.execute("SELECT value FROM metadata WHERE key = 'GateOrigin'").fetchone()
+        row = con.execute("SELECT value FROM metadata WHERE key = 'GateDue'").fetchone()
         return float(row[0]) if row else None
     except Exception:
         return None
-
-
-def _replay_from_origin(t_fast: np.ndarray, origin: float, n_slow: int) -> np.ndarray | None:
-    """The 10 Hz gate of a cut file, replayed from the original's first tick.
-
-    recorder.py adds SLOW_PERIOD_S to its due time once per 10 Hz row, so
-    without a clock jump before the cut the due times are origin + 0.1 +
-    0.1 + ... (accumulated the same way, so the float values match). The
-    last due time at or before the cut's first tick is the only unknown: a
-    tick just before the cut (deleted with the margin) may already have
-    used it. Replaying with it gives one row more than the file has in that
-    case, and the rest of the rows are the same, so that first row is dropped.
-    None if neither reproduces the file's row count (a jump before the cut).
-    """
-    first = float(t_fast[0])
-    nxt = origin
-    while nxt + SLOW_PERIOD_S <= first:
-        nxt += SLOW_PERIOD_S
-    idx = _replay_slow_gate(t_fast, nxt)
-    if len(idx) == n_slow:
-        return idx
-    if len(idx) == n_slow + 1:
-        return idx[1:]
-    return None
 
 
 def session_time_axes(
@@ -295,7 +295,7 @@ def session_time_axes(
     """(t_fast, t_slow): game time (s) of each 100 Hz row and each 10 Hz row.
 
     t_fast is GPS Time itself. t_slow replays the recorder.py gate (from
-    metadata GateOrigin in a kept file); if
+    metadata GateDue in a kept file); if
     that does not reproduce the file's 10 Hz row count (the v4 recorder decimated
     by tick count, native LMU is evenly spaced), the 10 Hz rows are spread
     evenly over the 100 Hz rows by index, which is exact for those formats.
@@ -317,11 +317,18 @@ def session_time_axes(
     # were skipped the gate's phase differs, the replay gives the same row
     # count and every 10 Hz row came out up to a tick or more off (0.04 s in
     # test_kept_readers), so the map drifted against the telemetry silently.
-    # Fix: replay from the original's first GPS Time (metadata GateOrigin).
-    origin = _gate_origin(con)
-    if origin is not None and origin <= t_fast[0]:
-        idx = _replay_from_origin(t_fast, origin, n_slow)
-        if idx is not None:
+    # Fix: replay from the gate's due time at the cut, taken from the
+    # original by the writer (metadata GateDue, slow_gate_due_at).
+    # PREVIOUSLY (6039d59) it was the original's first GPS Time plus 0.1 s
+    # steps, but the gate re-anchors after every clock jump, so after one
+    # before the cut that phase was 0.04 s off with the right row count.
+    # After any tick p recorder.py leaves p < due <= p + 0.1, so a valid due
+    # is below the first kept tick + 0.1; a wrong value or a row count that
+    # does not match the 10 Hz tables falls through to the old path.
+    due = _gate_due(con)
+    if due is not None and due < t_fast[0] + SLOW_PERIOD_S:
+        idx = _replay_slow_gate(t_fast, nxt=due)
+        if len(idx) == n_slow:
             return t_fast, t_fast[idx]
     idx = _replay_slow_gate(t_fast)
     if len(idx) == n_slow:
@@ -544,7 +551,8 @@ def kept_lap(meta: dict) -> int | None:
         return None
 
 
-def _kept_lap_of(con: duckdb.DuckDBPyConnection) -> int | None:
+def kept_lap_of(con: duckdb.DuckDBPyConnection) -> int | None:
+    """kept_lap of an open file's metadata; None without a metadata table."""
     try:
         return kept_lap(dict(con.execute("SELECT key, value FROM metadata").fetchall()))
     except Exception:
@@ -779,7 +787,7 @@ def lap_index(con: duckdb.DuckDBPyConnection) -> list[LapInfo]:
     that stops right at the line).
     """
     boundaries = _get_lap_boundaries(con)
-    keep = _kept_lap_of(con)
+    keep = kept_lap_of(con)
     if keep is not None:
         # kept file: only its lap, not the open lap of the trailing margin
         boundaries = [b for b in boundaries if b[0] == keep]

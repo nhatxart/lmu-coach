@@ -46,7 +46,7 @@ from .tire_model import TIRE_GRID_HZ, compute_grip_utilization_for_lap, file_loa
 from .vehicle_dynamics import (body_slip_from_local_vel_deg, compute_body_slip_deg,
                                handling_balance)
 from .telemetry import (load_telemetry_file, get_car_setup_json, session_time_axes, reference_lap_time,
-                        dehold, lap_index, kept_lap)
+                        dehold, lap_index, kept_lap_of)
 from . import track_limits
 
 log = logging.getLogger(__name__)
@@ -592,17 +592,18 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
     # open lap n+1 (the Lap row that ends lap n), which must not be picked
     # or served. The auto-pick below would choose lap n anyway (n+1 is not
     # closed), but an explicit other lap would get the margin or the whole file.
-    try:
-        keep = (kept_lap(dict(con.execute("SELECT key, value FROM metadata").fetchall()))
-                if "metadata" in tables else None)
-    except Exception:
-        keep = None
+    keep = kept_lap_of(con)
     if keep is not None:
         if lap_number is None:
             lap_number = keep
         elif lap_number != keep:
             con.close()
             raise HTTPException(404, f"Lap {lap_number} not in this kept file (it holds lap {keep})")
+        if not any(int(v) == keep for _, v in lap_events):
+            # Without its Lap row _lap_slice would serve the whole file as
+            # lap n; lap_index and load_telemetry_file list no lap for it.
+            con.close()
+            raise HTTPException(422, f"Kept file holds lap {keep} but has no Lap row for it")
 
     # Auto-select fastest complete lap when none specified
     if lap_number is None and len(lap_events) >= 2:
