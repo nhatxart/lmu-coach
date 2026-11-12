@@ -5,44 +5,14 @@ then at the median for good. Same-file fit, best 2 laps.
 usage: python build_check_step2.py [-q 0.75] [--no-refine] [file ...]"""
 import sys, time, argparse
 import numpy as np
-from build_check_common import load, PORSCHE, FERRARI
+from build_check_common import load, PORSCHE, FERRARI, reduction, spike_parity_fit
 from app import ideal_car as C, ideal_solver as SV
-from app.ideal_state import FileReduction
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 ap = argparse.ArgumentParser(); ap.add_argument("-q", type=float, default=0.75)
 ap.add_argument("--no-refine", action="store_true"); ap.add_argument("--spike-d2", type=float); ap.add_argument("--laps", type=int, default=2)
 ap.add_argument("files", nargs="*")
 a = ap.parse_args()
-
-
-def reduction(d):
-    return FileReduction(file=d["file"], mtime=0, size=0, meta={}, track="", car_model=d["model"],
-                         car_class=d["cls"], game_version="", load_source=d["load_source"],
-                         grade_source="pos_y", laps=d["states"])
-
-
-def spike_parity_fit(d, d2, q):
-    """The spike's order for a car without forces (parity only, not the design):
-    the axle base mask with NO drag (the spike's joint drag fit came after the
-    axles), then braking, traction and the solve with drag d0 0 + d2 v^2 as the
-    spike's joint fit returned it."""
-    red = reduction(d)
-    lm = C.fit_load_model(red.laps, red.load_source)
-    p = C._pool([red], {red.file: lm})
-    gf = p["gf"] if red.has_grip_fraction else None
-    axles = C.fit_axles(p, p["gx"] + p["grade"], p["slip"], gf, q=q)
-    share = C.fit_share(p, red.has_forces, [lm.static])
-    mu1, kk, cc = [x.mu1 for x in axles], [x.k for x in axles], [x.c for x in axles]
-    Af, Ar = C.axle_capacity(p["lam"], p["v"], mu1, kk, cc)
-    gxt = p["gx"] + p["grade"] + d2 * p["v"] ** 2
-    kb = C.fit_braking(p, gxt, Af, Ar, share["value"], gf, q)
-    kt = C.fit_traction(p, gxt, Ar, share["value"], q)
-    eng = C.fit_engine(p, q)
-    info = dict(n_laps=len(red.laps), axles={n: x.to_dict() for n, x in zip(C.AXLES, axles)}, s_front=share,
-                kappa_brake=kb, kappa_trac=kt, drag=dict(source="spike-parity", d0=0.0, d2=d2))
-    return C.CarModel(load=lm, mu1=mu1, k=kk, c=cc, s_front=share["value"], kb=kb["value"], kt=kt["value"], d0=0.0,
-                      d2=d2, power_v=eng["power_v"], power_g=eng["power_g"], corner_drag=eng["corner_drag"]), info
 
 
 for name in a.files or [PORSCHE, FERRARI]:

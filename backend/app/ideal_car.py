@@ -472,7 +472,7 @@ def fit_engine(d: dict, q: float = 0.5) -> dict:
     pv = np.concatenate([[0.0], pv, [pv[-1] + 40]])
     pa = np.concatenate([[pa[0]], pa, [pa[-1] + 40 * min(slope, 0.0)]])
     mc = ft & (np.abs(gy) > 0.8) & (v > pv[1])
-    cc = float(np.median(((np.interp(v, pv, pa) - (gx + gr)) / gy ** 2)[mc])) if mc.sum() > 100 else 0.0
+    cc = float(np.median((np.interp(v[mc], pv, pa) - (gx + gr)[mc]) / gy[mc] ** 2)) if mc.sum() > 100 else 0.0
     return dict(power_v=pv.tolist(), power_g=pa.tolist(), corner_drag=float(np.clip(cc, 0.0, 0.08)),
                 bins=len(pv) - 2, n_corner=int(mc.sum()))
 
