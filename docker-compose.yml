@@ -5,14 +5,20 @@ services:
     ports:
       - "8080:8000"
     volumes:
-      # Your own LMU telemetry recordings, read-only. Set LMU_TELEMETRY_PATH in
+      # Your own LMU telemetry recordings. Set LMU_TELEMETRY_PATH in
       # the .env file next to this file (Settings > Stack paths can generate the
       # lines for you), e.g.:
       # LMU_TELEMETRY_PATH=C:/Users/<you>/Documents/Le Mans Ultimate/UserData/Telemetry
-      - "${LMU_TELEMETRY_PATH}:/data/sessions:ro"
-      # Manually-dropped reference laps (friends' files, your own exports
-      # pulled from MyLMU, etc.). Override with REFERENCE_LAPS_PATH in .env.
-      - "${REFERENCE_LAPS_PATH:-./data/reference_laps}:/data/reference_laps:ro"
+      # NOT read-only (was :ro until keep laps): the backend deletes a
+      # recording here, but only through the deliberate "Delete recording"
+      # step, after every lap kept from it passed its check. It never
+      # changes a recording in place.
+      - "${LMU_TELEMETRY_PATH}:/data/sessions"
+      # Kept laps (one file per lap, written by "Keep laps"), plus files you
+      # drop here yourself (friends' files, your own exports pulled from MyLMU,
+      # etc.). Override with REFERENCE_LAPS_PATH in .env. NOT read-only (was
+      # :ro until keep laps): the backend writes the kept-lap files here.
+      - "${REFERENCE_LAPS_PATH:-./data/reference_laps}:/data/reference_laps"
       # Grip profile database - one JSON file per car, accumulated across every
       # /analyze call. NOT read-only: the backend writes to it after each
       # analysis. Override with GRIP_PROFILES_PATH in .env.

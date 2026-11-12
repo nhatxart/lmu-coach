@@ -15,8 +15,10 @@ tool, not a multi-tenant service, so there's no need for a real DB here yet.
 from __future__ import annotations
 
 import copy
+import errno
 import logging
 import math
+import os
 import uuid
 from pathlib import Path
 
@@ -33,11 +35,11 @@ except ImportError:
     _HAS_SCIPY = False
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import session_index, track_reference, trackmap_elevation
+from . import lap_cut, session_index, track_reference, trackmap_elevation
 from .coach import LLMError, ask_followup, get_coaching_analysis
 from .track_db import find_track_in_registry, find_layout_in_track, annotate_report_with_corners
 from .grip_analysis import build_grip_report
@@ -185,10 +187,11 @@ def root():
         raise HTTPException(404, "UI not found — static/index.html missing")
     return FileResponse(str(index))
 
-# Read-only bind mounts set up in docker-compose.yml. OWN_SESSIONS is your
-# own LMU UserData/Telemetry folder; REFERENCE_LAPS is the local folder
-# where you manually drop .duckdb files (e.g. ones friends send you, or your
-# own exports) that aren't part of your live LMU session history.
+# Bind mounts set up in docker-compose.yml. OWN_SESSIONS is your own
+# recordings folder; REFERENCE_LAPS is the kept-laps folder (laps kept from
+# recordings by POST .../keep, plus .duckdb files you drop there yourself).
+# PREVIOUSLY both were mounted read-only; keep laps writes REFERENCE_LAPS, and
+# the deliberate delete of a recording whose laps were kept writes OWN_SESSIONS.
 OWN_SESSIONS_DIR = Path("/data/sessions")
 REFERENCE_LAPS_DIR = Path("/data/reference_laps")
 
@@ -277,6 +280,91 @@ def list_laps(source: str, file: str):
             for lap in laps
         ]
     }
+
+
+class KeepRequest(BaseModel):
+    laps: list[int]
+
+
+KEPT_FOLDER_READ_ONLY = "The kept-laps folder is read-only: rebuild with the new docker-compose.yml"
+
+
+def _bare_duckdb_name(file: str) -> str:
+    """A file name as the keep / delete routes take it: a bare name of a
+    recording, nothing that could reach outside the two folders (no
+    separators, drive or `..`), no dotfile (the .tmp / spool files), ending
+    .duckdb. _resolve_file guards the path too, but on Linux a backslash is
+    an ordinary character, so a Windows-style `..\\x` would only 404 there."""
+    if (not file or file != file.strip() or file.startswith(".") or ".." in file
+            or any(c in file for c in "/\\:\0") or not file.endswith(".duckdb")):
+        raise HTTPException(400, "Invalid file name")
+    return file
+
+
+def _is_read_only_error(e: BaseException) -> bool:
+    return isinstance(e, PermissionError) or (
+        isinstance(e, OSError) and e.errno in (errno.EACCES, errno.EPERM, errno.EROFS))
+
+
+@app.post("/sessions/sessions/{file}/keep")
+def keep_laps(file: str, req: KeepRequest):
+    """Keep laps (spec 4, 4.4a): each lap of a recording into its own file in
+    the kept-laps folder, checked by reading it back. The recording itself is
+    never changed. Per lap: the kept name already exists -> check it
+    (already_kept, never rewritten); else cut to .<name>.tmp, os.replace,
+    check, and on a failed check remove that file (only the one just written).
+    Every lap is validated before anything is written: one lap that cannot be
+    kept (CutError) refuses the whole request with 422."""
+    src = _resolve_file(_bare_duckdb_name(file), "sessions")
+    laps = list(dict.fromkeys(req.laps))
+    if not laps:
+        raise HTTPException(422, "No laps given")
+    try:
+        plans = [lap_cut.prepare(src, n) for n in laps]
+    except lap_cut.CutError as e:
+        raise HTTPException(422, str(e))
+    kept_dir = REFERENCE_LAPS_DIR
+    if not kept_dir.is_dir() or not os.access(kept_dir, os.W_OK):
+        return JSONResponse(status_code=409, content={"ok": False, "error": KEPT_FOLDER_READ_ONLY})
+
+    results = []
+    for info in plans:
+        dst = kept_dir / info.name
+        res = {"lap": info.lap, "kept_file": info.name, "status": "failed",
+               "lap_time_original": round(info.lap_time_s, 3), "lap_time_kept": None,
+               "error": None}
+        if dst.exists():
+            ok, t_kept, err = lap_cut.check_kept(dst, info.lap, info.lap_time_s, src)
+            res.update(status="already_kept" if ok else "failed", error=err,
+                       lap_time_kept=None if t_kept is None else round(t_kept, 3))
+            results.append(res)
+            continue
+        tmp = kept_dir / f".{info.name}.tmp"
+        try:
+            # a leftover of an interrupted keep (our own dotfile, never a user's)
+            tmp.unlink(missing_ok=True)
+            lap_cut.cut_lap(src, info.lap, tmp, None)   # tyre context: Task 3
+            os.replace(tmp, dst)
+        except Exception as e:
+            tmp.unlink(missing_ok=True)
+            if _is_read_only_error(e):
+                return JSONResponse(status_code=409,
+                                    content={"ok": False, "error": KEPT_FOLDER_READ_ONLY})
+            if isinstance(e, lap_cut.CutError):
+                raise HTTPException(422, str(e))
+            res["error"] = f"{type(e).__name__}: {e}"
+            results.append(res)
+            continue
+        ok, t_kept, err = lap_cut.check_kept(dst, info.lap, info.lap_time_s, src)
+        res.update(lap_time_kept=None if t_kept is None else round(t_kept, 3), error=err)
+        if ok:
+            res["status"] = "kept"
+        else:
+            dst.unlink(missing_ok=True)      # this request wrote it, and it failed
+            res["error"] = f"the kept file failed its check and was removed: {err}"
+        results.append(res)
+    return {"ok": True, "all_checked": all(r["status"] != "failed" for r in results),
+            "results": results}
 
 
 @app.post("/analyze")
