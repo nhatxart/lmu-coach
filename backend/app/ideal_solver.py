@@ -22,6 +22,8 @@ GX_ALL = np.concatenate([GXT_DN[::-1], GXT_UP[1:]])
 G_TRY = (0.3, 0.1, 0.0, -0.15, -0.3, -0.5, -0.75, -1.0, -1.5, -2.0)
 GZ_MIN, GZ_MAX = -0.9, 1.5
 VC_BISECT = 12                              # 0.5 m/s / 2^12: vc exact to ~1e-4 m/s
+GX_STEP = 0.025                             # the demand grids' step (g)
+DEMAND_BISECT = 4                           # 0.025 g / 2^4 = 0.0016 g
 BINDING = ("front", "rear", "brake", "traction", "power")
 
 
@@ -118,8 +120,8 @@ def solve(car, ln: dict, mode: str = "balanced", refine: bool = True) -> dict:
     Returns {v, vc, binding, gxt, time}: v and vc in m/s per grid point, the
     binding code per point (front | rear | brake | traction | power), the tyre
     longitudinal demand gxt of the solved profile (g) and the lap time.
-    `refine`: TEST ONLY (False = the spike's 0.5 m/s corner limit, for the
-    parity check); the app always refines."""
+    `refine`: TEST ONLY (False = the spike's 0.5 m/s corner limit and 0.025 g
+    demand grid, for the parity check); the app always refines."""
     ks, kv, gr, ds = ln["ks"], ln["kv"], ln["grade"], ln["ds"]
     n = len(ks)
     if refine:
@@ -132,11 +134,28 @@ def solve(car, ln: dict, mode: str = "balanced", refine: bool = True) -> dict:
     vs = vc.copy()
     code = np.where(axle == 0, 0, np.where(axle == 1, 1, 4)).astype(int)
 
+    def edge(v, gy, gz, t, step):
+        """Bisect from the last feasible grid demand t towards t + step.
+        PREVIOUSLY the solver used the grid value itself: up to 0.025 g (1-2 %)
+        less than the fitted kb / kt, so a car refitted from the solver's own
+        laps read kb, kt 1.5-2.5 % low (design §13 R4). Fix: 4 halvings."""
+        lo, hi = t, t + step
+        for _ in range(DEMAND_BISECT):
+            mid = 0.5 * (lo + hi)
+            if _feasible(car, mode, v, mid, gy, gz):
+                lo = mid
+            else:
+                hi = mid
+        return lo
+
     def accel(i, v):
         gy = ks[i] * v * v / G
         gz = min(max(kv[i] * v * v / G, GZ_MIN), GZ_MAX)
         ok = _feasible(car, mode, v, GX_ALL, gy, gz)
-        t = GX_ALL[ok].max() if ok.any() else 0.0
+        t = 0.0
+        if ok.any():
+            k = int(np.flatnonzero(ok)[-1])
+            t = GX_ALL[k] if (k == len(GX_ALL) - 1 or not refine) else edge(v, gy, gz, GX_ALL[k], GX_STEP)
         p, g = car.power(v, gy) - gr[i], t - car.drag(v) - gr[i]
         return (p, 4) if p <= g else (g, 3)
 
@@ -144,7 +163,10 @@ def solve(car, ln: dict, mode: str = "balanced", refine: bool = True) -> dict:
         gy = ks[i] * v * v / G
         gz = min(max(kv[i] * v * v / G, GZ_MIN), GZ_MAX)
         ok = _feasible(car, mode, v, GXT_DN, gy, gz)
-        t = GXT_DN[ok].min() if ok.any() else 0.0
+        t = 0.0
+        if ok.any():
+            k = int(np.flatnonzero(ok)[-1])
+            t = GXT_DN[k] if (k == len(GXT_DN) - 1 or not refine) else edge(v, gy, gz, GXT_DN[k], -GX_STEP)
         return t - car.drag(v) - gr[i]            # kinematic gx (negative)
 
     # Values only ever decrease, so the last bound that lowered a point is the

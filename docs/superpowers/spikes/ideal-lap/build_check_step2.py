@@ -28,7 +28,7 @@ for name in a.files or [PORSCHE, FERRARI]:
         i["kappa_trac"]["n"], i["drag"]["source"], car.d0, car.d2, car.corner_drag))
     for ax in ("front", "rear"):
         x = i["axles"][ax]
-        print("   %-5s %s n_sat %d knee %s mu1 %.3f k %.3f c %.3f ratio_sd %.3f" % (ax, x["status"], x["n_sat"], x["knee_deg"], x["mu1"], x["k"], x["c"], x["ratio_sd"]))
+        print("   %-5s %s n_sat %d knee %s mu1 %.3f k %.3f c %.3f (%s) v_sat %s ratio_sd %.3f" % (ax, x["status"], x["n_sat"], x["knee_deg"], x["mu1"], x["k"], x["c"], x.get("terms"), x.get("v_sat"), x["ratio_sd"]))
     for r in sorted(d["raws"], key=lambda r: r["time"])[: a.laps]:
         ln = SV.line_of(r)
         t_ref = float(np.sum(ln["ds"] / ln["v"]))

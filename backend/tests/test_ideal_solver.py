@@ -61,6 +61,20 @@ def test_straight_between_two_hairpins_matches_hand_integration():
     assert "power" in set(codes) and "brake" in set(codes)
 
 
+def test_solver_uses_the_fitted_kb_and_kt_not_the_demand_grid():
+    """Design §13 R4: the strongest braking / drive demand is bisected past the
+    0.025 g grid, so the solver brakes at kb * S and drives at kt * s_r * A_r
+    (here 1.455 g and 0.6975 g, both between two grid values)."""
+    R, Lh, Ls, ds = 15.0, 40.0, 800.0, 2.0
+    nh, ns = int(Lh / ds), int(Ls / ds)
+    ks = np.concatenate([np.full(nh, 1 / R), np.zeros(ns), np.full(nh, 1 / R), np.zeros(ns)])
+    car = _car(kb=0.97, kt=0.93, power=1.5)          # power never binds: traction does
+    v = SV.solve(car, _line(ks, ds))["v"][nh:nh + ns]
+    gx = np.diff(v ** 2) / (2 * G * ds)
+    np.testing.assert_allclose(gx[(gx > 0.1)][5:-5], 0.93 * 0.5 * 1.5, atol=0.002)
+    np.testing.assert_allclose(gx[(gx < -0.1)][5:-5], -0.97 * 1.5, atol=0.002)
+
+
 def test_ceiling_at_least_balanced_and_equal_when_axles_equal():
     rng = np.random.default_rng(3)
     ks = np.convolve(rng.normal(0, 0.02, 1500), np.ones(40) / 40, mode="same")
