@@ -33,6 +33,8 @@ import numpy as np
 from . import telemetry
 
 MARGIN_S = 3.0
+# Block size of a kept file (bytes); see cut_lap for why not the default.
+KEPT_BLOCK_SIZE = 65536
 RECORDER_PREFIX = "lmu-coach-recorder"
 # Tables cut by their own (ts) column rather than by a time axis
 LAP_TABLES = ("Lap", "Lap Time")
@@ -184,11 +186,22 @@ def cut_lap(src: Path, lap: int, dst: Path, tyre_context: dict | None) -> CutInf
     if dst.exists():
         raise CutError(f"{dst.name} already exists")
 
-    out = duckdb.connect(str(dst))
+    # PREVIOUSLY duckdb.connect(dst) wrote DuckDB's default 256 KiB blocks.
+    # Every table takes at least one block, and with ~70 tables a one-lap file
+    # was ~40 % padding: Fuji 10/19 L6 17.58 MB vs 10.50 MB at 64 KiB, COTA
+    # 11/09 L11 20.20 vs 12.33 MB (duckdb 1.1.3, the Docker pin; 16 KiB was no
+    # smaller there). Fix: attach the new file with a 64 KiB block size.
+    # Readable by DuckDB 1.1 and later (checked: 1.1.3, 1.2.2, 2.0.0).
+    out = duckdb.connect(":memory:")
     try:
+        out.execute("ATTACH '" + str(dst).replace("'", "''")
+                    + f"' AS kept (BLOCK_SIZE {KEPT_BLOCK_SIZE})")
+        out.execute("USE kept")
         out.execute("ATTACH '" + str(src).replace("'", "''") + "' AS src (READ_ONLY)")
         _write(out, plan, unpopulated, tyre_context)
         out.execute("DETACH src")
+        out.execute("USE memory")
+        out.execute("DETACH kept")
         out.close()
     except BaseException:
         out.close()

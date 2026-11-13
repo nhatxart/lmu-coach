@@ -41,9 +41,19 @@ def client():
     return TestClient(main.app)
 
 
+def _exact_case(path):
+    """DuckDB 1.1.3 (the Docker pin) on Windows lowercases the name of a file
+    it creates with duckdb.connect(path), and the generators create theirs
+    that way; the kept-file name is built from the original's, so restore it."""
+    actual = next(p for p in path.parent.iterdir() if p.name.lower() == path.name.lower())
+    if actual.name != path.name:
+        os.replace(actual, path)
+    return path
+
+
 @pytest.fixture
 def hilly(dirs):
-    return write_hilly_session(dirs[0] / HILLY)
+    return _exact_case(write_hilly_session(dirs[0] / HILLY))
 
 
 def _keep(client, name, laps):
@@ -152,9 +162,9 @@ ORIG = "Test Track-Test Car _1-2026-10-14T00_00_00Z.duckdb"
 
 
 def _original(dirs, times=None):
-    return write_session(dirs[0] / ORIG, laps=LAPS, lap_times=LAP_TIMES,
-                         times=tick_times(start=10.0, end=130.0, drop_until=48.0)
-                         if times is None else times)
+    return _exact_case(write_session(dirs[0] / ORIG, laps=LAPS, lap_times=LAP_TIMES,
+                                     times=tick_times(start=10.0, end=130.0, drop_until=48.0)
+                                     if times is None else times))
 
 
 def _cut(src, lap, kept_dir):
@@ -188,6 +198,31 @@ def test_cut_event_seed_rows(dirs):
     assert q("In Pits") == [(ws, 0.0)]
     assert q("Lap") == [(50.05, 1), (90.05, 2)]
     assert q("Lap Time") == [(90.05, 40.0)]
+
+
+def test_cut_other_cars_by_ts(dirs):
+    # Other Cars rows are poses at the player's 10 Hz gate times, not
+    # on-change events: only the in-window rows, in their order, no seed row.
+    src = _original(dirs)
+    con = duckdb.connect(str(src))
+    con.execute('CREATE TABLE "Other Cars" (ts DOUBLE, slot INTEGER, pos_x DOUBLE, pos_y DOUBLE, '
+                'pos_z DOUBLE, lap_dist DOUBLE, path_lateral DOUBLE, in_pits INTEGER)')
+    rows = [(20.0, 3, 1.0, 0.0, 2.0, 100.0, 0.5, 0), (60.0, 4, 3.0, 0.0, 4.0, 200.0, -1.0, 0),
+            (60.0, 3, 5.0, 0.0, 6.0, 300.0, 1.5, 1), (93.05, 3, 7.0, 0.0, 8.0, 400.0, 0.0, 0),
+            (120.0, 3, 9.0, 0.0, 9.0, 500.0, 0.0, 0)]
+    con.executemany('INSERT INTO "Other Cars" VALUES (?, ?, ?, ?, ?, ?, ?, ?)', rows)
+    con.close()
+    dst, _ = _cut(src, 1, dirs[1])
+    assert _rows(dst, 'SELECT * FROM "Other Cars" ORDER BY rowid') == rows[1:4]
+
+
+def test_cut_uses_64k_blocks(dirs):
+    # DuckDB gives each table at least one block; at the default 256 KiB a
+    # one-lap file was ~40 % padding (review of 7e6dab8).
+    src = _original(dirs)
+    dst, _ = _cut(src, 1, dirs[1])
+    assert _rows(dst, "SELECT block_size FROM pragma_database_size()") == [(65536,)]
+    assert lap_cut.KEPT_BLOCK_SIZE == 65536
 
 
 def test_cut_after_skipped_ticks_keeps_positions(dirs):
@@ -349,15 +384,34 @@ def test_keep_reports_read_only_folder(hilly, dirs, client, monkeypatch):
     monkeypatch.setattr(os, "replace", deny)
     r = _keep(client, HILLY, [1])
     assert r.status_code == 409
-    assert r.json() == {"ok": False, "error":
+    assert r.json() == {"ok": False, "results": [], "error":
                         "The kept-laps folder is read-only: rebuild with the new docker-compose.yml"}
     assert list(dirs[1].iterdir()) == []
     assert (dirs[0] / HILLY).is_file()
 
 
+def test_keep_read_only_midway_lists_laps_already_kept(hilly, dirs, client, monkeypatch):
+    # The folder turns read-only after lap 0 was kept (a race; os.access
+    # passed): the 409 still lists lap 0, which stays on disk, checked.
+    real_replace, calls = os.replace, []
+
+    def replace(*a, **k):
+        calls.append(a)
+        if len(calls) > 1:
+            raise PermissionError(13, "Read-only file system")
+        return real_replace(*a, **k)
+    monkeypatch.setattr(os, "replace", replace)
+    r = _keep(client, HILLY, [0, 1])
+    assert r.status_code == 409
+    body = r.json()
+    assert body["ok"] is False and body["error"].startswith("The kept-laps folder is read-only")
+    assert [(x["lap"], x["status"]) for x in body["results"]] == [(0, "kept")]
+    assert sorted(p.name for p in dirs[1].iterdir()) == [body["results"][0]["kept_file"]]
+
+
 def test_keep_refuses_native_and_kept(dirs, client):
-    native = write_session(dirs[0] / "Test Track_P_2026-10-14T00_00_00Z.duckdb",
-                           recorded_by="LMU")
+    native = _exact_case(write_session(dirs[0] / "Test Track_P_2026-10-14T00_00_00Z.duckdb",
+                                       recorded_by="LMU"))
     r = _keep(client, native.name, [1])
     assert r.status_code == 422 and "recorder" in r.json()["detail"]
     src = _original(dirs)

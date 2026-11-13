@@ -314,7 +314,9 @@ def keep_laps(file: str, req: KeepRequest):
     (already_kept, never rewritten); else cut to .<name>.tmp, os.replace,
     check, and on a failed check remove that file (only the one just written).
     Every lap is validated before anything is written: one lap that cannot be
-    kept (CutError) refuses the whole request with 422."""
+    kept (CutError) refuses the whole request with 422.
+    `ok` = the request ran (false only in the 409 body); gate any delete on
+    `all_checked`. The 409 body lists the laps this request already kept."""
     src = _resolve_file(_bare_duckdb_name(file), "sessions")
     laps = list(dict.fromkeys(req.laps))
     if not laps:
@@ -324,10 +326,11 @@ def keep_laps(file: str, req: KeepRequest):
     except lap_cut.CutError as e:
         raise HTTPException(422, str(e))
     kept_dir = REFERENCE_LAPS_DIR
-    if not kept_dir.is_dir() or not os.access(kept_dir, os.W_OK):
-        return JSONResponse(status_code=409, content={"ok": False, "error": KEPT_FOLDER_READ_ONLY})
-
     results = []
+    if not kept_dir.is_dir() or not os.access(kept_dir, os.W_OK):
+        return JSONResponse(status_code=409, content={"ok": False, "results": results,
+                                                      "error": KEPT_FOLDER_READ_ONLY})
+
     for info in plans:
         dst = kept_dir / info.name
         res = {"lap": info.lap, "kept_file": info.name, "status": "failed",
@@ -348,8 +351,9 @@ def keep_laps(file: str, req: KeepRequest):
         except Exception as e:
             tmp.unlink(missing_ok=True)
             if _is_read_only_error(e):
-                return JSONResponse(status_code=409,
-                                    content={"ok": False, "error": KEPT_FOLDER_READ_ONLY})
+                # laps kept before this one stay (checked): list them
+                return JSONResponse(status_code=409, content={
+                    "ok": False, "results": results, "error": KEPT_FOLDER_READ_ONLY})
             if isinstance(e, lap_cut.CutError):
                 raise HTTPException(422, str(e))
             res["error"] = f"{type(e).__name__}: {e}"
