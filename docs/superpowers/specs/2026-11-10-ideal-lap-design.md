@@ -129,6 +129,9 @@ Files are loaded at 50 Hz (`tire_model.TIRE_GRID_HZ`).
 Two parts with different scope **[Fable]**:
 - **Load model: per file.** A recorder file is one garage stint, so one setup (wing, ride height).
 - **Grip, braking, traction, drag, engine: per fit group** = (car model, track slug, layout).
+- **(round 2, §14 R8) Axle grip level: trimmed per file.** The group's `mu1_j` is moved to the
+  reference file's own saturated samples (`axle_trim`), because a setup change moves an axle's
+  level by 3-5 % (camber, ride height) while the same setup agrees across sessions within 1 %.
 
 ### 4.1 Load model (per file)
 
@@ -291,6 +294,9 @@ The forward and backward passes then run as before from those speeds, at every l
 point does not scale with the grip level), and the envelope is taken as above. Clamped points
 carry the binding code `measured`. `|gxt| < 0.5·|gy|` keeps the clamp to lateral-dominant
 states: a tyre saturated by wheelspin or by braking says nothing about the corner speed.
+Per axle **(round 2, §14 R7)**: the clamp stays per point; at a clamped point the non-saturated
+axle's own limit is ≥ `v_ref` by measurement, so a per-axle clamp gives the same speed. Where the
+model says otherwise the point counts as `clamp_conflict` (diagnostic).
 The ceiling (§5.3) is NOT clamped: it describes another setup. `model_only` and V5 stay unclamped.
 Why: at a saturated point `v_M / v_ref = √(A / |gy|)` is the model's own residual, so without
 the clamp the envelope keeps the model's noise at half of the at-the-limit points (0.10-0.45 s
@@ -372,6 +378,11 @@ Per fit group at most the 40 most recent (cost). The reference lap itself may be
 - **car scope** (fallback): all tracks of the car model pooled; needs ≥ 6 laps; result flagged
   `transferred`, β = 0.05, and the UI says "estimate from other tracks".
 - else `insufficient_data` with what is missing ("3 clean laps on this track needed, have 1").
+- **(round 2, §14 R8)** Groups are NOT split by setup. Each file gets a measured setup
+  fingerprint; the reference file's axle levels are trimmed to its own saturated samples
+  (≥ 250 per axle, weight n/(n+500), cap ±0.08), and `setup_differs` lists the items off the
+  group median (camber 0.3°, toe 0.1°, ride height 4 mm, pressure 3 kPa, aero / LLTD front share
+  0.015, compound). Untrimmable axle + setup differs: β + 0.03, confidence one step down.
 
 Confidence shown: `high` (track scope, ≥ 6 laps, both axles observed, V1-style self-check passes),
 `medium` (other track scope), `low` (car scope, or an `assumed`/`prior` part that binds on more
@@ -388,7 +399,9 @@ Under the existing writable profiles mount, no compose change:
                  axles{front{...}, rear{...}}, s_front, kappa_brake{...}, kappa_trac{...}, drag{...},
                  engine{power_v[], power_g[], corner_drag}, beta, confidence, selfcheck{...}, notes[]}},
      "car_scope": {...same shape...},
-     "files": {"<file>": {mtime, size, load_model{static[4], coef[4][5], source, r2[4]}, laps[]}}}
+     "files": {"<file>": {mtime, size, load_model{static[4], coef[4][5], source, r2[4]}, laps[],
+                 setup{camber[2], toe[2], press[2], rh_mid[2], rh_fast[2], aero_f, lltd_f, stat_f, compound, track_temp}}}}
+(round 2: `setup` per file, §14 R6; trims are computed per request from the group fit and the file.)
 
 Separate from the tyre-v3 profile on purpose: different fit, different version, and the v3 file
 is already 2.3 MB for the Porsche. `fingerprint` = sha1 of the sorted `file#lap` keys + file
@@ -417,7 +430,10 @@ Nothing in the tyre-v3 profile or `/analyze` changes.
      "trace": {lap_dist[], v_kmh[], v_ref_kmh[], t[], binding[], saturated_ref[], u_front[], u_rear[], u_front_ref[], u_rear_ref[]},
      "corners": [{n, name, s0, s1, t_ref, t_ideal, gain_s, gain_min_s, vmin_ref_kmh, vmin_ideal_kmh,
                   binding, u_front_ref, u_rear_ref, verdict, where, measured_share, extrapolated}],
-     "note": "one sentence for the UI: what this is and its range"}
+     "note": "one sentence for the UI: what this is and its range",
+     (round 2, §14) fit.setup{...}, fit.setup_differs[], fit.axles.<j>.{trim, trim_w, clamp_conflict},
+     "public": {car_best_s, class_ref_s, patch, patch_match, driven_pct, ideal_pct, band} | null,
+     "public_check": "ok" | "faster_than_public_best" | null}
 
 `trace` is given at the same points as `/trackmap`'s `driven_line` for that lap (interpolate the
 2 m grid onto the points' lap distance), with `t` = ideal game-clock seconds from the start line,
@@ -525,6 +541,8 @@ Checks (thresholds are from the probes with margin; a fail is a finding, not a r
 | V10 | Axles: status per axle, knee vs tyre-v3 peak, share of the lap each binding code holds | report only | Porsche rear knee 2.5-3.0 vs v3 3.9 |
 | V11 | Cross-track pairs: V2, V5, V7 | report only (expected to fail on GT3) | Porsche COTA→Road Atlanta: under driven on 63-76 % |
 | V12 | Run time per request, warm | ≤ 10 s | 1.5-1.7 s per solve (builder) |
+| V14 | (round 2) Setup trim: per cross-session pair, V2 per axle without and with the trim (trim from the even laps of the test file, scored on its odd laps); pairs with `setup_differs` listed. Files: BMW M4 Fuji 10/19 ↔ 10/14, 10/15 (camber); Porsche Barcelona 10/26 `03_47_50` ↔ `03_24_16`, 11/12 (ride height); Porsche Road Atlanta 10/26 ↔ 10/27 (toe, ride height) | with trim: per-axle V2 within ±0.02 on ≥ 80 % of axles with n ≥ 250; without trim reported | without trim 3-5 % on setup-change pairs (p7) |
+| V15 | (round 2) Public sheet: per test lap `driven_pct`, `ideal_pct`, `public_check` | report; any `faster_than_public_best` is a finding | driven 104.8-105.3 %, ideal ≈ 104.5 % (COTA) |
 | V13 | (round 1) Clamp and extrapolation: `clamped_share`; gain with and without the clamp; share of `gain` in corners flagged `extrapolated`; `terms` per axle; knee (continuous) per file of a group | report only; come back if more than half of the gain of a class sits in `extrapolated` corners | clamp removes 0.18-0.94 s per COTA lap |
 
 Report per pair one row with V1-V12, then a per-class summary. Gate for the UI step: V1-V3 and
@@ -657,6 +675,172 @@ Step 4 of §8 (store, ingest, `load_reduction`) does not touch any of this and c
 parallel. Step 5 (`ideal_lap`, endpoint, report tool) consumes the clamp and the new fields:
 start it after item 3 above.
 
+## 14. Build round 2 decisions (11/12/2026)
+
+Answers the user's note on §12 Q10 ("multivariable: axle loading and setup ... how to get around
+this?" and the public lap-time sheet). Decisions by the design analyst (data question, no change
+of structure, so not escalated). Probes: `fable_p6_meta.py` (metadata), `fable_p7_setup.py`
+(setup fingerprint and grip level per axle across files; spike variant "both", q = 0.5).
+
+### R6. What the recordings know about the setup
+
+- **No setup is recorded.** `metadata` holds compound (front/rear), track and air temperature,
+  tyre radius and optimal temperature, game version, car model/class; no setup JSON (p6). The
+  tables `Front/Rear Downforce`, `Drag`, `Front/Rear Ride Height` exist but are EMPTY (0 rows) in
+  HF1 files. So the setup can only be **measured from what it does**, per file:
+  camber and toe per wheel (straight-line median, 30-60 m/s, |gx|, |gy| < 0.15), hot pressure per
+  axle (`TyresPressure`, first 20 % of the file skipped), ride height per axle (wheel
+  `Ride Height`) at 30-45 m/s and above 60 m/s, and from the per-file load model (§4.1):
+  aero front share `Σ_front a_i·c0_i / Σ a_i·c0_i`, lateral load-transfer front share
+  `Σ_front (|c_i| + |e_i|)·c0_i / Σ (...)` (LLTD, the springs/ARB balance in the load source's
+  units), static front share. Plus compound and track temperature from `metadata`.
+- **Where setup already enters the model:** the load model is per file, so wing, springs, ARB
+  and ride height act through `lam` (aero `a_i`, transfer `c_i`, `e_i`) — that is the user's
+  "loading of each axle", and it is already per stint. The clamp (§5.4) uses the reference lap's
+  own saturation, i.e. its own setup. What is pooled across files, and so across setups, is the
+  **grip level per axle** (`mu1_j`, `k`, `c`), braking/traction ratios, drag and engine.
+
+Measured (p7; level = median log(|gy| / A_j) of file B's saturated set with file A's grip and
+B's own load model; noise = the same between even and odd laps of one file):
+
+| Car / track | Files | Setup difference measured | Front level A→B | Rear level A→B | Odd/even noise F / R |
+|---|---|---|---|---|---|
+| Ferrari 499P COTA | 10/27 ↔ 10/30 | none (camber, pressure, ride height within 0.05°, 2 kPa, 1 mm); compound Medium→Hard, track 51→20 °C | +1.0 / −1.0 % | 0.0 / +0.4 % | 0.9-1.7 / 0.4-1.2 % |
+| Porsche 992 Barcelona | 10/26 `03_24` ↔ 11/12 | none | −0.7 / +0.5 % | −1.1 / +0.8 % | 0.2-0.8 / 0-2.5 % |
+| Porsche 992 Barcelona | 10/26 `03_47` vs `03_24`, 11/12 | front ride height +7 mm (58 vs 51), aero front share 0.454 vs 0.430-0.439 | −3.2..−3.9 / +3.1..+3.6 % | +2.2..+3.4 / −0.0..−2.5 % | 0.3 / 4.1 % (rear n 229) |
+| Porsche 992 Road Atlanta | 10/26 ↔ 10/27 | front toe 0.63° vs 0.33°, ride height +19 / +9 mm, LLTD front 0.528 vs 0.546 | −0.4 / +1.1 % | −2.8 / +2.2 % | 1.0-1.9 / 5.1-11.9 % (rear n ~225) |
+| BMW M4 GT3 Fuji | 10/14 ↔ 10/15 | none (camber 1.1/0.8°) | −3.2 / +2.1 % (10/14 front n 142) | −0.3 / +0.8 % | 1.0-1.9 / 0.3-0.9 % |
+| BMW M4 GT3 Fuji | 10/19 vs 10/14, 10/15 | camber 2.6° all round vs 1.1 / 0.8°, LLTD front 0.608 vs 0.586 | +2.0, −0.8 / −3.1, +1.4 % | −3.2, −4.6 / +4.3, +5.0 % | 0.1 / 1.8 % |
+
+Read: same setup across sessions agrees within 1 % per axle, even through a compound and a 31 °C
+track-temperature change. A real setup change (camber, ride height) moves an axle's level by
+**3-5 %**, the two axles often in **opposite directions** (front − rear 5-7 %), where the odd/even
+noise of a well-observed axle is ≤ 2 %. That is larger than β (2-3 %) and is exactly the axle
+balance the ideal lap's binding axle depends on. So the user is right for the pooled grip, and the
+remedy is per file, like the load model.
+
+### R7. Q10 follow-up (a): the clamp stays per point; it is already right per axle
+
+- Within one lap the setup is fixed, so the clamp (§5.4) measures this setup by construction.
+- Per-axle clamping gives the same speed at a clamped point: the saturated axle holds the car at
+  `v_ref`; the other axle was NOT saturated at `v_ref`, so its capacity there is ≥ `|gy|` by
+  measurement and its corner limit is ≥ `v_ref`; `min` of the two is `v_ref`. Clamping "only the
+  saturated axle" would only differ where the model claims the unsaturated axle limits BELOW the
+  driven speed, which the lap itself disproves. **Decision: keep `vc = v_ref` at clamped points.**
+- New diagnostic (not a change of the result): at each clamped point compute the model's corner
+  limit of the axle that was NOT measured saturated; if it is below `v_ref − 1 m/s`, count the
+  point as `clamp_conflict` (per axle). A conflict share above 10 % of the clamped points of an
+  axle is the signature of a pooled level that does not fit this file's setup; it feeds the
+  setup flag below and V13.
+
+### R8. Q10 follow-up (b): no split of fit groups; a per-file axle trim plus a setup flag
+
+Splitting groups by a setup fingerprint is rejected: files hold 4-15 qualifying laps, `k`/`c`
+need the pooled speed and load spans (R2), and setup is continuous (no clean fingerprint
+classes). Instead, the same pattern as the load model:
+
+- **Axle trim (per file).** After the group fit, for the reference lap's FILE and each axle j:
+  `t_j = median log(|gy| / A_j)` over that file's saturated set of axle j (group `mu1, k, c`,
+  the file's own load model). Applied as `mu1_j,file = mu1_j · exp(w_j · t_j)`,
+  `w_j = n_j / (n_j + 500)` (n_j = saturated samples of the axle in the file; 500 = 10 s).
+  Only when `n_j ≥ 250`; else `t_j` not applied (`trim: "none"`). `|t_j|` is capped at 0.08
+  (a larger value means a different car or a broken fit: `trim: "capped"`, confidence `low`).
+  The trim is the level only; `k`, `c`, `kb`, `kt`, drag, engine stay the group's. Braking and
+  traction use the trimmed `A_j` (their ratios are relative to `A`).
+  A file alone in its group has `t = 0` by construction (the calibration is the median, §4.2).
+- **Setup fingerprint (per file, stored, shown in `fit`):** camber per axle, toe per axle, hot
+  pressure per axle, ride height per axle (mid, fast), aero front share, LLTD front share, static
+  front share, compound, track temperature. Group reference = the median over the group's files.
+- **Setup flag** `setup_differs: [list of items]` when the reference file is off the group
+  median by more than: camber 0.3° (either axle), toe 0.1°, ride height 4 mm (either axle, mid
+  or fast), hot pressure 3 kPa, aero front share 0.015, LLTD front share 0.015, compound
+  different. (Same-setup files in p7 stay inside all of these; every setup change found exceeds
+  at least one.) Compound and temperature alone are reported, not flagged (Ferrari 1 %).
+- **Effect on β:** trimmed axles keep the β of §5.4. If `setup_differs` and an axle could not be
+  trimmed (`n_j < 250`), β of the fit += 0.03 and confidence drops one step; the note says
+  "setup differs from the laps the grip was learned on".
+- `clamp_conflict` (R7) above 10 % on a trimmed axle: report only (V13) in this round.
+
+### R9. Public lap times (Ohne Speed's LMU lap-time sheet)
+
+What it is (read 11/12/2026; "Last updated 2026.11.09"; sources named: beAlien, Hymo, GoSetups):
+- Tab `Laptimes`: per class (LMGT3, LMH = Hypercar, LMP2 ELMS, LMP2 WEC, LMP3, GTE) and per
+  track/layout (35 layouts: Bahrain wec/endurance/outer/paddock, Barcelona, Sarthe and
+  "(straight)", COTA and "(national)", Daytona, Fuji "(chicane)" and "(classic)", Imola,
+  Interlagos, Laguna Seca, Long Beach, Monza and "(curvagrande)", Paul Ricard ×5, Portimao,
+  Qatar and "(short)", Road Atlanta, Sebring and "(school)", Silverstone ×3, Spa): the class
+  "~100 %" reference (average of the top cars), bands 101-107 % labelled Alien / Competitive /
+  Good / Midpack / Tail-ender / Offline, fastest car with patch and time.
+- One tab per layout: rows (patch, class, car, time), the best known hotlap per car and patch
+  (patches 0.5-1.43). E.g. COTA: Ferrari 499P 1.42 1:51.980, Porsche 992 (GT3) 1.4 2:05.226.
+- Not in it: conditions (weather, temperature, track state), setups, fuel, tyre compound,
+  driver names. Hotlap/qualifying pace of the fastest public drivers.
+
+Our laps against it: Ferrari COTA 1:57.38 = 104.8 % of the Ferrari's public best; Porsche COTA
+L9 2:11.86 = 105.3 %, its ideal (expected, R1) 2:10.87 = 104.5 %; Porsche Barcelona 1:45.36 =
+104.9 % of the LMGT3 class reference. The model finds ~1 % on the user's own line; the other
+~4 % is line, technique and setup that this model does not claim to know. That is the most
+useful thing the sheet adds, and it is also a sanity bound.
+
+Decisions:
+- **Offline file, imported by hand.** New tool `backend/tools/import_public_laptimes.py` +
+  `IMPORT_PUBLIC_LAPTIMES.ps1`: on the user's command, GET the sheet's published CSVs (`pub?output=csv&gid=<gid>`
+  per layout tab and the `Laptimes` tab; gids from the `pubhtml` page), parse, write
+  `data/track_reference/public_laptimes.json` (read-only at run time through the existing
+  `/data/track_reference` mount; no compose change). The request carries nothing of ours (plain
+  GET, generic User-Agent). Never fetched at request time; a missing file means the fields are
+  absent, nothing else changes. JSON: `{source_url, fetched_at, sheet_updated, layouts:
+  {"<tab>": {slug, layout_len_m|null, class_ref: {"<class>": {time_s, patch}},
+  cars: [{class, car, patch, time_s}]}}}`.
+- **Matching.** Track: tab → our `track_catalog` slug by a hand table in the tool (COTA→cota,
+  Sarthe→sarthe, Fuji (chicane)/(classic)→fuji, ...). A slug with one tab matches directly; a
+  slug with several tabs matches the tab whose `layout_len_m` is within 0.5 % of the file's
+  `session_index` `layout_len_m`; lengths are filled in the tool's table from recordings as they
+  appear, and **no length = no match** (refuse rather than guess: Fuji's two layouts differ by
+  one chicane). Class: our `car_class` Hyper→LMH, GT3→LMGT3, LMP2→LMP2wec (ELMS only if the
+  model name says so), LMP3→LMP3. Car: `car_identity` model → sheet car by an alias table
+  (normalised: lower case, "lmgt3"/"gt3 r"/"lmh" dropped; explicit aliases e.g. Porsche 911 GT3 R
+  → Porsche 992, BMW M4 LMGT3 → BMW M4, Aston Martin Valkyrie AMR-LMH → Aston Martin Valkyrie);
+  unmatched → class reference only. Patch: `GameVersion` 14200 → "1.42" (`v // 10000`,
+  `(v // 100) % 100`; unverified mapping, the builder checks it against one file per patch and
+  the date the patch shipped); use the car's row for that patch, else the newest patch ≤ ours,
+  else the newest, and say which (`public.patch_match: exact | older | newer`).
+- **Use 1: plausibility flag.** `public_check: "faster_than_public_best"` when
+  `ideal.time_s < public car best × 0.995` (or the class reference if no car row), and also
+  for `ceiling`. Confidence drops to `low` and the note says so; the number is NOT changed. The
+  user's line, setup and conditions are not the alien's, so an ideal that beats the public best
+  is almost surely a model error.
+- **Use 2: display.** `public: {car_best_s, class_ref_s, patch, patch_match, driven_pct,
+  ideal_pct, band}` (percent of the car best, band from the sheet's 101-107 % labels). Shown as
+  one line under the headline (§12 Q11).
+- **Use 3: validation row** V15 (§9).
+
+### Builder changes (round 2; after the round-1 fix list, item 3 = clamp)
+
+1. Fix item 3 (clamp) stays as specified. Add to it: per clamped point the model's corner limit
+   of the non-saturated axle; `clamp_conflict` share per axle into `fit.axles.<j>` and V13.
+   T4 gains: a synthetic lap where the front is saturated and the rear model limit is above
+   `v_ref` gives `v_I == v_ref` there and no conflict; with the rear `mu1` cut 20 % the conflict
+   share is > 0.
+2. `ideal_state`: `setup_fingerprint(path, laps, load_model) -> dict` (R6 items; reads `Camber`,
+   `Toe`, `TyresPressure`, `Ride Height` and metadata; missing channel → `null` item). Stored in
+   the per-file cache entry next to `load_model`.
+3. `ideal_store` / `ideal_car`: after the group fit, `axle_trim(group_car, file_reduction)`
+   (R8) and `setup_differs(fingerprint, group_median)`; `car_for_lap` returns the trimmed car.
+   T10 (new, synthetic): two files with true front `mu1` 1.30 / 1.36, rear 1.40 / 1.34; group
+   fit + trim recovers each file's level within 1 %; a file with 100 saturated rear samples
+   keeps the group rear (`trim: none`) and, with a camber difference in its fingerprint, gets
+   β + 0.03.
+4. New module `backend/app/public_laptimes.py`: `load() -> dict | None` (cached by mtime),
+   `match(slug, layout_len_m, car_model, car_class, game_version) -> dict | None`. No network.
+   New tool `backend/tools/import_public_laptimes.py` + `IMPORT_PUBLIC_LAPTIMES.ps1` (the only
+   code that touches the network; prints what it fetched and the sheet's "Last updated").
+   Tests: parse a small saved CSV fixture in `backend/tests/fixtures/` (written by hand, a few
+   rows); matching rules incl. "Fuji without a length → no match" and patch fallback.
+5. `ideal_lap` / API (§7): `fit.setup`, `fit.setup_differs`, `fit.axles.<j>.trim`,
+   `trim_w`, `clamp_conflict`; top-level `public` and `public_check`.
+6. Validation (§9): V14 and V15.
+
 ## 12. Questions for the user (most important first; my recommendation after each)
 
 **Answered 11/11/2026: the user accepted every recommendation below (Q1-Q9).** The build
@@ -710,4 +894,26 @@ recommendation.**
     the same, if loading of each axles or setup (spring rate, ARB, etc) differ then speed wouldn't
     mean much. How to get around this? A good resource is also
     https://docs.google.com/spreadsheets/d/e/2PACX-1vTN03UvJDm99byA6vQPZHKOCYVvfxLu1zkJAzdaKyROykzEKY2-Xl1rl1q5znZEf36m88dxMKsY2eaO/pubhtml,
-    where public laptimes are held." (Open, for the design author.)
+    where public laptimes are held." **Answered in §14 (R6-R9):** axle loading and springs/ARB/
+    wing already act through the per-file load model, and the clamp uses the lap's own setup; the
+    pooled grip level is now trimmed per file and axle (setup changes measured at 3-5 % per
+    axle), and files whose setup differs are flagged; the public sheet becomes an offline
+    plausibility check and a display line (Q11).
+
+**Open, added 11/12/2026 (build round 2, §14). Not yet answered; the build assumes the
+recommendation.**
+
+11. **Show the public lap times next to the ideal lap?** From Ohne Speed's sheet, imported by
+    you with one command (the app itself never goes online): one line under the headline, e.g.
+    "Your lap 105.3 % of the public best for this car (Midpack) · ideal lap 104.5 % · public
+    best 2:05.226 (patch 1.4)". It shows that the ideal lap explains about 1 % and the remaining
+    ~4 % is line, technique and setup. If an ideal lap ever comes out faster than the public
+    best, it is marked low confidence. *Recommended:* yes, both.
+12. **Fuji has two layouts in the sheet (chicane / classic); our recordings do not name the
+    layout.** *Recommended:* match a layout only when the recorded lap length identifies it; for
+    Fuji, tell me which layout your Fuji sessions were; until then no public time for Fuji.
+13. **Setup changes:** the app cannot read your setup, it measures it (camber, toe, pressures,
+    ride height, load transfer). When a session's setup differs from the sessions the grip was
+    learned on, the ideal lap uses this session's own grip level per axle if it has enough
+    at-the-limit cornering (5 s per axle), else it says "setup differs" with a wider range.
+    *Recommended:* accept; nothing to do on your side.
