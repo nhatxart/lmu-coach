@@ -77,3 +77,62 @@ def make_bins(n_laps=6, true_params=None, factors=("load", "temp", "pressure"),
             s["load_ratio"] = np.full(n, np.nan)
         out.append(tb.bin_axle_samples(s, np.ones(n, bool)))
     return out
+
+
+# ── a whole recording for the tyre ingest (kept laps, Task 3) ────────────────
+
+SF_STATIC_N = 4000.0      # axle-mean Susp Force on a straight with a full tank
+SF_FUEL_PER_S = 0.0005    # load lost per second (fuel burn): 2 % per 40 s lap
+SF_AERO = 0.5             # extra load at SF_REF_LAT_G of cornering
+
+
+def write_susp_force_session(path, lap_offsets=(0.0, 0.5, -0.5, 0.0),
+                             speed_scale=0.75, **kw):
+    """A recorder file the tyre model ingests the way it ingests an LMGT3: the
+    synthetic hill ring (synthetic_track.write_hilly_session, slip angles on)
+    plus per-wheel Susp Force, Susp Pos, TyresRubberTemp and TyresPressure at
+    the 100 Hz rate, no Tire Load (LMU writes none for GT3 cars). Metadata gets
+    TyreOptimalTempC, VehicleModel "Test GT3" and VehicleClass "LMGT3".
+
+    speed_scale 0.75 = 108 km/h, inside tire_model.REF_LOAD_SPEED_KMH, so
+    every straight is a load-reference sample. The load falls with time
+    (SF_FUEL_PER_S, a burning tank), so one lap's reference load is not the
+    whole file's: a lap ingested from a one-lap file without the original's
+    context gets other load ratios, which is what the kept-lap tests need.
+    Susp Pos is linear in Susp Force, so a deflection calibration fits (r 1)."""
+    import duckdb
+
+    from synthetic_track import write_hilly_session
+
+    path = write_hilly_session(path, lap_offsets=lap_offsets, speed_scale=speed_scale,
+                               slip_angles=True, vehicle_class="LMGT3",
+                               vehicle_model="Test GT3", **kw)
+    con = duckdb.connect(str(path))
+    try:
+        t = np.array([r[0] for r in con.execute('SELECT value FROM "GPS Time" ORDER BY rowid').fetchall()])
+        lat_g = np.array([r[0] for r in con.execute('SELECT value FROM "G Force Lat" ORDER BY rowid').fetchall()])
+        hz = con.execute("SELECT frequency FROM channelsList WHERE channelName = 'GPS Time'").fetchone()[0]
+        n = len(t)
+        corner = np.minimum(np.abs(lat_g) / 1.44, 1.0)
+        force = SF_STATIC_N * (1.0 - SF_FUEL_PER_S * (t - t[0])) * (1.0 + SF_AERO * corner)
+        temp = 75.0 + 5.0 * np.sin(2 * np.pi * (t - t[0]) / 40.0)
+        per_wheel = {
+            # left/right differ a little so the axle mean is not one wheel
+            "Susp Force": np.stack([force * 1.02, force * 0.98, force * 1.01, force * 0.99], 1),
+            "Susp Pos": np.stack([0.05 + 0.02 * f / SF_STATIC_N for f in
+                                  (force * 1.02, force * 0.98, force * 1.01, force * 0.99)], 1),
+            "TyresRubberTemp": np.stack([temp, temp + 1, temp - 1, temp], 1),
+            "TyresPressure": np.full((n, 4), 170.0) + (temp[:, None] - 75.0) * 0.8,
+        }
+        csv = path.with_name(path.name + ".tyre.csv")
+        for name, arr in per_wheel.items():
+            # CSV bulk load like the recorder: executemany is ~1000x slower in DuckDB
+            csv.write_text("\n".join(",".join(repr(float(v)) for v in row) for row in arr) + "\n")
+            con.execute(f'CREATE TABLE "{name}" (value1 DOUBLE, value2 DOUBLE, value3 DOUBLE, value4 DOUBLE)')
+            con.execute(f"COPY \"{name}\" FROM '{csv.as_posix()}' (FORMAT csv, HEADER false)")
+            con.execute("INSERT INTO channelsList VALUES (?, ?, ?)", (name, hz, ""))
+        csv.unlink()
+        con.execute("INSERT INTO metadata VALUES ('TyreOptimalTempC', '90,90,90,90')")
+    finally:
+        con.close()
+    return path

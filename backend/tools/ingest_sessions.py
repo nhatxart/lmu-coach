@@ -221,7 +221,10 @@ def main() -> int:
         snapshot = (copy.deepcopy(prof.tire_files), copy.deepcopy(prof.tire_fit_cache),
                     copy.deepcopy(prof.deflection_calibration), prof.car_class)
         try:
-            added = prof.ingest_tire_laps(laps, file_key=path.name)
+            # a kept lap counts under its original (same key and lap number) with
+            # the original's context, so it is never ingested twice (spec 4.3)
+            key, context = gp.tire_file_key(path.name, valid[0].meta)
+            added = prof.ingest_tire_laps(laps, file_key=key, context=context)
         except Exception as e:
             print(f"  tyre model FAILED (rolled back): {e}")
             (prof.tire_files, prof.tire_fit_cache,

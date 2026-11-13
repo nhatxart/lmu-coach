@@ -289,7 +289,10 @@ def _metadata(plan: _Plan, n_fast_kept: int, tyre_context: dict | None) -> list[
         # the original's 10 Hz gate due time at the kept file's first row:
         # session_time_axes replays the kept file's gate from it
         "GateDue": repr(float(plan.gate_due)),
-        "KeptTyreContext": json.dumps(tyre_context or {}),
+        # the original's tyre-model context (grip_profile.file_tyre_context,
+        # read back by grip_profile.tire_file_key); strict JSON: a NaN here
+        # would be no context a JSON reader outside Python accepts
+        "KeptTyreContext": json.dumps(tyre_context or {}, allow_nan=False, sort_keys=True),
     }
     rows = [(k, new.pop(k, v)) for k, v in plan.meta]
     return rows + list(new.items())

@@ -43,7 +43,7 @@ from . import lap_cut, session_index, track_reference, trackmap_elevation
 from .coach import LLMError, ask_followup, get_coaching_analysis
 from .track_db import find_track_in_registry, find_layout_in_track, annotate_report_with_corners
 from .grip_analysis import build_grip_report
-from .grip_profile import load_profile_for_lap, save_profile
+from .grip_profile import file_tyre_context, load_profile_for_lap, save_profile, tire_file_key
 from .tire_model import TIRE_GRID_HZ, compute_grip_utilization_for_lap, file_load_reference
 from .vehicle_dynamics import (body_slip_from_local_vel_deg, compute_body_slip_deg,
                                handling_balance)
@@ -331,6 +331,25 @@ def keep_laps(file: str, req: KeepRequest):
         return JSONResponse(status_code=409, content={"ok": False, "results": results,
                                                       "error": KEPT_FOLDER_READ_ONLY})
 
+    tyre_context: dict | None = None
+
+    def original_tyre_context() -> dict:
+        """The original's file-level tyre-model context (spec 4.3), computed
+        once per request and only if a lap is written: a one-lap file cannot
+        recompute it, so it goes into every kept file's KeptTyreContext. A
+        failure keeps the lap anyway, with {} (the kept file then ingests like
+        a recording of its own, as before): the tyre model must not stop a keep."""
+        nonlocal tyre_context
+        if tyre_context is None:
+            try:
+                tlaps = load_telemetry_file(src, grid_hz=TIRE_GRID_HZ)
+                cal = load_profile_for_lap(tlaps[0]).deflection_calibration if tlaps else None
+                tyre_context = file_tyre_context(tlaps, cal or None)
+            except Exception:
+                log.exception("tyre context failed on %s; kept without it", src.name)
+                tyre_context = {}
+        return tyre_context
+
     for info in plans:
         dst = kept_dir / info.name
         res = {"lap": info.lap, "kept_file": info.name, "status": "failed",
@@ -346,7 +365,7 @@ def keep_laps(file: str, req: KeepRequest):
         try:
             # a leftover of an interrupted keep (our own dotfile, never a user's)
             tmp.unlink(missing_ok=True)
-            lap_cut.cut_lap(src, info.lap, tmp, None)   # tyre context: Task 3
+            lap_cut.cut_lap(src, info.lap, tmp, original_tyre_context())
             os.replace(tmp, dst)
         except Exception as e:
             tmp.unlink(missing_ok=True)
@@ -411,6 +430,11 @@ async def analyze(ref: LapRef):
     profile = pre_update_profile
     tire_laps: list = []
     tire_error: str | None = None
+    # PREVIOUSLY the tyre data was keyed by this file's name, so a kept lap
+    # (spec 4.3) went in a second time under the kept file's name, binned with
+    # a context recomputed from one lap. Fix: a kept file is keyed by its
+    # original and carries the original's context (KeptTyreContext).
+    tire_key, tire_context = tire_file_key(path.name, lap.meta)
     grip_report["grip_utilization"] = None
     try:
         tire_laps = load_telemetry_file(path, grid_hz=TIRE_GRID_HZ)
@@ -418,12 +442,18 @@ async def analyze(ref: LapRef):
         tire_lap = next((l for l in tire_valid if l.lap_number == lap.lap_number), None)
         pre_update_baselines = pre_update_profile.compute_baselines()
         if tire_lap is not None:
+            if tire_context:
+                score_cal = tire_context.get("calibration") or {}
+                score_ref = tire_context.get("load_ref") or {}
+            else:
+                score_cal = pre_update_profile.deflection_calibration
+                score_ref = file_load_reference(tire_valid, score_cal)
             grip_report["grip_utilization"] = compute_grip_utilization_for_lap(
                 tire_lap,
                 pre_update_baselines["front_tire_model"],
                 pre_update_baselines["rear_tire_model"],
-                calibration=pre_update_profile.deflection_calibration,
-                load_ref=file_load_reference(tire_valid, pre_update_profile.deflection_calibration),
+                calibration=score_cal,
+                load_ref=score_ref,
                 front_fit=pre_update_profile.cached_fit("front"),
             )
     except Exception as e:  # /analyze must never fail because of the tyre model
@@ -455,7 +485,7 @@ async def analyze(ref: LapRef):
         snapshot = (copy.deepcopy(profile.tire_files), copy.deepcopy(profile.tire_fit_cache),
                     copy.deepcopy(profile.deflection_calibration), profile.car_class)
         try:
-            profile.ingest_tire_laps(tire_laps, file_key=path.name)
+            profile.ingest_tire_laps(tire_laps, file_key=tire_key, context=tire_context)
             grip_baselines = profile.compute_baselines()
         except Exception as e:
             log.exception("tyre ingest/refit failed on %s", path.name)
