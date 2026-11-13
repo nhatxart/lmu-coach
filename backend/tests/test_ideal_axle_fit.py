@@ -11,9 +11,10 @@ MU1, K, CC = (1.40, 1.48), (0.06, 0.03), (0.10, 0.20)
 KNEE = 4.0
 
 
-def _car_samples(rng, n_front_sat, n_rear_sat, n_unsat=20000):
+def _car_samples(rng, n_front_sat, n_rear_sat, n_unsat=20000, rear_v=(0, 999)):
     """Pooled dict as ideal_car.fit_axles takes it. lam per wheel is given (the
-    load model's output), every sample is quasi-steady cornering (gx 0)."""
+    load model's output), every sample is quasi-steady cornering (gx 0).
+    `rear_v`: speed band (m/s) of the rear's saturated samples."""
     m = 400000
     v = rng.uniform(20, 70, m)
     lam = np.vstack([rng.uniform(0.9, 1.7, m) for _ in range(4)])
@@ -21,7 +22,7 @@ def _car_samples(rng, n_front_sat, n_rear_sat, n_unsat=20000):
     lim = np.minimum(Af, Ar)
     front_lim = Af < Ar
     i_f = np.flatnonzero(front_lim)[:n_front_sat]
-    i_r = np.flatnonzero(~front_lim)[:n_rear_sat]
+    i_r = np.flatnonzero(~front_lim & (v >= rear_v[0]) & (v < rear_v[1]))[:n_rear_sat]
     i_u = np.arange(m)[-n_unsat:]
     idx = np.concatenate([i_f, i_r, i_u])
     u = np.concatenate([np.ones(len(i_f) + len(i_r)), rng.uniform(0.55, 0.98, n_unsat)])
@@ -62,6 +63,59 @@ def test_axle_with_few_saturated_samples_is_lower_bound():
     assert fits[1].n_sat == 100
     # k, c of a lower-bound axle come from the other axle
     assert (fits[1].k, fits[1].c) == (fits[0].k, fits[0].c)
+
+
+def test_axle_saturated_in_a_narrow_speed_band_borrows_k_c():
+    """Design §4.2 round 1 (§13 R2): an axle saturated only at 20-30 m/s cannot
+    tell its speed term; it gets the other axle's k, c and fits only mu1."""
+    d = _car_samples(np.random.default_rng(8), 3000, 3000, rear_v=(20, 30))
+    fits = C.fit_axles(d, np.zeros(len(d["v"])), slip=d["slip"], gf=d["gf"])
+    assert fits[0].terms == "fitted"
+    assert fits[1].status == "observed"
+    assert fits[1].terms == "borrowed"
+    assert (fits[1].k, fits[1].c) == (fits[0].k, fits[0].c)
+    assert fits[1].v_sat[0] >= 20 and fits[1].v_sat[1] <= 30
+    # where it was seen saturated, the level is still right
+    lam = np.full((4, 1), 1.2)
+    got = C.axle_capacity(lam, np.array([25.0]), [f.mu1 for f in fits], [f.k for f in fits], [f.c for f in fits])[1]
+    want = C.axle_capacity(lam, np.array([25.0]), MU1, K, CC)[1]
+    assert got[0] == pytest.approx(want[0], rel=0.02)
+
+
+def test_both_axles_unidentifiable_take_the_defaults():
+    d = _car_samples(np.random.default_rng(9), 100, 100)
+    fits = C.fit_axles(d, np.zeros(len(d["v"])), slip=d["slip"], gf=d["gf"])
+    for f in fits:
+        assert f.status == "lower_bound" and f.terms == "default"
+        assert (f.k, f.c) == (C.K_DEFAULT, C.C_DEFAULT)
+
+
+def test_extrapolated_above_the_saturated_speeds():
+    d = _car_samples(np.random.default_rng(8), 3000, 3000, rear_v=(20, 30))
+    rear = C.fit_axles(d, np.zeros(len(d["v"])), slip=d["slip"], gf=d["gf"])[1]
+    assert not C.is_extrapolated(rear, rear.v_sat[1] + 4.0)
+    assert C.is_extrapolated(rear, rear.v_sat[1] + 6.0)
+
+
+def test_continuous_knee_is_stable_on_a_flat_plateau():
+    """§13 R3: the knee must not jump a whole bin when the plateau is flat:
+    removing 5 % of the samples at random moves it by less than 0.3 deg."""
+    rng = np.random.default_rng(12)
+    n = 6000                                          # 300 samples per bin
+    slip = rng.uniform(0, 10, n)
+    # 97 % of the plateau is reached at 4.25 deg, the centre of a bin: there a
+    # bin-based knee flips between two bins from one sample set to the next
+    tau = 4.25 / np.log(10)
+    r = (1 - 0.3 * np.exp(-slip / tau)) * (1 + 0.06 * rng.standard_normal(n))
+    base = np.ones(n, bool)
+    _, k_all = C.knee_mask(slip, r, base)
+    assert 3.0 < k_all < 5.5
+    moves = []
+    for _ in range(20):
+        keep = rng.random(n) >= 0.05
+        _, k = C.knee_mask(slip, r, base & keep)
+        moves.append(abs(k - k_all))
+    assert max(moves) < 0.3
 
 
 def test_knee_vs_tyre_v3_peak():

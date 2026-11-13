@@ -25,6 +25,10 @@ OBSERVED_MIN = 250                 # saturated samples (5 s) for an axle to be `
 KNEE_BIN_DEG, KNEE_MIN_N, KNEE_FRAC, KNEE_SPAN_DEG = 0.5, 60, 0.97, 4.0
 GF_SATURATED = 0.3                 # Grip Fraction is LOW when saturated
 KNEE_V3_DIFFER_DEG = 1.5
+# k, c of an axle are fitted only where its saturated set spans them (§13 R2)
+TERMS_MIN_N, TERMS_V_SPAN, TERMS_LAM_SPAN = 250, 15.0, 0.15
+K_DEFAULT, C_DEFAULT = 0.03, 0.10          # middle of what has been fitted (k 0-0.08, c 0.05-0.19)
+EXTRAP_MARGIN = 5.0                        # m/s above v_sat[1]
 DRAG_PRIOR = {"LMGT3": (0.015, 4.8e-5)}    # d0 (g), d2 (g per (m/s)^2)
 DRAG_PRIOR_OTHER = (0.015, 4.0e-5)         # Ferrari measured 0.054 g + 3.98e-5 v^2
 COAST_MIN, COAST_D2_CAP = 150, 7e-5
@@ -174,18 +178,33 @@ class InsufficientData(Exception):
 
 def knee_mask(slip_ax: np.ndarray, r: np.ndarray, base: np.ndarray) -> tuple[np.ndarray, float]:
     """Saturated without force data: at or past the slip angle where r = |gy| /
-    axle-mean lam stops rising. Median r per 0.5 deg bin (>= 60 samples); knee =
-    first bin reaching 97 % of the highest; set = knee <= slip <= knee + 4 deg."""
+    axle-mean lam stops rising. Median r per 0.5 deg bin (>= 60 samples), the
+    medians smoothed by a 3-bin running median; plateau = median of the three
+    highest; knee = slip angle (linear between bin centres) where the smoothed
+    curve first reaches 97 % of the plateau; set = knee <= slip <= knee + 4 deg.
+    PREVIOUSLY: knee = lower edge of the first bin whose raw median reached 97 %
+    of the highest. On a flat plateau that jumped a whole bin from one sample
+    set to the next (Porsche COTA front 4.0 -> 3.0 deg when the drag entered
+    the base mask), moving the front capacity 4-5 % (design §13 R3). Fix: the
+    continuous rule above."""
     edges = np.arange(0, 14.5, KNEE_BIN_DEG)
     med, mid = [], []
     for a, b in zip(edges[:-1], edges[1:]):
         m = base & (slip_ax >= a) & (slip_ax < b)
         if m.sum() >= KNEE_MIN_N:
-            med.append(np.median(r[m])); mid.append(a)
+            med.append(np.median(r[m])); mid.append(0.5 * (a + b))
     if len(med) < 3:
         return base & False, float("nan")
-    med = np.array(med)
-    knee = float(mid[int(np.argmax(med >= KNEE_FRAC * med.max()))])
+    med, mid = np.array(med), np.array(mid)
+    pad = np.concatenate([[med[0]], med, [med[-1]]])
+    smo = np.median(np.vstack([pad[:-2], pad[1:-1], pad[2:]]), axis=0)
+    thr = KNEE_FRAC * float(np.median(np.sort(smo)[-3:]))
+    i = int(np.argmax(smo >= thr))
+    if i == 0:
+        knee = float(mid[0])
+    else:
+        f = (thr - smo[i - 1]) / (smo[i] - smo[i - 1])
+        knee = float(mid[i - 1] + f * (mid[i] - mid[i - 1]))
     return base & (slip_ax >= knee) & (slip_ax <= knee + KNEE_SPAN_DEG), knee
 
 
@@ -236,6 +255,8 @@ class AxleFit:
     ratio_sd: float             # log sd of observed / predicted on the set
     v3_peak_slip_deg: float | None = None
     knee_vs_v3: str | None = None   # 'agree' | 'differ'
+    terms: str = "fitted"           # k, c: 'fitted' | 'borrowed' | 'default' (§13 R2)
+    v_sat: list | None = None       # [p02, p98] of the set's speed, m/s
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -243,6 +264,12 @@ class AxleFit:
             if isinstance(v, float) and not np.isfinite(v):
                 d[k] = None
         return d
+
+
+def is_extrapolated(axle: AxleFit, v) -> bool:
+    """Design §13 R2: a speed more than 5 m/s above the fastest saturated sample
+    of the axle (its v_sat[1]) is an extrapolation of the speed term."""
+    return axle.v_sat is not None and float(v) > axle.v_sat[1] + EXTRAP_MARGIN
 
 
 # ── The group fit ────────────────────────────────────────────────────────────
@@ -371,7 +398,7 @@ def fit_axles(d: dict, gxt: np.ndarray, slip: np.ndarray | None, gf: np.ndarray 
 
     fits: list = [None, None]
 
-    def finish(j, m1, k, c, m, m_sat, status):
+    def finish(j, m1, k, c, m, m_sat, status, terms):
         idx, _, _, how, knee = sets[j]
         P, Q, R = _pqr(lam[idx], v)
         shape = P[m] - k * Q[m] - c * R[m]
@@ -383,31 +410,54 @@ def fit_axles(d: dict, gxt: np.ndarray, slip: np.ndarray | None, gf: np.ndarray 
         fits[j] = AxleFit(mu1=float(mu), k=float(k), c=float(c), status=status, saturation=how,
                           knee_deg=float(knee) if np.isfinite(knee) else None, n_sat=int(m_sat.sum()),
                           ratio_sd=float(np.std(np.log(y_all[m] / (mu * shape)))),
-                          v3_peak_slip_deg=v3, knee_vs_v3=vs)
+                          v3_peak_slip_deg=v3, knee_vs_v3=vs, terms=terms, v_sat=vsat(m_sat if m_sat.any() else m))
 
+    def vsat(m):
+        return [float(x) for x in np.percentile(v[m], [2, 98])]
+
+    def spans(j):
+        """Does the saturated set span the load and speed terms (§13 R2)?"""
+        idx, _, m, _, _ = sets[j]
+        if m.sum() < TERMS_MIN_N:
+            return False
+        p = lambda a: float(np.percentile(a[m], 90) - np.percentile(a[m], 10))
+        return p(v) >= TERMS_V_SPAN and p(lam[idx].mean(0)) >= TERMS_LAM_SPAN
+
+    # PREVIOUSLY: every observed axle fitted its own k, c. An axle saturated in a
+    # narrow speed band cannot tell its speed term, and the least squares pinned
+    # it at a bound (synthetic rear seen at slow apexes only: c 0.45, capacity
+    # 0.74 x true at 60-90 m/s; real sets are 20-50 m/s). Fix (§13 R2): fit k, c
+    # only where the set spans them; else borrow the other axle's fitted terms,
+    # else the defaults; mu1 is always fitted on the axle's own set.
     observed = [int(s[2].sum()) >= OBSERVED_MIN for s in sets]
-    for j in (0, 1):                                   # observed axles first
-        if observed[j]:
+    own = [spans(j) for j in (0, 1)]
+    for j in (0, 1):
+        if own[j]:
             idx, _, m, _, _ = sets[j]
             P, Q, R = _pqr(lam[idx], v)
             m1, k, c = _ls_mu(y_all[m], P[m], Q[m], R[m])
-            finish(j, m1, k, c, m, m, "observed")
+            finish(j, m1, k, c, m, m, "observed", "fitted")
     for j in (0, 1):
-        if not observed[j]:
+        if own[j]:
+            continue
+        idx, r, m_sat, _, _ = sets[j]
+        if observed[j]:
+            m = m_sat
+        else:
             # lower_bound: the car was not seen to reach this axle's limit; the
-            # capacity is what was shown (top 20 % of r among `base`), with k, c
-            # from the other axle (mirrors tyre v3's rising_at_edge).
-            idx, r, m_sat, _, _ = sets[j]
+            # capacity is what was shown (top 20 % of r among `base`) (mirrors
+            # tyre v3's rising_at_edge).
             if base.sum() < 10:
                 raise InsufficientData("too few cornering samples")
             m = base & (r >= np.quantile(r[base], 0.8))
-            P, Q, R = _pqr(lam[idx], v)
-            other = fits[1 - j]
-            if other is not None and other.status == "observed":
-                m1, k, c = _ls_mu(y_all[m], P[m], Q[m], R[m], k_fix=other.k, c_fix=other.c)
-            else:                                      # both lower_bound: k, c from this set
-                m1, k, c = _ls_mu(y_all[m], P[m], Q[m], R[m])
-            finish(j, m1, k, c, m, m_sat, "lower_bound")
+        other = fits[1 - j]
+        if other is not None and other.terms == "fitted":
+            k, c, terms = other.k, other.c, "borrowed"
+        else:
+            k, c, terms = K_DEFAULT, C_DEFAULT, "default"
+        P, Q, R = _pqr(lam[idx], v)
+        m1, k, c = _ls_mu(y_all[m], P[m], Q[m], R[m], k_fix=k, c_fix=c)
+        finish(j, m1, k, c, m, m_sat, "observed" if observed[j] else "lower_bound", terms)
     return fits
 
 
