@@ -161,8 +161,18 @@ Saturated set of an axle:
 - **forces recorded** (Grip Fraction present): `base` and mean Grip Fraction of the axle < 0.3
   (the game's Grip Fraction is LOW when the tyre is saturated).
 - **no forces**: the knee. `r = |gy| / mean modelled lam of the axle`; median of `r` in 0.5 deg bins
-  of the axle's mean |slip angle| (bins with ≥ 60 samples); knee = first bin whose median reaches
-  97 % of the highest; set = `base` and knee ≤ slip ≤ knee + 4 deg.
+  of the axle's mean |slip angle| (bins with ≥ 60 samples). Knee **(round 1, §13 R3; was "first
+  bin whose median reaches 97 % of the highest", which jumped a whole bin on a flat plateau and
+  moved the front capacity 4-5 %)**: smooth the bin medians with a 3-bin running median;
+  plateau = median of the three highest smoothed values; knee = the slip angle, linearly
+  interpolated between bin centres, where the smoothed curve first reaches 97 % of the plateau.
+  Set = `base` and knee ≤ slip ≤ knee + 4 deg.
+
+Which terms are fitted **(round 1, §13 R2)**: `k` and `c` of an axle are fitted only if its
+saturated set has ≥ 250 samples, a speed span (p90 − p10 of `v`) ≥ 15 m/s and a load span
+(p90 − p10 of the axle-mean modelled `lam`) ≥ 0.15. Otherwise they are borrowed from the other
+axle when that one is fitted (only `mu1` is then fitted), else the defaults `k = 0.03, c = 0.10`.
+Stored as `terms: fitted | borrowed | default`, with `v_sat: [p02, p98]` of the set's speed.
 
 Calibration **[Fable]**: scale `mu1_j` so that the MEDIAN of observed / predicted on the set is 1
 (`q = 0.5`). Past the knee a tyre holds its peak force, so a saturated sample IS the limit plus
@@ -172,7 +182,7 @@ driven" points with invented grip (F4); §5.4 handles those points honestly inst
 Axle status:
 - `observed`: ≥ 250 samples in the set (5 s).
 - `lower_bound`: fewer. Then fit on the top 20 % of `r` among `base` samples; `k`, `c` taken from
-  the other axle. The car has not been seen to reach this axle's limit; the capacity is what was
+  the other axle (both axles `lower_bound`: the defaults above). The car has not been seen to reach this axle's limit; the capacity is what was
   shown. (Mirrors tyre v3's `rising_at_edge`.) Expected for the rear of an understeering GT3.
 - Store per axle: `mu1, k, c, n_sat, saturation` (`grip_fraction` | `knee`), `knee_deg`, status,
   `ratio_sd` (log sd of observed / predicted on the set), and tyre v3's `peak_slip_deg` for the same
@@ -245,8 +255,12 @@ As `il_core.solve(mode="balanced")`, unchanged in structure:
   front-limited car corners harder while slowing).
 - forward pass with `min(power − grade, best feasible gxt − drag − grade)`, backward pass with the
   strongest feasible braking, twice round the closed lap. `gz` clipped to [−0.9, 1.5].
+- **(round 1, §13 R4)** `vc` is bisected between the 0.5 m/s grid speeds (the builder's change,
+  accepted), and the strongest feasible drive / braking demand is bisected between the last
+  feasible value of the 0.025 g grid and the next (4 halvings), so the solver uses the fitted
+  `kb`, `kt` and not 1-2 % less.
 Result `v_M(s)` and, new, a **binding code** per grid point: `front`, `rear` (corner limit, which
-axle), `brake`, `traction`, `power`.
+axle), `brake`, `traction`, `power`, and `measured` (the point is held by the saturation clamp, §5.4).
 
 ### 5.3 Ceiling solve (setup potential)
 `|gy| ≤ s_f·A_f + s_r·A_r` instead of the two axle conditions; rest the same. One time only.
@@ -262,6 +276,26 @@ traces cross they are in the same state, so following one before the crossing an
 is a lap in which every piece is either allowed by the model or was actually driven. The
 reference lap is proof of what was possible where the model says less (the model is ±6 % in g, F3).
 
+**Saturation clamp (round 1, §13 R1; user question §12 Q10).** Where the reference lap's own
+tyres were measured saturated, the limit is the speed driven there, not the model's:
+
+    sat_ref (per 50 Hz sample of the reference lap) =
+          |gy| > 0.45·p99(|gy|) of the lap   and   v > 15   and   |gxt| < 0.5·|gy|
+      and ( any axle: mean Grip Fraction < 0.3                       when recorded
+            else any axle: knee_j ≤ mean |slip angle| ≤ knee_j + 4 deg )
+    runs shorter than 0.2 s are dropped; put on the 2 m grid (a grid point is clamped when more
+    than half of its samples are)
+    at clamped grid points:  vc(s) = v_ref(s)      (replaces the model's corner limit, up or down)
+
+The forward and backward passes then run as before from those speeds, at every level (a measured
+point does not scale with the grip level), and the envelope is taken as above. Clamped points
+carry the binding code `measured`. `|gxt| < 0.5·|gy|` keeps the clamp to lateral-dominant
+states: a tyre saturated by wheelspin or by braking says nothing about the corner speed.
+The ceiling (§5.3) is NOT clamped: it describes another setup. `model_only` and V5 stay unclamped.
+Why: at a saturated point `v_M / v_ref = √(A / |gy|)` is the model's own residual, so without
+the clamp the envelope keeps the model's noise at half of the at-the-limit points (0.10-0.45 s
+per COTA lap directly, 0.18-0.94 s with its knock-on; §13 R1).
+
 Three levels: solve §5.2 with `mu1` of both axles × (1 − β), × 1, × (1 + β) and take the envelope
 of each:
 - `gain_min` (level 1 − β): "at least". Gains that survive a grip haircut.
@@ -269,15 +303,17 @@ of each:
 - `gain_max` (level 1 + β).
 
 β **[Fable]**, to be confirmed by §9 V4: 0.02 for a track-scope fit with ≥ 6 laps and both axles
-`observed`; 0.03 for any other track-scope fit; 0.05 for a car-scope fit (§6.3). (Level shift
-between sessions measured so far: 1.8 % Ferrari; between tracks 10 %.)
+`observed`; 0.03 for any other track-scope fit **and for every knee-based (no-force) fit (round
+1, §13 R3: a knee-based level is good to about ±4 %)**; 0.05 for a car-scope fit (§6.3). (Level
+shift between sessions measured so far: 1.8 % Ferrari; between tracks 10 %.)
 
 Also returned, not headlined: `model_only_time` = Σ ds / v_M at level 1 (the unbiased model
 time; it can be slower than the driven lap), and the share of the lap where `v_M < v_ref − 2 km/h`.
 
-Known bias, stated to the user in the UI note: where the driver is already at the limit, model
-noise still shows small gains in about half of the corners, so `gain` reads high by an amount
-the synthetic test measures (§8 T6); `gain_min` is the conservative figure.
+Known bias **(round 1)**: the clamp removes the model's noise where the tyres were measured
+saturated in cornering. What is left (braking and traction zones, corners the driver did not
+saturate) is measured by the synthetic test (§8 T6) and stated in the UI note; `gain_min` is
+the conservative figure. Also returned: `clamped_share` (share of the lap held by the clamp).
 
 Lap time shown: `official lap time − (T_ref_grid − T_I)`, so the grid's own small timing error
 cancels.
@@ -302,6 +338,9 @@ Corner windows from the track reference (`track_corners` / the same windows the 
 - `at_limit`: `gain_min ≤ 0.02 s`;
 - `time_available`: otherwise; with where: `entry` (braking zone), `mid` (min speed), `exit`
   by which third of the window holds most of the gain.
+**(round 1)** Also per corner: `measured_share` (share of the window held by the clamp) and
+`extrapolated: true` when the ideal's minimum speed is more than 5 m/s above the binding axle's
+`v_sat[1]` (the model has never seen that axle saturated that fast; §13 R2).
 Time outside corner windows goes to `straights` rows between corners.
 
 ## 6. Data, fit groups, storage
@@ -370,14 +409,14 @@ Nothing in the tyre-v3 profile or `/analyze` changes.
     {"status": "ok" | "insufficient_data", "reason": str | null,
      "car_model", "car_class", "track", "lap_number", "lap_time_s",
      "fit": {scope, n_laps, n_files, load_source, confidence, beta, notes[],
-             axles: {front: {mu1, k, c, status, saturation, knee_deg, n_sat, ratio_sd, v3_peak_slip_deg, knee_vs_v3}, rear: {...}},
+             axles: {front: {mu1, k, c, status, terms, v_sat[2], saturation, knee_deg, n_sat, ratio_sd, v3_peak_slip_deg, knee_vs_v3}, rear: {...}},
              s_front, kappa_brake, kappa_trac, drag: {d0, d2, source}, selfcheck: {shift, sd}},
-     "ideal":   {time_s, gain_s, gain_min_s, gain_max_s},
+     "ideal":   {time_s, gain_s, gain_min_s, gain_max_s, clamped_share},
      "ceiling": {time_s, gain_s},
      "model_only": {time_s, under_driven_share},
-     "trace": {lap_dist[], v_kmh[], v_ref_kmh[], t[], binding[], u_front[], u_rear[], u_front_ref[], u_rear_ref[]},
+     "trace": {lap_dist[], v_kmh[], v_ref_kmh[], t[], binding[], saturated_ref[], u_front[], u_rear[], u_front_ref[], u_rear_ref[]},
      "corners": [{n, name, s0, s1, t_ref, t_ideal, gain_s, gain_min_s, vmin_ref_kmh, vmin_ideal_kmh,
-                  binding, u_front_ref, u_rear_ref, verdict, where}],
+                  binding, u_front_ref, u_rear_ref, verdict, where, measured_share, extrapolated}],
      "note": "one sentence for the UI: what this is and its range"}
 
 `trace` is given at the same points as `/trackmap`'s `driven_line` for that lap (interpolate the
@@ -424,10 +463,20 @@ Tests (`backend/tests/test_ideal_*.py`, pytest, synthetic data only, no recordin
   straight between two hairpins: braking point and exit match hand integration within 2 m.
 - T4 envelope: never below `v_ref`; equals `v_M` where `v_M ≥ v_ref`; `gain_min ≤ gain ≤ gain_max`.
 - T5 ceiling ≥ balanced speed everywhere; equal when `A_f = A_r`.
-- T6 **perfect driver**: build telemetry by solving a known car on a synthetic line (use
-  `tests/synthetic_track.py`'s ring or a simple figure with crests), add 5 % noise to gy, refit,
-  solve: `model_only` gain within ±0.3 % of the lap; report the envelope's `gain` (the phantom
-  gain) and assert `gain_min` ≤ 0.3 % of the lap. The measured phantom goes into the UI note.
+- T6 **perfect driver (rewritten in round 1, §13 R1; the first version put 5 % noise on gy,
+  which also bends the line: no recording does that)**. Build telemetry by solving a known car
+  on the synthetic line of `tests/synthetic_ideal.py`, where the TRUE capacity of both axles is
+  multiplied by a noise field over lap distance: a place part (same on every lap, log sd 0.035,
+  correlation length 50 m) times a lap part (new on every lap, log sd 0.035, 50 m); together
+  about 5 %, split as F3 found. The perfect driver drives each lap at that lap's capacity. gy,
+  speed and the line are exact; Grip Fraction is low (and the slip angle past the knee) where
+  the usage against the NOISY capacity is ≥ 0.995. 6 laps, refit, solve on lap 3's line with
+  the clamp. Cars A and B of the first version, seeds 2026 / 7 / 99, and once without noise.
+  Assert per run: phantom `gain` ≤ 0.5 % of the lap (the §11 trigger); `model_only` (unclamped)
+  within ±0.5 %; `kb`, `kt` within 1 % of the true values. Without noise: `gain` ≤ 0.1 %,
+  `model_only` within ±0.3 %. Report `gain_min` / `gain` / `gain_max` and `clamped_share` per run;
+  targets, not asserts: `gain` ≤ 0.3 %, `gain_min` ≤ 0.15 %. The largest `gain` goes into the
+  UI note ("up to X s of this can be model noise").
 - T7 refusals: no slip angles and no Grip Fraction; fewer than 3 laps; native file. Each returns
   `insufficient_data` with a reason, never an exception and never a number.
 - T8 store: fingerprint change refits; a file with one lap borrows the group load model;
@@ -469,13 +518,14 @@ Checks (thresholds are from the probes with margin; a fail is a finding, not a r
 | V3 | Spread: log sd of the same | ≤ 0.075 | 0.053-0.071 |
 | V4 | β: share of pairs with V2 inside the β of §5.4 | ≥ 80 %; else report the p80 as the new β | not measured |
 | V5 | Structure: at level × 1.10, plain model under driven by > 2 km/h | on ≤ 4 % of the lap, nowhere > 10 km/h | 1.1-3.4 %, 5-9 km/h |
-| V6 | Stability: ideal time over the 3 reference laps of a file | spread ≤ 0.5 % of the lap | 0.09 % Porsche, 0.4 % Ferrari |
+| V6 | Stability (round 1): UNCLAMPED envelope time over the 3 reference laps of a file (the model must not depend on the lap). The clamped ideal is reported next to it, not gated: it belongs to its lap | spread ≤ 0.5 % of the lap; clamped: report (expected ≤ 0.8 %) | unclamped 0.15 % Porsche, 0.4 % Ferrari; clamped 0.49 % / 0.37 % |
 | V7 | Cross-session: ideal time fitted without the test file vs with it | ≤ 0.4 % of the lap apart | 0.1 % Ferrari |
 | V8 | Drag sensitivity (no-force cars): `d2` ± 30 % | ideal time moves ≤ 0.2 s | not measured |
 | V9 | Plausibility: `gain` for laps within 1 % of the file's best | 0 to 3 % of the lap; `gain_min` > 0 | 1.0-1.6 % |
 | V10 | Axles: status per axle, knee vs tyre-v3 peak, share of the lap each binding code holds | report only | Porsche rear knee 2.5-3.0 vs v3 3.9 |
 | V11 | Cross-track pairs: V2, V5, V7 | report only (expected to fail on GT3) | Porsche COTA→Road Atlanta: under driven on 63-76 % |
-| V12 | Run time per request, warm | ≤ 10 s | not measured |
+| V12 | Run time per request, warm | ≤ 10 s | 1.5-1.7 s per solve (builder) |
+| V13 | (round 1) Clamp and extrapolation: `clamped_share`; gain with and without the clamp; share of `gain` in corners flagged `extrapolated`; `terms` per axle; knee (continuous) per file of a group | report only; come back if more than half of the gain of a class sits in `extrapolated` corners | clamp removes 0.18-0.94 s per COTA lap |
 
 Report per pair one row with V1-V12, then a per-class summary. Gate for the UI step: V1-V3 and
 V5-V7 pass on every Hypercar pair and every LMGT3 pair that has ≥ 6 laps; anything else is
@@ -494,8 +544,118 @@ Same spirit as `tire_mf.ENABLED_FACTORS`.
 - A class shows up whose channels fit neither column of §6.1.
 - V6 fails (the ideal depends on which lap gave the line more than 0.5 %): the line handling or
   the envelope is wrong.
-- The phantom gain of T6 exceeds 0.5 % of the lap.
+- The phantom gain of T6 exceeds 0.5 % of the lap. (Round 1: it did, 0.26-0.72 %; answered in
+  §13 with the saturation clamp and a rewritten T6. The trigger stands for the new T6; the next
+  candidate would be the same clamp on braking and traction zones.)
 Not for: thresholds missed by a little on one file, performance, UI layout, bugs.
+
+## 13. Build round 1 decisions (11/12/2026)
+
+Answers to `.superpowers/sdd/2026-11-11-ideal-lap/batch-a-report.md` (Q-A, Q-B, Q-C). All
+decisions here are **[Fable]**. The sections they change (§4.2, §5.2, §5.4, §5.6, §7, §8 T6,
+§9, §11) are edited in place and marked "(round 1)". Probe: `fable_p5.py` (spike folder of the
+worktree; env `FABLE_GATE=latdom` is the rule adopted). Car in the probe = spike variant "both"
+at the median, same-file fit, COTA Porsche `11-09T04_29_26` and Ferrari `10-30`.
+
+### R1. Q-A: the envelope design changes (saturation clamp); T6's noise moves to the capacity
+
+The builder is right twice: T6 put the noise on the wrong signal, and the bias is real anyway.
+- Wrong signal: F3's 6 % is the limit moving (place, state, transients), not an error of gy.
+  gy is kinematic and exact (`G Force Lat` = −0.98·v·yaw rate), and it builds the line. Noise on
+  gy bends the line, which no recording does.
+- Real anyway: at a saturated sample in pure cornering `v_M / v_ref = √(A / |gy|)`, which is
+  F3's residual itself. So wherever the driver is at the limit, the model beats him at about
+  half of the points, and the envelope keeps exactly those.
+
+Measured on real laps (`fable_p5.py`, design fit order, envelope gain at level 0.98 / 1.00 / 1.02):
+
+| Lap | measured saturated | unclamped envelope | of it ON saturated points | with the clamp |
+|---|---|---|---|---|
+| Porsche L9 131.86 | 27.6 % of lap | +1.00 / +1.42 / +1.97 s | 0.28 s | +0.76 / +0.99 / +1.24 s |
+| Porsche L4 132.05 | 25.4 % | +1.06 / +1.45 / +1.88 | 0.10 | +0.99 / +1.27 / +1.56 |
+| Porsche L6 132.70 | 27.2 % | +1.74 / +2.22 / +2.75 | 0.45 | +1.06 / +1.28 / +1.53 |
+| Ferrari L11 117.85 | 25.9 % | +1.01 / +1.43 / +1.95 | 0.20 | +0.65 / +0.85 / +1.06 |
+| Ferrari L3 117.97 | 23.3 % | +1.18 / +1.56 / +2.07 | 0.15 | +1.00 / +1.25 / +1.52 |
+| Ferrari L8 118.06 | 23.8 % | +0.80 / +1.19 / +1.69 | 0.16 | +0.65 / +0.91 / +1.14 |
+
+0.10-0.45 s of the "expected" gain (0.08-0.34 % of the lap) sat on points where the tyres were
+measured at their limit: that part is model noise by definition, and it is the size T6 reported.
+With its knock-on into the braking and exit either side, the clamp removes 0.18-0.94 s.
+
+**Decision: where the reference lap's tyres were measured saturated, the corner limit is the
+speed that was driven there, not the model's (§5.4, "saturation clamp").** The measurement
+replaces the model where there is one; the model speaks only where the driver was not at the
+limit, which is the question the user is asking. Side effects, all wanted:
+- sensitivity to the grip level halves again: ±0.25 s for ±2 % (was ±0.45 s; plain model ±1.0 s);
+- the knee question (Q-C) stops mattering for the headline: knee 4.0 vs 3.0 deg moves the clamped
+  gain by 0.00 / 0.01 / 0.03 s on the three Porsche laps (unclamped: 0.06-0.10 s; plain: 0.22-0.27 s);
+- "at least" becomes a defensible name for `gain_min`.
+Cost: the ideal now depends more on the reference lap (a lap saturated at a lower speed in a
+corner is held to that speed there). Clamped ideal over the three reference laps: Porsche
+130.87 / 130.78 / 131.42 (0.49 %), Ferrari 117.00 / 116.72 / 117.15 (0.37 %); unclamped it was
+0.15 % / 0.4 %. That is consistent with §12 Q2 ("the ideal lap belongs to that lap"); V6 is
+re-defined (§9).
+The headline numbers get smaller (Porsche L9: "at least −0.76 s, expected −0.99 s" instead of
+−1.00 / −1.42), and the definition gains a clause: **new user question §12 Q10**.
+
+Not clamped in this round: braking and traction (ABS / TC active zones). T6 (capacity noise)
+measures what is left; if the phantom is still above 0.5 % of the lap, come back (§11).
+
+### R2. Q-B: speed and load terms only where the saturated set spans them
+
+Real sets are narrow too: Porsche front saturated at 21-44 m/s (p10-p90), rear 20-40; Ferrari
+front 22-50, rear 20-39 (median 25, n 264, fitted c 0.194). Above about 50 m/s every capacity
+in the solver is an extrapolation of `c`.
+- An axle's `k` and `c` are **fitted** only if its saturated set has ≥ 250 samples, a speed span
+  (p90 − p10) ≥ 15 m/s and a modelled-load span (p90 − p10 of the axle-mean lam) ≥ 0.15.
+- Otherwise **borrowed** from the other axle if that one is fitted (then only `mu1` is fitted,
+  as `lower_bound` already does), else **default** `k = 0.03, c = 0.10` (middle of what has been
+  fitted so far: k 0-0.08, c 0.05-0.19), confidence `low`. This also covers the builder's
+  uncovered case "both axles lower_bound".
+- Store per axle `terms: fitted | borrowed | default` and `v_sat: [p02, p98]` of the set.
+- A corner whose ideal minimum speed is above the binding axle's `v_sat[1] + 5 m/s` gets
+  `extrapolated: true` in the corners table (§5.6); the validator reports how much of the gain
+  sits in such corners (V13). Totals are not changed by the flag in this round.
+
+### R3. Q-C: keep the design order, drop F5 as a 0.1 s reference, make the knee continuous
+
+- The order stays: drag is part of what the tyres must supply, so `gxt` with drag is the right
+  gate. The spike's order was an accident of the dropped joint fit.
+- The knee jump is real, not a re-parametrisation: front capacity at three reference states moved
+  +3.9 / +4.5 / +4.8 % (1.232 → 1.280 at 30 m/s, lam 1.05; 1.359 → 1.420 at 45, 1.2; 1.527 → 1.601
+  at 60, 1.4) for a one-bin jump of the knee. So a knee-based level is good to about ±4 %:
+  **β = 0.03 at least for every knee-based (no-force) fit** (§5.4), and the knee rule becomes
+  continuous (§4.2) so that it cannot jump a whole bin on a flat plateau.
+- F5 was measured with the spike order and without the clamp; it is history. The step-3
+  reference is now the builder's own numbers after this fix round (table to be added below by
+  the builder, "R5"), checked against R1's clamped column within ±0.15 s as a sanity bound only
+  (the probe clamps with `min(vc, v_ref)`, the design with `vc = v_ref`, so the app may read a
+  little higher).
+
+### R4. Smaller items from the report
+- `vc` bisection: accepted, it is the more exact solver. §9 thresholds stay.
+- Demand grid (kb / kt read 1.5-2.5 % low): refine the strongest feasible braking and drive
+  demand by bisection between the last feasible grid value and the next (4 halvings, 0.0016 g).
+  T6 then expects kb, kt within 1 % of the true values.
+- `S > 0.05` guard in braking rule 3: accepted.
+- `load_reduction` choosing the topography from a possibly partial `laps[0]`: fix in step 4 as
+  the builder proposes, and run the npz round trip once on a real file there.
+- 180-260 km/h load bias of +3.0 %: noted, inside the clamp's reach where it matters; V1 reports
+  it per speed band from now on.
+
+### Builder's fix round (in this order)
+1. Knee rule and term identifiability (§4.2, R2, R3). Tests: T2 gains a case "axle saturated only
+   at 20-30 m/s gets the other axle's k, c" and a case "flat plateau: the knee moves by less than
+   0.3 deg when 5 % of the samples are removed at random".
+2. Demand bisection (R4).
+3. Saturation clamp (§5.4): `saturated_ref(state, fit) -> bool[]`, `line_of(..., sat_ref)`,
+   `solve` honours `line["v_clamp"]`, binding code `measured`. T4 gains: clamped points have
+   `v_I == v_ref`; a lap with no saturated point gives the old envelope.
+4. T6 as rewritten in §8; remove the xfail. Report the four numbers per seed.
+5. Re-run `build_check_step3.py` with the clamp on and add the table "R5" here.
+Step 4 of §8 (store, ingest, `load_reduction`) does not touch any of this and can run in
+parallel. Step 5 (`ideal_lap`, endpoint, report tool) consumes the clamp and the new fields:
+start it after item 3 above.
 
 ## 12. Questions for the user (most important first; my recommendation after each)
 
@@ -530,3 +690,24 @@ follows them; step 6 (UI) still waits for §9 to pass.
 9. **The acceptance test:** "never meaningfully slower than a real lap" is now true by
    construction, so it cannot catch a bad model. *Recommended:* accept the checks of §9 instead
    (level, structure, stability across laps and sessions).
+
+**Open, added 11/12/2026 (build round 1, §13 R1). Not yet answered; the build assumes the
+recommendation.**
+
+10. **Where your tyres were already at their limit, should the ideal lap simply equal your own
+    speed there?** The first build showed that the tyre model is only good to about ±6 %, so in
+    corners where you were at the limit it "found" time about half of the time, and that time
+    was noise (0.1-0.45 s per COTA lap directly, up to 0.9 s with the braking and exit around
+    it). *Recommended:* yes. The game tells us when a tyre is saturated (Grip Fraction, or the
+    slip angle past its peak); there, the ideal lap uses the speed you drove, and the model only
+    speaks where you were not at the limit. The numbers get smaller and more trustworthy:
+    Porsche COTA best lap "at least −0.76 s, expected −0.99 s" instead of −1.00 / −1.42 s;
+    Ferrari "at least −0.65 s, expected −0.85 s" instead of −1.01 / −1.43 s. Consequence to
+    know: the ideal lap is tied more closely to the lap it is built from (a lap where you slid
+    through a corner slowly is held to that speed in that corner), so the three best Porsche
+    laps give ideals within 0.5 % of each other instead of 0.15 %.
+    **Answered 11/12/2026: yes**, with the user's note: "this is multivariable. Even if speed was
+    the same, if loading of each axles or setup (spring rate, ARB, etc) differ then speed wouldn't
+    mean much. How to get around this? A good resource is also
+    https://docs.google.com/spreadsheets/d/e/2PACX-1vTN03UvJDm99byA6vQPZHKOCYVvfxLu1zkJAzdaKyROykzEKY2-Xl1rl1q5znZEf36m88dxMKsY2eaO/pubhtml,
+    where public laptimes are held." (Open, for the design author.)
