@@ -917,3 +917,7 @@ recommendation.**
     learned on, the ideal lap uses this session's own grip level per axle if it has enough
     at-the-limit cornering (5 s per axle), else it says "setup differs" with a wider range.
     *Recommended:* accept; nothing to do on your side.
+
+**Answered 11/12/2026:** Q11 yes, public times shown and implausible ideals flagged. Q12: the
+user's Fuji sessions were the layout **with the chicane** (recorded lap length about 4,527 m);
+map that length to the sheet's chicane layout. Q13: accept the per-session grip adjustment.
