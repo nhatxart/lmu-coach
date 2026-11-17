@@ -123,6 +123,26 @@ def livery_models(sessions_dir: Path, profiles_dir: Path) -> dict:
     return out
 
 
+def ideal_lap_pass(args, paths: list) -> int:
+    """Design §6.4: build the per-file reduction caches and fit every ideal-lap
+    group (track scope, else car scope) of the selected files, so the first
+    request in the UI is not a multi-minute load. Groups take their files from
+    the whole --sessions-dir; the selection only says which groups to fit.
+    Dry run: everything goes to a temporary directory that is removed."""
+    from app.ideal_store import IdealStore
+    tmp = None if args.save else tempfile.TemporaryDirectory()
+    root = args.profiles_dir / "ideal_lap" if args.save else Path(tmp.name) / "ideal_lap"
+    print(f"== ideal lap: {len(paths)} files, profiles in {root}")
+    store = IdealStore(root, [args.sessions_dir])
+    t0 = time.perf_counter()
+    store.fit_all(paths)
+    print(f"  {store.fits_done} group fits in {time.perf_counter() - t0:.0f} s")
+    if tmp is not None:
+        tmp.cleanup()
+        print("\nDRY RUN - nothing saved (add --save)")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--sessions-dir", type=Path, default=REPO / "data" / "sessions")
@@ -138,6 +158,9 @@ def main() -> int:
     ap.add_argument("--migrate", action="store_true",
                     help="merge the baselines of livery-named profiles into their model profile; "
                          "with --save the livery files move to the backup directory")
+    ap.add_argument("--ideal-lap", action="store_true",
+                    help="only the ideal-lap pass: reduce the files (npz caches) and fit every ideal-lap "
+                         "group into <profiles>/ideal_lap/ (dry run: a temporary directory)")
     ap.add_argument("--save", action="store_true", help="write profiles (default: dry run)")
     args = ap.parse_args()
 
@@ -160,6 +183,9 @@ def main() -> int:
     if not files:
         print("no matching files")
         return 1
+
+    if args.ideal_lap:
+        return ideal_lap_pass(args, [p for _, p in files])
 
     profiles: dict[str, gp.GripProfile] = {}
     new_cars = set()

@@ -271,7 +271,11 @@ def load_reduction(path: str | Path, cache_dir: str | Path | None = None) -> Fil
     pit = tt._read_pit_laps(path)
     layout = None
     if laps and "Pos Y" not in laps[0].channels:
-        got = tt.load_topography(laps[0].track_name, tt._lap_length_m(laps[0]))
+        # PREVIOUSLY laps[0] picked the layout, and the first lap is often a
+        # partial out-lap whose Lap Dist span matches no layout. Fix: a complete
+        # lap's length (design §13 R4).
+        whole = [l for l in laps if l.is_complete] or laps
+        got = tt.load_topography(whole[0].track_name, tt._lap_length_m(whole[0]))
         layout = got[1] if got else None
     red = reduce_laps(laps, path, pit, layout)
     if cp is not None:

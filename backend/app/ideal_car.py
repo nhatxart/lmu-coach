@@ -301,6 +301,38 @@ class GroupFit:
                         kb=self.kb, kt=self.kt, d0=self.d0, d2=self.d2, power_v=list(self.power_v),
                         power_g=list(self.power_g), corner_drag=self.corner_drag)
 
+    def axle(self, j: int) -> AxleFit:
+        return AxleFit(**self.info["axles"][AXLES[j]])
+
+    def to_dict(self) -> dict:
+        """JSON-able. Load models are under `load_models` keyed by file."""
+        d = {k: getattr(self, k) for k in ("car_class", "mu1", "k", "c", "s_front", "kb", "kt", "d0", "d2",
+                                           "power_v", "power_g", "corner_drag", "info")}
+        d["load_models"] = {f: lm.to_dict() for f, lm in self.load_models.items()}
+        return _jsonable(d)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "GroupFit":
+        kw = {k: v for k, v in d.items() if k != "load_models"}
+        return cls(load_models={f: LoadModel.from_dict(x) for f, x in d["load_models"].items()}, **kw)
+
+
+def _jsonable(x):
+    """numpy scalars / arrays to plain Python, non-finite floats to None."""
+    if isinstance(x, dict):
+        return {str(k): _jsonable(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_jsonable(v) for v in x]
+    if isinstance(x, np.ndarray):
+        return _jsonable(x.tolist())
+    if isinstance(x, (np.bool_, bool)):
+        return bool(x)
+    if isinstance(x, np.integer):
+        return int(x)
+    if isinstance(x, (np.floating, float)):
+        return float(x) if np.isfinite(x) else None
+    return x
+
 
 def _pool(reductions, load_models):
     """Concatenate the group's qualifying laps; lam is each file's MODELLED lam."""
@@ -536,23 +568,27 @@ def fit_group(reductions: list, car_class: str, v3_peaks: dict | None = None,
     if not reductions:
         raise InsufficientData("no qualifying laps")
     notes = []
+    # The saturation check comes first: a native LMU file has neither slip
+    # angles nor Grip Fraction (nor Susp Force), and "no slip angles" is the
+    # reason the user can act on (design §6.1).
+    if not all(r.has_slip or r.has_grip_fraction for r in reductions):
+        raise InsufficientData("no slip angles and no Grip Fraction")
 
-    # 4.1 load model per file; files with < 2 laps borrow the group's pooled one.
+    # 4.1 load model per file; files with < 2 laps borrow the group's pooled
+    # one. The pooled model ("__group__") is always kept: a reference file with
+    # no qualifying lap of its own uses it too.
     srcs = {r.load_source for r in reductions}
     if None in srcs:
         raise InsufficientData("no wheel load channel (Tire Load or Susp Force)")
     pooled_src = "load" if srcs == {"load"} else "susp"
-    load_models, pooled = {}, None
+    pooled = fit_load_model([s for x in reductions for s in x.laps], pooled_src, scope="group")
+    load_models = {"__group__": pooled}
     for r in reductions:
         if len(r.laps) >= 2:
             load_models[r.file] = fit_load_model(r.laps, r.load_source)
         else:
-            if pooled is None:
-                pooled = fit_load_model([s for x in reductions for s in x.laps], pooled_src, scope="group")
             load_models[r.file] = pooled
             notes.append(f"{r.file}: load model from the group ({len(r.laps)} lap)")
-    if pooled is not None:
-        load_models["__group__"] = pooled
 
     d = _pool(reductions, load_models)
     has_force = all(r.has_forces for r in reductions)
