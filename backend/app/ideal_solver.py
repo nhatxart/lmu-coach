@@ -24,13 +24,79 @@ GZ_MIN, GZ_MAX = -0.9, 1.5
 VC_BISECT = 12                              # 0.5 m/s / 2^12: vc exact to ~1e-4 m/s
 GX_STEP = 0.025                             # the demand grids' step (g)
 DEMAND_BISECT = 4                           # 0.025 g / 2^4 = 0.0016 g
-BINDING = ("front", "rear", "brake", "traction", "power")
+BINDING = ("front", "rear", "brake", "traction", "power", "measured")
+SAT_MIN_RUN = 10                            # samples (0.2 s at 50 Hz): shorter saturated runs are dropped
+CONFLICT_MARGIN = 1.0                       # m/s, §14 R7
 
 
-def line_of(raw: dict, ds: float = DS) -> dict:
+def _drop_short_runs(m: np.ndarray, n_min: int = SAT_MIN_RUN) -> np.ndarray:
+    m = np.asarray(m, bool).copy()
+    edges = np.flatnonzero(np.diff(np.concatenate([[0], m.astype(int), [0]])))
+    for a, b in zip(edges[0::2], edges[1::2]):
+        if b - a < n_min:
+            m[a:b] = False
+    return m
+
+
+def saturated_ref(state, car, axles, per_axle: bool = False):
+    """Design §5.4 (round 1): the reference lap's samples where its own tyres were
+    measured saturated in a lateral-dominant state:
+      |gy| > 0.45 p99(|gy|) of the lap, v > 15, |gxt| < 0.5 |gy|, and an axle
+      saturated: mean Grip Fraction < 0.3 when recorded, else knee_j <= mean
+      |slip| <= knee_j + 4 deg (the fit's own knee). Runs under 0.2 s dropped.
+    `axles`: [AxleFit front, rear]. per_axle: also the (2, n) mask per axle."""
+    from .ideal_car import GF_SATURATED, KNEE_SPAN_DEG, FRONT, REAR
+    gy = np.abs(state.gy)
+    gxt = state.gx + state.grade + car.drag(state.v)
+    base = (gy > 0.45 * np.percentile(gy, 99)) & (state.v > 15) & (np.abs(gxt) < 0.5 * gy)
+    ax = np.zeros((2, len(gy)), bool)
+    for j, idx in enumerate((FRONT, REAR)):
+        idx = list(idx)
+        if state.gf is not None:
+            m = state.gf[idx].mean(0) < GF_SATURATED
+        elif state.slip is not None and axles[j].knee_deg is not None:
+            sl = state.slip[idx].mean(0)
+            m = (sl >= axles[j].knee_deg) & (sl <= axles[j].knee_deg + KNEE_SPAN_DEG)
+        else:
+            continue
+        ax[j] = _drop_short_runs(base & m)
+    sat = _drop_short_runs(ax.any(0))
+    ax &= sat[None, :]
+    return (sat, ax) if per_axle else sat
+
+
+def _to_grid(s: np.ndarray, m: np.ndarray, sg: np.ndarray, ds: float) -> np.ndarray:
+    """A grid point is set when more than half of its samples (the samples
+    nearest to it) are; a point without samples takes its nearest sample."""
+    k = np.clip(np.rint(np.asarray(s) / ds).astype(int), 0, len(sg) - 1)
+    n = np.bincount(k, minlength=len(sg))
+    on = np.bincount(k, weights=np.asarray(m, float), minlength=len(sg))
+    out = on > 0.5 * n
+    empty = n == 0
+    if empty.any():
+        out[empty] = np.interp(sg[empty], s, np.asarray(m, float)) > 0.5
+    return out
+
+
+def apply_clamp(ln: dict, sat_grid: np.ndarray, axle_grid: np.ndarray | None = None) -> dict:
+    """Design §5.4 saturation clamp on a line: at the grid points where the
+    reference lap was measured saturated, the corner limit is the driven speed
+    (`v_clamp`; NaN elsewhere). `sat_axles` (2 x n) says which axle was."""
+    sat = np.asarray(sat_grid, bool)
+    ln["sat_ref"] = sat
+    ln["v_clamp"] = np.where(sat, ln["v"], np.nan)
+    ln["sat_axles"] = (np.asarray(axle_grid, bool) if axle_grid is not None
+                       else np.zeros((2, len(sat)), bool))
+    return ln
+
+
+def line_of(raw: dict, ds: float = DS, sat_ref: np.ndarray | None = None,
+            sat_axles: np.ndarray | None = None) -> dict:
     """The reference lap's line on a ds grid of its own distance (il_core.line_of):
     path curvature ks = g gy / v^2 (0.3 s), vertical curvature kv = g gz / v^2
-    (0.5 s), grade (0.5 s), the driven speed v and pedals. `raw`: ideal_state.lap_raw."""
+    (0.5 s), grade (0.5 s), the driven speed v and pedals. `raw`: ideal_state.lap_raw.
+    `sat_ref` / `sat_axles`: saturated_ref() of the same lap's state (per 50 Hz
+    sample); put on the grid and applied as the saturation clamp."""
     v = smooth(raw["v"], SMOOTH_N)
     s = raw["s"]
     ks = smooth(G * raw["gy"] / np.maximum(raw["v"], 8) ** 2, 15)
@@ -45,6 +111,12 @@ def line_of(raw: dict, ds: float = DS) -> dict:
                ds=ds, time=float(raw["time"]))
     if raw.get("lapdist") is not None:
         out["lap_dist"] = f(np.asarray(raw["lapdist"], float))
+    if sat_ref is not None:
+        ax = None
+        if sat_axles is not None:
+            ax = np.vstack([_to_grid(s, sat_axles[j], sg, ds) for j in (0, 1)])
+        sat = _to_grid(s, sat_ref, sg, ds)
+        apply_clamp(out, sat, None if ax is None else ax & sat[None, :])
     return out
 
 
@@ -113,13 +185,16 @@ def corner_limit(car, ln: dict, mode: str = "balanced") -> tuple[np.ndarray, np.
     return vc, axle
 
 
-def solve(car, ln: dict, mode: str = "balanced", refine: bool = True) -> dict:
+def solve(car, ln: dict, mode: str = "balanced", refine: bool = True, clamp: bool = True) -> dict:
     """Quasi-steady lap on the fixed line (design §5.2 / §5.3).
     mode 'balanced': each axle carries its share (|gy| <= Af and <= Ar).
     mode 'ceiling': |gy| <= s_f Af + s_r Ar (both axles at the limit at once).
     Returns {v, vc, binding, gxt, time}: v and vc in m/s per grid point, the
-    binding code per point (front | rear | brake | traction | power), the tyre
-    longitudinal demand gxt of the solved profile (g) and the lap time.
+    binding code per point (front | rear | brake | traction | power | measured),
+    the tyre longitudinal demand gxt of the solved profile (g) and the lap time.
+    `clamp`: in balanced mode, a line with `v_clamp` (apply_clamp) has its corner
+    limit replaced by the driven speed at the clamped points (code `measured`,
+    §5.4); the ceiling is never clamped. clamp=False gives the plain model.
     `refine`: TEST ONLY (False = the spike's 0.5 m/s corner limit and 0.025 g
     demand grid, for the parity check); the app always refines."""
     ks, kv, gr, ds = ln["ks"], ln["kv"], ln["grade"], ln["ds"]
@@ -131,8 +206,15 @@ def solve(car, ln: dict, mode: str = "balanced", refine: bool = True) -> dict:
         first_bad = np.argmax(~ok, axis=1)
         vc = np.where(ok.all(1), VG[-1], VG[np.maximum(first_bad - 1, 0)])
         axle = np.where(ok.all(1), -1, 0)
-    vs = vc.copy()
     code = np.where(axle == 0, 0, np.where(axle == 1, 1, 4)).astype(int)
+    if clamp and mode == "balanced" and ln.get("v_clamp") is not None:
+        # The measurement replaces the model where there is one: at a point the
+        # lap's own tyres were saturated, v_M / v_ref = sqrt(A / |gy|) is the
+        # model's own residual (§13 R1). Up or down, and not scaled by the level.
+        m = np.asarray(ln["sat_ref"], bool)
+        vc = np.where(m, ln["v_clamp"], vc)
+        code = np.where(m, 5, code)
+    vs = vc.copy()
 
     def edge(v, gy, gz, t, step):
         """Bisect from the last feasible grid demand t towards t + step.
@@ -200,10 +282,12 @@ def envelope(v_model: np.ndarray, v_ref: np.ndarray, ds: float) -> dict:
 
 
 def levels(car, ln: dict, beta: float, mode: str = "balanced") -> dict:
-    """Design §5.4: solve at grip level 1-beta, 1, 1+beta and take the envelope
-    of each with the driven speed. gain_* = T_ref_grid - T_I (positive = faster).
-    Also the plain model time at level 1 (`model_only`) and the share of the lap
-    where the model is more than 2 km/h under the driven speed."""
+    """Design §5.4: solve at grip level 1-beta, 1, 1+beta (clamped where the line
+    carries the saturation clamp) and take the envelope of each with the driven
+    speed. gain_* = T_ref_grid - T_I (positive = faster).
+    Also, unclamped at level 1: the plain model time (`model_only`), the share of
+    the lap where it is more than 2 km/h under the driven speed, and its envelope
+    gain (`gain_unclamped`, V13); and `clamped_share`."""
     ds, v_ref = ln["ds"], ln["v"]
     t_ref = float(np.sum(ds / v_ref))
     out = {"t_ref_grid": t_ref}
@@ -213,9 +297,57 @@ def levels(car, ln: dict, beta: float, mode: str = "balanced") -> dict:
         out[name] = dict(level=lev, solve=sol, env=env, gain=t_ref - env["time"],
                          model_gain=t_ref - sol["time"])
     out["gain_min"], out["gain"], out["gain_max"] = out["min"]["gain"], out["exp"]["gain"], out["max"]["gain"]
-    sol1 = out["exp"]["solve"]
-    out["model_only_time"] = sol1["time"]
-    out["under_driven_share"] = float((sol1["v"] < v_ref - 2 / 3.6).mean())
+    clamped = mode == "balanced" and ln.get("v_clamp") is not None and bool(np.any(ln["sat_ref"]))
+    plain = solve(car, ln, mode, clamp=False) if clamped else out["exp"]["solve"]
+    out["plain"] = plain
+    out["model_only_time"] = plain["time"]
+    out["under_driven_share"] = float((plain["v"] < v_ref - 2 / 3.6).mean())
+    out["gain_unclamped"] = t_ref - envelope(plain["v"], v_ref, ds)["time"]
+    out["clamped_share"] = float(np.mean(ln["sat_ref"])) if ln.get("sat_ref") is not None else 0.0
+    return out
+
+
+def axle_limit(car, ln: dict, j: int, iters: int = 20) -> np.ndarray:
+    """Per grid point, the highest speed at which axle j alone holds the
+    corner (|gy| <= A_j for some tyre demand of G_TRY), bisected in [6, 115]."""
+    ks, kv = ln["ks"], ln["kv"]
+
+    def ok(v):
+        gy = ks * v * v / G
+        gz = np.clip(kv * v * v / G, GZ_MIN, GZ_MAX)
+        good = np.zeros(len(ks), bool)
+        for g_try in G_TRY:
+            A = car.axles(v, g_try - car.drag(v), gy, gz)[j]
+            good |= np.abs(gy) <= A
+        return good
+
+    lo, hi = np.full(len(ks), VG[0]), np.full(len(ks), VG[-1])
+    top = ok(hi)
+    for _ in range(iters):
+        mid = 0.5 * (lo + hi)
+        g = ok(mid)
+        lo, hi = np.where(g, mid, lo), np.where(g, hi, mid)
+    return np.where(top, VG[-1], lo)
+
+
+def clamp_conflict(car, ln: dict) -> dict:
+    """§14 R7 diagnostic: at the clamped points where axle j was NOT measured
+    saturated, the model's own limit of axle j should be >= v_ref (the lap
+    proves it); a point where it is below v_ref - 1 m/s is a conflict, the
+    signature of a pooled level that does not fit this file's setup.
+    {front|rear: {n, conflicts, share (None when n = 0)}}."""
+    out = {}
+    sat = np.asarray(ln.get("sat_ref") if ln.get("sat_ref") is not None else np.zeros(len(ln["ks"]), bool))
+    axes = ln.get("sat_axles") if ln.get("sat_axles") is not None else np.zeros((2, len(sat)), bool)
+    for j, name in enumerate(("front", "rear")):
+        m = sat & ~np.asarray(axes[j], bool)
+        if not m.any():
+            out[name] = {"n": 0, "conflicts": 0, "share": None}
+            continue
+        sub = {k: ln[k][m] for k in ("ks", "kv")}
+        lim = axle_limit(car, sub, j)
+        bad = lim < ln["v"][m] - CONFLICT_MARGIN
+        out[name] = {"n": int(m.sum()), "conflicts": int(bad.sum()), "share": float(bad.mean())}
     return out
 
 
