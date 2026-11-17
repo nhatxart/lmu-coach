@@ -10,14 +10,16 @@ The first run downloads the packages, and later runs use uv's cache.
 | `VALIDATE_TIRE_MODEL.ps1` | nothing | Checks how accurate one car's tyre model is and prints a scorecard row |
 | `LIST_LAPS.ps1` | nothing | Shows each file's laps as the backend sees them |
 | `DETECT_TRACK_CORNERS.ps1` | corner maps (only with `--save`) | Finds each track's corners from curvature and compares them with the official turn count |
-| `BUILD_TRACK_REFERENCE.ps1` | `data/track_reference/*.json`, `*.topography.json` | Builds each track's reference (corners, complexes, names) from OpenStreetMap + LMU names + your laps; `--fetch` downloads OSM once for a new track. Also builds the track's topography (height, banking, kerb/grass/gravel paint for the 3D chase view) from the recordings; `--topography-only` does just that, `--no-topography` skips it. Height needs recordings made with the recorder from 10/25/2026 on (pose channels); older ones give paint only |
+| `BUILD_TRACK_REFERENCE.ps1` | `data/track_reference/*.json`, `*.topography.json` | Builds each track's reference (corners, complexes, names) from OpenStreetMap + LMU names + your laps; `--fetch` downloads OSM once for a new track. Also builds the track's topography (height, banking, kerb/grass/gravel paint for the 3D chase view) from the recordings; `--topography-only` does just that, `--no-topography` skips it. Height needs recordings made with the recorder from 10/25/2026 on (pose channels); older ones give paint only. Kept laps in `--reference` (default `data/reference_laps`; `--reference=` turns it off) feed the topography too, once: a kept lap whose original is still in `--sessions` is skipped. Other files in that folder and the corner build are not affected |
 | `CHECK_TIRE_FORCES.ps1` | nothing | Checks whether a recording has usable tyre-force channels |
 | `COMPARE_LOAD_SOURCES.ps1` | nothing | Pilot: does Susp Force give the same grip numbers as the game's Tire Load? (needs a car that has both) |
 | `MF_EXPERIMENT.ps1` | nothing | Tyre model v3 experiment: which state factors (load, temp, pressure, wear, camber) improve held-out prediction of the game's true mu? |
 | `CLASS_COLLAPSE.ps1` | nothing | Tyre model v3 experiment: how much should a car lean on the pooled curve of the other cars of its class (works for LMGT3, which has no tyre forces)? |
 | `EXPORT_CAR_MODELS.ps1` | `docs/car_models/*.stl` | Writes the chase view's GT3, Hypercar, LMP2 and LMP3 models as STL files (1:1 and 1:43, millimetres) to check in a 3D-printer slicer. Needs Node.js, not uv |
 
-None of these tools ever modify `data/sessions/*.duckdb`. They open it read-only.
+None of these tools ever modify `data/sessions/*.duckdb` or the kept laps in `data/reference_laps`. They open them read-only.
+
+An empty value has to be written as `--reference-dir=` (or `--reference=`): Windows PowerShell 5.1 drops a bare `""` argument before Python sees it.
 
 ---
 
@@ -28,7 +30,9 @@ This makes the same profile update that pressing **Analyze** makes, without the 
 - **Tyre model:** every lap of every file goes in, including the unfinished last lap. Laps slower than 115 % of the file's fastest real lap are skipped (out-laps and in-laps). The profile remembers `<file>#<lap>`, so a re-run never adds a lap twice.
 - **ABS / TC / slip baselines:** these take real laps only. A real lap is complete and at least 85 % of the file's median lap time. That rules out the unfinished last lap and a mid-lap join, which would skew peak G and slip. The baseline step has no dedup of its own, so finished files are recorded in `data/grip_profiles/.ingest_ledger.json` and skipped on the next run.
 
-The tool picks files by the UTC stamp in the file name (`...-2026-10-18T04_57_04Z.duckdb`).
+- **Kept laps:** the kept-laps folder (`--reference-dir`, default `data/reference_laps`) is read too, so cleaning out `data/sessions` after keeping laps loses nothing. A kept lap counts once. Its tyre data goes in under its original recording and lap number, so it is never added twice, with or without the original. Its baselines are skipped (`baselines: kept lap, skipped (...)`) while the original is in the sessions folder or in the ledger. Once the original is gone and was never ingested, the kept lap counts. `--reference-dir=` (empty) turns this off.
+
+The tool picks files by the UTC stamp in the file name (`...-2026-10-18T04_57_04Z.duckdb`). A kept lap's name carries its original's stamp (`... L9 1m42.983-2026-10-19T23_18_37Z.duckdb`), so `--month`, `--since` and `--until` pick it with its original.
 
 ```powershell
 cd backend\tools

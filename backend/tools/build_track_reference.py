@@ -24,6 +24,8 @@ data/track_reference/<slug>.topography.json (ground height, banking, kerb/grass/
 2 m of lap distance, per layout). Height needs recordings that carry pose channels (Pos Y,
 orientation, Ride Height; recorder from 10/25/2026 on); older recordings give paint only.
 --topography-only rebuilds just that file and leaves <slug>.json untouched.
+Kept laps in --reference (default data/reference_laps, "" = off) feed the topography too, each
+once: a kept lap whose original is still in --sessions is skipped (the original has it).
 """
 from __future__ import annotations
 
@@ -186,8 +188,15 @@ def main() -> int:
                     help="only (re)build <slug>.topography.json from the recordings; skip OSM/corner work")
     ap.add_argument("--no-topography", action="store_true", help="skip the topography build")
     ap.add_argument("--sessions", default=str(REPO / "data" / "sessions"))
+    ap.add_argument("--reference", default=str(REPO / "data" / "reference_laps"),
+                    help="the kept-laps folder (/data/reference_laps): its kept laps join the "
+                         "topography input, once (not when the original is in --sessions); \"\" = off")
     a = ap.parse_args()
     recs = recordings_by_slug(a.sessions)
+    # Kept laps (spec 4.3): a kept file's name starts with the same _safe(track)
+    # as a recording, so recordings_by_slug groups it by track too. A missing
+    # folder globs to nothing.
+    kept = recordings_by_slug(a.reference) if a.reference else {}
     entries = [e for e in CATALOG if not a.track or e["slug"] == a.track]
     if not entries:
         print(f"unknown track '{a.track}'. Known: {', '.join(e['slug'] for e in CATALOG)}")
@@ -198,9 +207,15 @@ def main() -> int:
                 print(build_one(e, recs.get(e["slug"], []), a.fetch, a.refetch, a.details), flush=True)
             except Exception as ex:                   # one bad track must not stop the rest
                 print(f"{e['slug']:12s} FAILED: {type(ex).__name__}: {ex}", flush=True)
-        if not a.no_topography and recs.get(e["slug"]):
+        # PREVIOUSLY only the sessions folder fed the topography, so a cleanout
+        # of it lost the heights/paint its kept laps carry. Fix: kept laps join,
+        # each once (tt.topography_files skips one whose original is here).
+        # Corners (build_one) still read the sessions folder only.
+        topo_files = (tt.topography_files(recs.get(e["slug"], []), kept.get(e["slug"], []))
+                      if not a.no_topography else [])
+        if topo_files:
             try:
-                print(build_topography_for(e, recs[e["slug"]]), flush=True)
+                print(build_topography_for(e, topo_files), flush=True)
             except Exception as ex:
                 print(f"topography: {e['slug']} FAILED: {type(ex).__name__}: {ex}", flush=True)
     return 0
