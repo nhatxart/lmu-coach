@@ -1,6 +1,6 @@
 """Diagnose the T6 perfect-driver result (synthetic only, no recordings).
 Which part of the refit makes the gain: noise in gy, or the fit itself?
-usage: python build_check_t6_diag.py [noise ...]   (env GF_USAGE=lateral: Grip Fraction from lateral usage only)"""
+usage: python build_check_t6_diag.py [noise ...]   (noise = log sd of the place and of the lap capacity field, round 1)"""
 import sys, os
 import numpy as np
 from build_check_common import BACKEND
@@ -13,7 +13,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 car = SI.true_car()
 for noise in [float(x) for x in sys.argv[1:]] or [0.0, 0.05]:
     for seed in (2026, 7, 99):
-        raws, truth = SI.perfect_laps(car, SI.line(), 6, noise, np.random.default_rng(seed), gf_usage=os.environ.get("GF_USAGE", "combined"))
+        raws, sols, _ = SI.perfect_laps(car, SI.line(), 6, np.random.default_rng(seed), place_sd=noise, lap_sd=noise); truth = sols[3]
         red = FileReduction(file="s", mtime=0, size=0, meta={}, track="", car_model="", car_class="LMGT3",
                             game_version="", load_source="susp", grade_source="", laps=[lap_state(r) for r in raws])
         g = C.fit_group([red], "LMGT3")

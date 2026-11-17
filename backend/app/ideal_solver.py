@@ -120,10 +120,11 @@ def line_of(raw: dict, ds: float = DS, sat_ref: np.ndarray | None = None,
     return out
 
 
-def _lat_ok(car, mode, v, gxt, gy, gz):
+def _lat_ok(car, mode, v, gxt, gy, gz, sc=1.0):
     """(feasible lateral, Af, Ar) for tyre demand gxt at this state; lam at the
     kinematic gx = gxt - drag (il_core: grade is not taken out here)."""
     Af, Ar = car.axles(v, gxt - car.drag(v), gy, gz)
+    Af, Ar = Af * sc, Ar * sc
     ay = np.abs(gy)
     if mode == "ceiling":
         tot = car.sf * Af + car.sr * Ar
@@ -131,22 +132,31 @@ def _lat_ok(car, mode, v, gxt, gy, gz):
     return (ay <= Af) & (ay <= Ar), Af, Ar
 
 
-def _feasible(car, mode, v, gxt, gy, gz):
-    """Can the tyres supply gxt (drive +, brake -) while cornering at gy?"""
-    ok, Af, Ar = _lat_ok(car, mode, v, gxt, gy, gz)
+def _feasible(car, mode, v, gxt, gy, gz, sc=1.0):
+    """Can the tyres supply gxt (drive +, brake -) while cornering at gy?
+    `sc`: capacity scale per point (the line's `cap_scale`, synthetic tests only)."""
+    ok, Af, Ar = _lat_ok(car, mode, v, gxt, gy, gz, sc)
     rf = np.sqrt(np.maximum(Af ** 2 - gy * gy, 0))
     rr = np.sqrt(np.maximum(Ar ** 2 - gy * gy, 0))
     return ok & np.where(gxt >= 0, gxt <= car.kt * car.sr * rr + 1e-9,
                          -gxt <= car.kb * (car.sf * rf + car.sr * rr) + 1e-9)
 
 
-def _any_feasible(car, mode, v, ks, kv):
+def _any_feasible(car, mode, v, ks, kv, sc=1.0):
     gy = ks * v * v / G
     gz = np.clip(kv * v * v / G, GZ_MIN, GZ_MAX)
     ok = np.zeros(np.broadcast(v, ks).shape, bool)
     for g_try in G_TRY:
-        ok |= _feasible(car, mode, v, g_try, gy, gz)
+        ok |= _feasible(car, mode, v, g_try, gy, gz, sc)
     return ok
+
+
+def _cap_scale(ln: dict) -> np.ndarray:
+    """Per-point multiplier on both axles' capacity. Only the synthetic
+    perfect-driver test sets it (design §8 T6: the true limit moves with place
+    and lap); a real line has none (1.0)."""
+    sc = ln.get("cap_scale")
+    return np.ones(len(ln["ks"])) if sc is None else np.asarray(sc, float)
 
 
 def corner_limit(car, ln: dict, mode: str = "balanced") -> tuple[np.ndarray, np.ndarray]:
@@ -156,7 +166,8 @@ def corner_limit(car, ln: dict, mode: str = "balanced") -> tuple[np.ndarray, np.
     up to 0.5 m/s low (1.3 % on a 38 m/s corner). Fix: bisect between the last
     feasible and the first infeasible grid speed."""
     ks, kv = ln["ks"], ln["kv"]
-    ok = _any_feasible(car, mode, VG[None, :], ks[:, None], kv[:, None])
+    sc = _cap_scale(ln)
+    ok = _any_feasible(car, mode, VG[None, :], ks[:, None], kv[:, None], sc[:, None])
     allok = ok.all(1)
     first_bad = np.argmax(~ok, axis=1)
     vc = np.where(allok, VG[-1], VG[np.maximum(first_bad - 1, 0)])
@@ -164,7 +175,7 @@ def corner_limit(car, ln: dict, mode: str = "balanced") -> tuple[np.ndarray, np.
     act = ~allok & (first_bad > 0)
     for _ in range(VC_BISECT):
         mid = 0.5 * (lo + hi)
-        good = _any_feasible(car, mode, mid, ks, kv)
+        good = _any_feasible(car, mode, mid, ks, kv, sc)
         lo = np.where(act & good, mid, lo)
         hi = np.where(act & ~good, mid, hi)
     vc = np.where(act, lo, vc)
@@ -176,8 +187,8 @@ def corner_limit(car, ln: dict, mode: str = "balanced") -> tuple[np.ndarray, np.
     best, axle = np.full(len(ks), -np.inf), np.zeros(len(ks), int)
     for g_try in G_TRY:
         Af, Ar = car.axles(vc, g_try - car.drag(vc), gy, gz)
-        mf, mr = Af - np.abs(gy), Ar - np.abs(gy)
-        room = np.where(_feasible(car, mode, vc, g_try, gy, gz), np.minimum(mf, mr), -np.inf)
+        mf, mr = Af * sc - np.abs(gy), Ar * sc - np.abs(gy)
+        room = np.where(_feasible(car, mode, vc, g_try, gy, gz, sc), np.minimum(mf, mr), -np.inf)
         take = room > best
         best = np.where(take, room, best)
         axle = np.where(take, np.where(mf <= mr, 0, 1), axle)
@@ -202,7 +213,7 @@ def solve(car, ln: dict, mode: str = "balanced", refine: bool = True, clamp: boo
     if refine:
         vc, axle = corner_limit(car, ln, mode)
     else:
-        ok = _any_feasible(car, mode, VG[None, :], ks[:, None], kv[:, None])
+        ok = _any_feasible(car, mode, VG[None, :], ks[:, None], kv[:, None], _cap_scale(ln)[:, None])
         first_bad = np.argmax(~ok, axis=1)
         vc = np.where(ok.all(1), VG[-1], VG[np.maximum(first_bad - 1, 0)])
         axle = np.where(ok.all(1), -1, 0)
@@ -215,8 +226,9 @@ def solve(car, ln: dict, mode: str = "balanced", refine: bool = True, clamp: boo
         vc = np.where(m, ln["v_clamp"], vc)
         code = np.where(m, 5, code)
     vs = vc.copy()
+    scs = _cap_scale(ln)
 
-    def edge(v, gy, gz, t, step):
+    def edge(v, gy, gz, t, step, sc):
         """Bisect from the last feasible grid demand t towards t + step.
         PREVIOUSLY the solver used the grid value itself: up to 0.025 g (1-2 %)
         less than the fitted kb / kt, so a car refitted from the solver's own
@@ -224,7 +236,7 @@ def solve(car, ln: dict, mode: str = "balanced", refine: bool = True, clamp: boo
         lo, hi = t, t + step
         for _ in range(DEMAND_BISECT):
             mid = 0.5 * (lo + hi)
-            if _feasible(car, mode, v, mid, gy, gz):
+            if _feasible(car, mode, v, mid, gy, gz, sc):
                 lo = mid
             else:
                 hi = mid
@@ -233,22 +245,22 @@ def solve(car, ln: dict, mode: str = "balanced", refine: bool = True, clamp: boo
     def accel(i, v):
         gy = ks[i] * v * v / G
         gz = min(max(kv[i] * v * v / G, GZ_MIN), GZ_MAX)
-        ok = _feasible(car, mode, v, GX_ALL, gy, gz)
+        ok = _feasible(car, mode, v, GX_ALL, gy, gz, scs[i])
         t = 0.0
         if ok.any():
             k = int(np.flatnonzero(ok)[-1])
-            t = GX_ALL[k] if (k == len(GX_ALL) - 1 or not refine) else edge(v, gy, gz, GX_ALL[k], GX_STEP)
+            t = GX_ALL[k] if (k == len(GX_ALL) - 1 or not refine) else edge(v, gy, gz, GX_ALL[k], GX_STEP, scs[i])
         p, g = car.power(v, gy) - gr[i], t - car.drag(v) - gr[i]
         return (p, 4) if p <= g else (g, 3)
 
     def brake(i, v):
         gy = ks[i] * v * v / G
         gz = min(max(kv[i] * v * v / G, GZ_MIN), GZ_MAX)
-        ok = _feasible(car, mode, v, GXT_DN, gy, gz)
+        ok = _feasible(car, mode, v, GXT_DN, gy, gz, scs[i])
         t = 0.0
         if ok.any():
             k = int(np.flatnonzero(ok)[-1])
-            t = GXT_DN[k] if (k == len(GXT_DN) - 1 or not refine) else edge(v, gy, gz, GXT_DN[k], -GX_STEP)
+            t = GXT_DN[k] if (k == len(GXT_DN) - 1 or not refine) else edge(v, gy, gz, GXT_DN[k], -GX_STEP, scs[i])
         return t - car.drag(v) - gr[i]            # kinematic gx (negative)
 
     # Values only ever decrease, so the last bound that lowered a point is the

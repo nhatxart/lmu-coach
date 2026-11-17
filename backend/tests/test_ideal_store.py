@@ -17,7 +17,7 @@ MODEL = "Synthetic GT"
 
 @pytest.fixture(scope="module")
 def states():
-    raws, _ = perfect_laps(true_car(), line(), n_laps=8, gy_noise=0.0, rng=np.random.default_rng(4))
+    raws, _, _ = perfect_laps(true_car(), line(), n_laps=8, rng=np.random.default_rng(4), place_sd=0.0, lap_sd=0.0)
     return [lap_state(r) for r in raws]
 
 
