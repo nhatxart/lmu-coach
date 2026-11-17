@@ -493,6 +493,58 @@ def fit_axles(d: dict, gxt: np.ndarray, slip: np.ndarray | None, gf: np.ndarray 
     return fits
 
 
+TRIM_MIN_N, TRIM_HALF_N, TRIM_CAP = 250, 500, 0.08     # design §14 R8
+
+
+def axle_trim(car: CarModel, axles: list, red) -> tuple[CarModel, list]:
+    """Design §14 R8: move the group's grip level per axle to the reference
+    file's own saturated samples. t_j = median log(|gy| / A_j) over the file's
+    saturated set of axle j (group mu1, k, c; the file's own load model in
+    `car`), applied as mu1_j exp(w_j t_j), w_j = n_j / (n_j + 500), only when
+    n_j >= 250 (else `none`); |t_j| capped at 0.08 (`capped`: a different car or
+    a broken fit). The level only: k, c, kb, kt, drag and engine stay the
+    group's (braking and traction then use the trimmed A_j).
+    WHY: a setup change (camber, ride height) moved an axle's level by 3-5 %
+    between files of one car and track, often the two axles in opposite
+    directions, while the same setup agreed within 1 % across sessions.
+    Returns (trimmed car, [{trim, t, w, n} front, rear])."""
+    ratios = [[], []]
+    for s in red.laps:
+        gxt = s.gx + s.grade + car.drag(s.v)
+        ay = np.abs(s.gy)
+        base = (np.abs(gxt) < 0.2) & (ay > 0.45 * np.percentile(ay, 99)) & (s.v > 15) & (np.abs(s.yawacc) < 0.4)
+        A = car.axles(s.v, s.gx, s.gy, s.gz)
+        for j, idx in enumerate((FRONT, REAR)):
+            idx = list(idx)
+            ax = axles[j]
+            if ax.saturation == "grip_fraction" and s.gf is not None:
+                sat = s.gf[idx].mean(0) < GF_SATURATED
+            elif ax.knee_deg is not None and s.slip is not None:
+                sl = s.slip[idx].mean(0)
+                sat = (sl >= ax.knee_deg) & (sl <= ax.knee_deg + KNEE_SPAN_DEG)
+            else:
+                continue
+            m = base & sat
+            ratios[j].append(np.log(ay[m] / A[j][m]))
+    mu1, out = list(car.mu1), []
+    for j in (0, 1):
+        x = np.concatenate(ratios[j]) if ratios[j] else np.zeros(0)
+        n = int(len(x))
+        if n < TRIM_MIN_N:
+            out.append({"trim": "none", "t": None, "w": 0.0, "n": n})
+            continue
+        t = float(np.median(x))
+        how = "applied"
+        if abs(t) > TRIM_CAP:
+            t, how = float(np.sign(t) * TRIM_CAP), "capped"
+        w = n / (n + TRIM_HALF_N)
+        mu1[j] = mu1[j] * float(np.exp(w * t))
+        out.append({"trim": how, "t": t, "w": w, "n": n})
+    d = car.to_dict()
+    d["mu1"] = mu1
+    return CarModel.from_dict(d), out
+
+
 def fit_braking(d: dict, gxt: np.ndarray, Af, Ar, s_front: float, gf: np.ndarray | None,
                 q: float = 0.5) -> dict:
     """Design §4.4: |gxt| <= kb (s_f sqrt(Af^2-gy^2) + s_r sqrt(Ar^2-gy^2)).

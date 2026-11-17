@@ -27,7 +27,7 @@ SMOOTH_N = 10           # 0.2 s at 50 Hz: every signal used in a fit
 GRADE_N = 25            # 0.5 s: height and speed before the grade is taken
 QUALIFY_WITHIN = 1.05   # qualifying lap: lap time <= 1.05 x the file's best
 MAX_GROUP_LAPS = 40     # per fit group, the most recent (cost)
-REDUCTION_VERSION = 1
+REDUCTION_VERSION = 2                # 2: + measured setup (design §14 R6)
 WHEELS = ("FL", "FR", "RL", "RR")
 
 # Per-wheel arrays a State may carry (4 x n each, None when the file lacks them).
@@ -172,6 +172,7 @@ class FileReduction:
     load_source: str | None          # 'load' | 'susp' | None (no load channel)
     grade_source: str
     laps: list[State] = field(default_factory=list)
+    setup: dict | None = None        # measure_setup(): what the setup does (design §14 R6)
 
     @property
     def has_forces(self) -> bool:
@@ -234,7 +235,7 @@ def _save_npz(red: FileReduction, p: Path) -> None:
             if isinstance(val, np.ndarray):
                 arrays[f"{i}|{f.name}"] = val
     head = {k: getattr(red, k) for k in ("file", "mtime", "size", "meta", "track", "car_model", "car_class",
-                                         "game_version", "load_source", "grade_source")}
+                                         "game_version", "load_source", "grade_source", "setup")}
     head["laps"] = [[s.lap_number, s.lap_time_s] for s in red.laps]
     tmp = p.with_suffix(".tmp.npz")
     np.savez_compressed(tmp, __head__=np.array(json.dumps(head)), **arrays)
@@ -251,6 +252,93 @@ def _load_npz(p: Path) -> FileReduction:
               for f in fields(State) if f.name not in ("lap_number", "lap_time_s")}
         laps.append(State(lap_number=num, lap_time_s=t, **kw))
     return FileReduction(laps=laps, **head)
+
+
+RAD2DEG = 57.2958
+
+
+def _table(con, name: str) -> np.ndarray | None:
+    """All rows of a recorder table as floats (value or value1..value4), or None."""
+    try:
+        rows = np.asarray(con.execute(f'SELECT * FROM "{name}"').fetchall(), float)
+    except Exception:
+        return None
+    if rows.ndim != 2 or len(rows) == 0:
+        return None
+    return rows[:, -4:] if rows.shape[1] >= 4 else rows[:, :1]
+
+
+def _align(a: np.ndarray, n: int) -> np.ndarray:
+    """Rows of another rate put on n rows by their position in the session."""
+    if len(a) == n:
+        return a
+    x = np.linspace(0, 1, len(a))
+    return np.column_stack([np.interp(np.linspace(0, 1, n), x, a[:, i]) for i in range(a.shape[1])])
+
+
+def measure_setup(path: str | Path) -> dict:
+    """Design §14 R6: the recordings carry no setup, so it is measured from what
+    it does, per file (as fable_p7_setup.py):
+      camber, toe per axle (deg; median |value| on straights: 30-60 m/s, |gx|,
+        |gy| < 0.15), hot pressure per axle (kPa; first 20 % of the file
+        skipped), ride height per axle (mm) at 30-45 m/s (`rh_mid`) and above
+        60 m/s (`rh_fast`), compound (front/rear) and track temperature (metadata).
+    A missing channel gives None for its item."""
+    import duckdb
+    out = {k: None for k in ("camber", "toe", "press", "rh_mid", "rh_fast", "compound", "track_temp")}
+    con = duckdb.connect(str(path), read_only=True)
+    try:
+        gs, gy, gx = (_table(con, t) for t in ("Ground Speed", "G Force Lat", "G Force Long"))
+        md = dict(con.execute("SELECT key, value FROM metadata").fetchall())
+        if gs is not None and gy is not None and gx is not None:
+            v = gs[:, 0] / 3.6
+            gy, gx = _align(gy, len(v))[:, 0], _align(gx, len(v))[:, 0]
+            st = (v > 30) & (v < 60) & (np.abs(gy) < 0.15) & (np.abs(gx) < 0.15)
+            axle = lambda a, m: [float(np.median(a[m][:, idx].mean(1))) for idx in ([0, 1], [2, 3])]  # noqa: E731
+            for name, key in (("Camber", "camber"), ("Toe", "toe")):
+                a = _table(con, name)
+                if a is not None and a.shape[1] == 4 and st.sum() > 50:
+                    out[key] = axle(np.abs(_align(a, len(v))) * RAD2DEG, st)
+            rh = _table(con, "Ride Height")
+            if rh is not None and rh.shape[1] == 4:
+                rh = _align(rh, len(v)) * 1000
+                if (st & (v < 45)).sum() > 50:
+                    out["rh_mid"] = axle(rh, st & (v < 45))
+                fast = (v > 60) & (np.abs(gy) < 0.15) & (np.abs(gx) < 0.15)
+                if fast.sum() > 100:
+                    out["rh_fast"] = axle(rh, fast)
+        pr = _table(con, "TyresPressure")
+        if pr is not None and pr.shape[1] == 4:
+            pr = pr[(pr > 50).all(1)]
+            pr = pr[len(pr) // 5:]                     # skip the out-lap warm-up
+            if len(pr):
+                out["press"] = [float(np.median(pr[:, idx].mean(1))) for idx in ([0, 1], [2, 3])]
+        if md.get("TyreCompoundFront") or md.get("TyreCompoundRear"):
+            out["compound"] = f"{md.get('TyreCompoundFront', '?')}/{md.get('TyreCompoundRear', '?')}"
+        try:
+            out["track_temp"] = float(md["TrackTempC"]) if md.get("TrackTempC") not in (None, "") else None
+        except ValueError:
+            pass
+    finally:
+        con.close()
+    return out
+
+
+def setup_fingerprint(path, laps, load_model, measured: dict | None = None) -> dict:
+    """Design §14 R6/R8: the file's setup fingerprint = measure_setup(path) (or
+    `measured`, already taken) plus the shares of its load model (§4.1):
+      aero_f = sum_front a_i c0_i / sum a_i c0_i,
+      lltd_f = sum_front (|c_i| + |e_i|) c0_i / sum (...) (springs / ARB balance,
+               in the load source's units), stat_f = static front share.
+    `laps` is not needed (kept for the design's interface)."""
+    fp = dict(measured if measured is not None else (measure_setup(path) if path is not None else {}))
+    if load_model is not None:
+        c0, coef = np.asarray(load_model.static, float), np.asarray(load_model.coef, float)
+        aero = coef[:, 0] * c0
+        lat = (np.abs(coef[:, 2]) + np.abs(coef[:, 4])) * c0
+        share = lambda a: float(a[:2].sum() / a.sum()) if abs(a.sum()) > 1e-12 else None  # noqa: E731
+        fp.update(aero_f=share(aero), lltd_f=share(lat), stat_f=share(c0))
+    return fp
 
 
 def load_reduction(path: str | Path, cache_dir: str | Path | None = None) -> FileReduction:
@@ -278,6 +366,7 @@ def load_reduction(path: str | Path, cache_dir: str | Path | None = None) -> Fil
         got = tt.load_topography(whole[0].track_name, tt._lap_length_m(whole[0]))
         layout = got[1] if got else None
     red = reduce_laps(laps, path, pit, layout)
+    red.setup = measure_setup(path)
     if cp is not None:
         cp.parent.mkdir(parents=True, exist_ok=True)
         _save_npz(red, cp)

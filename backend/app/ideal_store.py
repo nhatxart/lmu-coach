@@ -28,7 +28,7 @@ from pathlib import Path
 import numpy as np
 
 from . import ideal_car as C
-from .ideal_state import FileReduction, MAX_GROUP_LAPS, load_reduction
+from .ideal_state import FileReduction, MAX_GROUP_LAPS, load_reduction, setup_fingerprint
 
 VERSION = 1
 LAYOUT_TOLERANCE = 0.03
@@ -196,6 +196,52 @@ def beta_and_confidence(scope: str, n_laps: int, fit: C.GroupFit, sc: dict | Non
     return beta, conf, weak
 
 
+# Design §14 R8: a file's setup differs from its group when an item is off the
+# group median by MORE than this (either axle). Same-setup files in the probe
+# (fable_p7) stay inside all of these; every setup change found exceeds one.
+SETUP_THRESHOLDS = (("camber", 0.3), ("toe", 0.1), ("rh_mid", 4.0), ("rh_fast", 4.0), ("press", 3.0),
+                    ("aero_f", 0.015), ("lltd_f", 0.015))
+SETUP_REPORT_ONLY = ("compound",)          # listed, but alone it neither widens beta nor lowers confidence
+SETUP_BETA_ADD = 0.03
+CONF_ORDER = ("high", "medium", "low")
+
+
+def setup_differs(fp: dict, med: dict) -> list:
+    """Items of the file's setup fingerprint off the group median (§14 R8),
+    in a fixed order; a missing measurement on either side is not a difference.
+    Compound is listed when different; temperature is never listed."""
+    out = []
+    for key, tol in SETUP_THRESHOLDS:
+        a, b = fp.get(key), med.get(key)
+        if a is None or b is None:
+            continue
+        a, b = np.atleast_1d(np.asarray(a, float)), np.atleast_1d(np.asarray(b, float))
+        if a.shape == b.shape and np.any(np.abs(a - b) > tol):
+            out.append(key)
+    if fp.get("compound") and med.get("compound") and fp["compound"] != med["compound"]:
+        out.append("compound")
+    return out
+
+
+def group_median(fps: list) -> dict:
+    """Element-wise median of the group's setup fingerprints (None ignored);
+    compound = the most common one."""
+    out = {}
+    keys = {k for fp in fps for k in fp}
+    for k in keys:
+        vals = [fp.get(k) for fp in fps if fp.get(k) is not None]
+        if not vals:
+            out[k] = None
+        elif k == "compound":
+            out[k] = max(dict.fromkeys(vals), key=vals.count)
+        elif isinstance(vals[0], (list, tuple)):
+            same = [v for v in vals if len(v) == len(vals[0])]
+            out[k] = [float(x) for x in np.median(np.asarray(same, float), axis=0)]
+        else:
+            out[k] = float(np.median(np.asarray(vals, float)))
+    return out
+
+
 def _default_v3_peaks(car_model: str) -> dict | None:
     """Tyre v3's fitted peak slip per axle, for the knee cross-check only."""
     try:
@@ -345,7 +391,8 @@ class IdealStore:
             lm = fit.load_models.get(r.file)
             prof["files"][r.file] = {"mtime": r.mtime, "size": r.size,
                                      "load_model": lm.to_dict() if lm else None,
-                                     "laps": [s.lap_number for s in r.laps]}
+                                     "laps": [s.lap_number for s in r.laps],
+                                     "setup": setup_fingerprint(None, None, lm, measured=r.setup or {})}
         prof["car_class"] = car_class
         self.save_profile(prof)
         return ge
@@ -388,14 +435,45 @@ class IdealStore:
         """(CarModel, fit info) for a lap of `path`, or a Refusal (design §8).
         The car uses the file's own load model; a file with fewer than 2
         qualifying laps (or a car-scope fit from other tracks without this
-        file) uses the group's pooled one."""
+        file) uses the group's pooled one. Round 2 (§14 R8): the grip level per
+        axle is trimmed to the file's own saturated samples, and the file's
+        setup is compared with the group's (fit.setup, fit.setup_differs)."""
+        import copy
         g = self.group_for(path)
         if isinstance(g, Refusal):
             return g
-        name = Path(path).name
+        path = Path(path)
+        name = path.name
         car = g.fit.car_for(name)
-        info = g.info()
+        info = copy.deepcopy(g.info())
         info["load_model"] = "file" if name in g.fit.load_models and g.fit.load_models[name].scope == "file" else "group"
+        axles = [g.fit.axle(0), g.fit.axle(1)]
+        red = self._reduction(path)
+        car, trims = C.axle_trim(car, axles, red)
+        for j, ax in enumerate(C.AXLES):
+            info["axles"][ax].update(trim=trims[j]["trim"], trim_w=trims[j]["w"], trim_t=trims[j]["t"],
+                                     trim_n=trims[j]["n"], mu1_file=car.mu1[j])
+        lm = lambda f: g.fit.load_models.get(f) or g.fit.load_models.get("__group__")   # noqa: E731
+        fp = setup_fingerprint(None, None, lm(name), measured=red.setup or {})
+        fps = []
+        for f in g.files:
+            try:
+                fps.append(setup_fingerprint(None, None, lm(f),
+                                             measured=self._reduction(path.with_name(f)).setup or {}))
+            except Exception:
+                continue
+        differs = setup_differs(fp, group_median(fps)) if fps else []
+        info["setup"], info["setup_differs"] = fp, differs
+        flagged = [d for d in differs if d not in SETUP_REPORT_ONLY]
+        conf = info["confidence"]
+        if flagged and any(t["trim"] == "none" for t in trims):
+            info["beta"] = info["beta"] + SETUP_BETA_ADD
+            conf = CONF_ORDER[min(CONF_ORDER.index(conf) + 1, len(CONF_ORDER) - 1)]
+            info["notes"].append("setup differs from the laps the grip was learned on (%s)" % ", ".join(flagged))
+        if any(t["trim"] == "capped" for t in trims):
+            conf = "low"
+            info["notes"].append("axle trim capped at 8 %: a different car or a broken fit")
+        info["confidence"] = conf
         return car, info
 
     # ── ingest ───────────────────────────────────────────────────────────

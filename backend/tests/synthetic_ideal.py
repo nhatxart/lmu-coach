@@ -70,23 +70,26 @@ def noise_field(n: int, ds: float, sd: float, corr_m: float, rng) -> np.ndarray:
 
 
 def perfect_laps(car, ln: dict, n_laps: int, rng, place_sd: float = 0.035, lap_sd: float = 0.035,
-                 corr_m: float = 50.0) -> tuple:
+                 corr_m: float = 50.0, gf_usage: str = "combined") -> tuple:
     """(raws, sols, scales): n_laps lap_raw-shaped dicts of the car driven at
     its limit, each lap at its own capacity exp(place + lap) on the grid of
-    `ln`; the true solves and the capacity scales per lap."""
+    `ln`; the true solves and the capacity scales per lap.
+    gf_usage: "combined" (as the game: the usage of §5.5, drive and braking
+    included) or "lateral" (|gy| / A only), to test a mechanism without the
+    combined-slip bias of the lateral fit."""
     n, ds = len(ln["ks"]), ln["ds"]
     place = noise_field(n, ds, place_sd, corr_m, rng)
     raws, sols, scales = [], [], []
     for k in range(n_laps):
         scale = np.exp(place + noise_field(n, ds, lap_sd, corr_m, rng))
         sol = SV.solve(car, dict(ln, cap_scale=scale), "balanced")
-        raws.append(_telemetry(car, ln, sol, scale, k))
+        raws.append(_telemetry(car, ln, sol, scale, k, gf_usage))
         sols.append(sol)
         scales.append(scale)
     return raws, sols, scales
 
 
-def _telemetry(car, ln, sol, scale, lap_no):
+def _telemetry(car, ln, sol, scale, lap_no, gf_usage="combined"):
     v, ds = sol["v"], ln["ds"]
     t_grid = np.concatenate([[0.0], np.cumsum(ds / v)])     # time at each grid point (closing point too)
     T = t_grid[-1]
@@ -107,6 +110,9 @@ def _telemetry(car, ln, sol, scale, lap_no):
     tc = (code == "traction").astype(float)
     sc = per(scale)
     uf, ur = SV.usage(car, vt, gxt, gy, gz)
+    if gf_usage == "lateral":
+        Af, Ar = car.axles(vt, gx, gy, gz)
+        uf, ur = np.abs(gy) / Af, np.abs(gy) / Ar
     uf, ur = uf / sc, ur / sc                      # usage against THIS lap's capacity
     susp = car.load.static[:, None] * car.lam(vt, gx, gy, gz)
     gf, slip = [], []
