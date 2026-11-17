@@ -287,6 +287,8 @@ class KeepRequest(BaseModel):
 
 
 KEPT_FOLDER_READ_ONLY = "The kept-laps folder is read-only: rebuild with the new docker-compose.yml"
+KEPT_NO_TYRE_CONTEXT = ("tyre context unavailable: this lap counts in the tyre model "
+                        "with a one-lap load reference")
 
 
 def _bare_duckdb_name(file: str) -> str:
@@ -337,8 +339,11 @@ def keep_laps(file: str, req: KeepRequest):
         """The original's file-level tyre-model context (spec 4.3), computed
         once per request and only if a lap is written: a one-lap file cannot
         recompute it, so it goes into every kept file's KeptTyreContext. A
-        failure keeps the lap anyway, with {} (the kept file then ingests like
-        a recording of its own, as before): the tyre model must not stop a keep."""
+        failure keeps the lap anyway, with {} (the tyre model must not stop a
+        keep), and the lap's result carries a warning: the kept file is still
+        keyed by its original, so it is still counted once, but binned with a
+        context recomputed from one lap (often no load reference), and it may
+        refresh the profile's calibration."""
         nonlocal tyre_context
         if tyre_context is None:
             try:
@@ -365,8 +370,13 @@ def keep_laps(file: str, req: KeepRequest):
         try:
             # a leftover of an interrupted keep (our own dotfile, never a user's)
             tmp.unlink(missing_ok=True)
-            lap_cut.cut_lap(src, info.lap, tmp, original_tyre_context())
+            context = original_tyre_context()
+            lap_cut.cut_lap(src, info.lap, tmp, context)
             os.replace(tmp, dst)
+            if not context:
+                # PREVIOUSLY the failure was only logged; the user never knew
+                # this lap is worth less to the tyre model. The status stays kept.
+                res["warning"] = KEPT_NO_TYRE_CONTEXT
         except Exception as e:
             tmp.unlink(missing_ok=True)
             if _is_read_only_error(e):

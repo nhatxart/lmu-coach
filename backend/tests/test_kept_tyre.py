@@ -173,6 +173,30 @@ def test_file_tyre_context_is_json_safe_and_falls_back_to_the_profile():
     assert gp.file_tyre_context([no_force], None)["calibration"] is None
 
 
+def test_keep_with_failing_tyre_context_warns(original, dirs, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("context exploded")
+
+    async def fake_llm(report, baselines, **kw):
+        return "coach text"
+
+    monkeypatch.setattr(main, "file_tyre_context", boom)
+    monkeypatch.setattr(main, "get_coaching_analysis", fake_llm)
+    client = TestClient(main.app)
+    r = client.post(f"/sessions/sessions/{original.name}/keep", json={"laps": [LAP]})
+    assert r.status_code == 200, r.text
+    res = r.json()["results"][0]
+    assert res["status"] == "kept" and r.json()["all_checked"]
+    assert res["warning"] == ("tyre context unavailable: this lap counts in the tyre "
+                              "model with a one-lap load reference")
+    kept = dirs[1] / res["kept_file"]
+    assert _meta(kept)["KeptTyreContext"] == "{}"
+    # still keyed under its original, so it counts once
+    r = client.post("/analyze", json={"file": kept.name, "source": "reference", "lap_number": LAP})
+    assert r.status_code == 200, r.text
+    assert gp.load_profile("Test GT3").tire_model_laps == [f"{original.name}#{LAP}"]
+
+
 def test_analyze_kept_lap_dedupes(original, dirs, monkeypatch):
     async def fake_llm(report, baselines, **kw):
         return "coach text"

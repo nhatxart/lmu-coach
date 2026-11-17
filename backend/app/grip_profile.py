@@ -134,7 +134,8 @@ def file_tyre_context(laps: list, profile_calibration: dict | None) -> dict:
     valid = [l for l in laps if l.lap_time_s < 600]
     cal = _first_calibration(valid) or profile_calibration or None
     load_ref = file_load_reference(valid, cal) if valid else {}
-    fastest = reference_lap_time(laps)
+    # over the < 600 s laps, the same set ingest_tire_laps takes it from
+    fastest = reference_lap_time(valid)
     return {
         "calibration": json.loads(json.dumps(cal)) if cal else None,
         "load_ref": {k: float(v) for k, v in load_ref.items()},
@@ -148,7 +149,9 @@ def tire_file_key(path_name: str, meta: dict) -> tuple[str, dict]:
     is keyed by its ORIGINAL's name, so its lap (same lap number) is the
     original's lap: present once whichever file is ingested first, and still
     counted after the original is deleted. Its context is KeptTyreContext
-    ({} when absent or unreadable: the file is then ingested like a recording).
+    ({} when absent or unreadable: the lap is then still keyed by its original,
+    so it is still counted once, but binned with a context recomputed from one
+    lap (often no load reference), and it may refresh the profile's calibration).
     A recording: (its own name, {}).
     """
     origin = (meta or {}).get("KeptFromFile")
