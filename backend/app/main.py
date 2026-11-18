@@ -48,7 +48,7 @@ from .tire_model import TIRE_GRID_HZ, compute_grip_utilization_for_lap, file_loa
 from .vehicle_dynamics import (body_slip_from_local_vel_deg, compute_body_slip_deg,
                                handling_balance)
 from .telemetry import (load_telemetry_file, get_car_setup_json, session_time_axes, reference_lap_time,
-                        dehold, lap_index, kept_lap_of)
+                        dehold, lap_index, kept_lap, kept_lap_of)
 from . import track_limits
 
 log = logging.getLogger(__name__)
@@ -398,6 +398,89 @@ def keep_laps(file: str, req: KeepRequest):
         results.append(res)
     return {"ok": True, "all_checked": all(r["status"] != "failed" for r in results),
             "results": results}
+
+
+class DeleteRequest(BaseModel):
+    confirm: str            # the exact file name (sent by the "Delete permanently" button)
+    kept_files: list[str]   # kept laps of this file, checked before the delete
+
+
+DELETE_IN_USE = ("The recording is in use (the game's recorder or another program may "
+                 "have it open). Try again in a moment.")
+
+
+def _kept_origin_and_lap(kept: Path) -> tuple[str | None, int | None]:
+    """(KeptFromFile, KeptLap) of a file in the kept-laps folder; (None, None)
+    when it is not a kept lap or cannot be read."""
+    try:
+        con = duckdb.connect(str(kept), read_only=True)
+        try:
+            meta = dict(con.execute("SELECT key, value FROM metadata").fetchall())
+        finally:
+            con.close()
+    except Exception:
+        return None, None
+    return (meta.get("KeptFromFile") or None), kept_lap(meta)
+
+
+@app.post("/sessions/sessions/{file}/delete")
+def delete_original(file: str, req: DeleteRequest):
+    """The deliberate delete of a recording (spec 4.4a). THIS IS THE ONLY CODE
+    THAT REMOVES ANYTHING FROM /data/sessions, and it removes exactly one file:
+    the original named in the URL, in OWN_SESSIONS_DIR (never REFERENCE_LAPS_DIR).
+
+    Refusals, all before anything is removed:
+    - 400: a name that is not a bare .duckdb name (URL or kept_files), or
+      `confirm` not exactly the file name (no trimming, case-sensitive: the
+      user confirmed this name, not one like it);
+    - 404: no such recording in the sessions folder;
+    - 412: no kept laps given, or one is not in the kept-laps folder, is not a
+      kept lap of THIS file (KeptFromFile), or fails the keep check
+      (lap_cut.check_kept, the same check the keep route runs) against it.
+      The check compares against the original, so it must run while the
+      original still exists: check every kept lap first, then remove;
+    - 409: the remove itself failed (Windows lock, permissions): the file stays.
+    """
+    name = _bare_duckdb_name(file)
+    if req.confirm != name:
+        raise HTTPException(400, "Confirmation does not match the file name")
+    kept_names = [_bare_duckdb_name(k) for k in req.kept_files]
+    # _resolve_file with "sessions": the original can only come from the
+    # recordings folder, so a kept file's name here is a 404, never a delete.
+    src = _resolve_file(name, "sessions")
+    if not kept_names:
+        raise HTTPException(412, "No kept laps given: keep and check laps before deleting")
+
+    lap_times = None
+    for k in dict.fromkeys(kept_names):
+        kept = REFERENCE_LAPS_DIR / k
+        if not kept.is_file():
+            raise HTTPException(412, f"{k} is not in the kept-laps folder")
+        origin, lap = _kept_origin_and_lap(kept)
+        if origin != name or lap is None:
+            raise HTTPException(412, f"{k} was kept from {origin!r}, not {name!r}")
+        if lap_times is None:
+            con = duckdb.connect(str(src), read_only=True)
+            try:
+                # the same source of the original's lap time as the keep route
+                # (lap_cut._plan: lap_index's lap_time_s)
+                lap_times = {l.lap_number: float(l.lap_time_s) for l in lap_index(con)}
+            finally:
+                con.close()
+        if lap not in lap_times:
+            raise HTTPException(412, f"{k} is lap {lap}, which {name} does not have")
+        ok, _t, err = lap_cut.check_kept(kept, lap, lap_times[lap], src)
+        if not ok:
+            raise HTTPException(412, f"{k} failed its check against {name}: {err}")
+
+    try:
+        os.remove(src)
+    except OSError as e:     # PermissionError included (Windows: open elsewhere)
+        log.warning("delete of %s refused by the OS: %s", name, e)
+        raise HTTPException(409, DELETE_IN_USE)
+    session_index.forget(src)
+    log.warning("deleted recording %s (kept laps checked: %s)", name, ", ".join(kept_names))
+    return {"ok": True, "deleted": name}
 
 
 @app.post("/analyze")

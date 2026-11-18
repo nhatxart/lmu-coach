@@ -136,6 +136,13 @@ def _error_entry(path: Path, source: str, exc: Exception) -> dict:
             "error": f"{type(exc).__name__}: {exc}"}
 
 
+def forget(path: Path) -> None:
+    """Drop one file's cached entry (the deliberate delete of a recording):
+    build_index prunes gone files too, but only on its next call, and nothing
+    should answer from a deleted file's entry meanwhile."""
+    _CACHE.pop(str(Path(path).resolve()), None)
+
+
 def build_index(folders: list[tuple[str, Path]]) -> list[dict]:
     """Entries for every *.duckdb in each (source, folder), folders in the
     given order and files sorted by name inside each: the order /sessions
