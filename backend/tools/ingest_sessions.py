@@ -144,7 +144,7 @@ def select_files(sessions_dir: Path, reference_dir: Path | None, month: str | No
     that does not exist, reads the sessions folder only."""
     files = []
     folders = [sessions_dir] + ([reference_dir] if reference_dir else [])
-    for folder in folders:
+    for rank, folder in enumerate(folders):
         if not folder.is_dir():
             continue
         for p in folder.glob("*.duckdb"):
@@ -156,9 +156,16 @@ def select_files(sessions_dir: Path, reference_dir: Path | None, month: str | No
                 continue
             if pattern and not fnmatch.fnmatch(p.name, pattern):
                 continue
-            files.append((m.group(0) if m else p.name, p))
+            files.append((m.group(0) if m else p.name, rank, p.name, p))
+    # BUG FIX / PREVIOUSLY sorted (stamp, path): a kept file shares its
+    # original's stamp, and "...\reference_laps\..." sorts before
+    # "...\sessions\...", so the kept copy went first and its bins won; the
+    # whole original was then skipped for that lap. The kept copy's bins come
+    # from its stored one-file context, which is {} when the keep step could
+    # not compute it. Fix: at equal stamps session files go first (folder
+    # rank), so the original supplies the lap whenever it is there.
     files.sort()
-    return files
+    return [(key, p) for key, _rank, _name, p in files]
 
 
 def baseline_skip_reason(meta: dict, sessions_dir: Path, ledger: set) -> str | None:

@@ -12,6 +12,8 @@
 #   .\BUILD_TRACK_REFERENCE.ps1 --topography-only   only that file; corners/names untouched, no downloads
 #   .\BUILD_TRACK_REFERENCE.ps1 --no-topography     skip it
 #   add --sessions <dir> to read recordings from another folder (opened read-only)
+#   kept laps in data\reference_laps feed the topography too (once); --reference <dir> reads another
+#   folder, --reference= (empty, with the =; a bare "" is dropped by PowerShell) skips them
 $repo = Resolve-Path "$PSScriptRoot\..\.."
 Push-Location $repo
 try {

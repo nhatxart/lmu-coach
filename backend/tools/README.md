@@ -45,6 +45,7 @@ cd backend\tools
 ```
 
 - It's a **dry run unless you pass `--save`**. Check the output first.
+- **Relative folders:** the wrapper runs from the repo root, so a relative `--sessions-dir`, `--reference-dir` or `--profiles-dir` is read from there, not from the folder you are in. Give a full path when in doubt.
 - **Backups:** `--save` first copies every profile and the ledger to `data/grip_profiles/backups/<timestamp>/`. To undo a run, copy that folder's files back.
 - **Stop the backend first** (`docker compose down`). It reads and writes the same profile files. Restart it afterwards (`docker compose up -d --build`).
 - **Profile key (tyre model v3):** profiles are named after the car **model** (`BMW M4 LMGT3.json`), found the same way `/analyze` finds it, so every livery of a model shares one file. A car without a profile gets a new one.

@@ -146,6 +146,31 @@ def test_ingest_reads_reference_dir_once(dirs, tmp_path, monkeypatch):
     gp.clear_class_prior_cache()
 
 
+def test_ingest_original_wins_tie_with_kept(dirs, tmp_path, monkeypatch):
+    # Review I1: a kept file shares its original's stamp, and "reference_laps"
+    # sorts before "sessions", so the kept copy was ingested first and its
+    # bins won. Cut it with an empty context (the keep step's warned path):
+    # the lap must still be binned from the whole original.
+    sessions, kept_dir = dirs
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    monkeypatch.setattr(gp, "PROFILES_DIR", profiles)
+    gp.clear_class_prior_cache()
+    original = _exact_case(write_susp_force_session(sessions / ORIG))
+    kept = _keep(original, kept_dir, context={})
+    assert [p for _, p in ing.select_files(sessions, kept_dir)] == [original, kept]
+
+    from app.telemetry import load_telemetry_file
+    from app.tire_model import TIRE_GRID_HZ
+    alone = gp.GripProfile(car_name="Test GT3")
+    alone.ingest_tire_laps(load_telemetry_file(original, grid_hz=TIRE_GRID_HZ), original.name)
+    want = alone.tire_files[original.name]["laps"][str(LAP)]
+
+    prof, _ = _run_ingest(monkeypatch, sessions, kept_dir, profiles)
+    assert prof.tire_files[original.name]["laps"][str(LAP)] == want
+    gp.clear_class_prior_cache()
+
+
 def test_ingest_kept_without_original_counts(dirs, tmp_path, monkeypatch):
     sessions, kept_dir = dirs
     profiles = tmp_path / "profiles"
