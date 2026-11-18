@@ -80,7 +80,7 @@ class GroupEntry:
                 "game_version": self.game_version, "notes": list(self.notes) + list(i.get("notes", [])),
                 "axles": i["axles"], "s_front": i["s_front"], "kappa_brake": i["kappa_brake"],
                 "kappa_trac": i["kappa_trac"], "drag": i["drag"], "selfcheck": self.selfcheck,
-                "transferred": self.scope == "car"}
+                "transferred": self.scope == "car", "fingerprint": self.fingerprint}
 
 
 def safe_name(car_model: str) -> str:

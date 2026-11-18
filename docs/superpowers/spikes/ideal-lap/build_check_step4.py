@@ -45,6 +45,10 @@ else:
         a = info["axles"][ax]
         print("    %s %s terms %s mu1 %.3f k %.3f c %.3f v_sat %s n_sat %d" % (ax, a["status"], a["terms"], a["mu1"], a["k"], a["c"], np.round(a["v_sat"], 1), a["n_sat"]))
     print("    notes %s" % info["notes"])
+    print("    setup %s\n    setup_differs %s | trims %s" % (
+        {k: (np.round(v, 3).tolist() if isinstance(v, (list, float)) else v) for k, v in info["setup"].items()},
+        info["setup_differs"], {a: (info["axles"][a]["trim"], info["axles"][a]["trim_t"], round(info["axles"][a]["trim_w"], 2))
+                                for a in ("front", "rear")}))
     t0 = time.time(); store2 = ST.IdealStore(root / "ideal_lap", [SESS]); store2.car_for_lap(path)
     print("  warm (new store, profile + npz): %.1f s, fits %d; profile %s" % (time.time() - t0, store2.fits_done,
           [p.name for p in (root / "ideal_lap").glob("*.json")]))

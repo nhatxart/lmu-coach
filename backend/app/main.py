@@ -1220,3 +1220,39 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
         "car_pos_z": _ds(pz_lap, 4000),
         "corner_labels": corner_labels,
     }
+
+
+# ── Ideal lap (design docs/superpowers/specs/2026-11-10-ideal-lap-design.md) ──
+# One store per (session folders, profiles dir): it keeps the per-file
+# reductions in memory, and its JSON profiles under <profiles>/ideal_lap.
+_IDEAL_STORES: dict = {}
+
+
+def _ideal_store():
+    from . import grip_profile
+    from .ideal_store import IdealStore
+    key = (str(OWN_SESSIONS_DIR), str(REFERENCE_LAPS_DIR), str(grip_profile.PROFILES_DIR))
+    if key not in _IDEAL_STORES:
+        _IDEAL_STORES[key] = IdealStore(Path(grip_profile.PROFILES_DIR) / "ideal_lap",
+                                        [OWN_SESSIONS_DIR, REFERENCE_LAPS_DIR])
+    return _IDEAL_STORES[key]
+
+
+@app.get("/sessions/{source}/{file}/ideal-lap")
+def get_ideal_lap(source: str, file: str, lap_number: int | None = None):
+    # The ideal lap of this car on the line of this lap (§7). The trace is
+    # given at /trackmap's driven-line points (its lap distance and game
+    # clock), so the Compare tab can show it as a ghost on the lap's own line;
+    # lap_number omitted = the lap /trackmap auto-picks. Data problems come
+    # back as status "insufficient_data" with a reason, never as an error.
+    from . import ideal_lap
+    path = _resolve_file(file, source)
+    points = None
+    try:
+        tm = get_trackmap(source, file, lap_number)
+        lap_number = tm.get("lap_number", lap_number)
+        dl = tm.get("driven_line") or {}
+        points = {"lap_dist": dl.get("lap_dist") or [], "t": dl.get("t") or []}
+    except Exception as e:                    # incl. a /trackmap 422: the ideal lap does not need positions
+        print(f"[ideal-lap] trackmap points failed, using the 2 m grid: {type(e).__name__}: {e}")
+    return ideal_lap.build_ideal_lap(path, lap_number, store=_ideal_store(), points=points)
