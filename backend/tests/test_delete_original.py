@@ -99,6 +99,10 @@ def test_delete_requires_checked_kept_files(kept_one, dirs, client, monkeypatch)
         assert src.is_file() and kept.is_file()
 
     refused([], "No kept laps")
+    # no kept_files key at all: the same 412, not pydantic's 422
+    r = client.post(f"/sessions/sessions/{quote(HILLY)}/delete", json={"confirm": HILLY})
+    assert r.status_code == 412 and "No kept laps" in r.json()["detail"]
+    assert src.is_file()
     refused(["Not There L1 1m00.000-2026-10-19T23_18_37Z.duckdb"], "not in the kept-laps folder")
     refused([kept.name, "Not There.duckdb"], "not in the kept-laps folder")
     # a kept file that exists in the SESSIONS folder only does not count
@@ -168,7 +172,7 @@ def test_delete_rejects_bad_names_and_confirm(kept_one, dirs, client, name):
         r = _delete(client, HILLY, confirm, [kept.name])
         assert r.status_code == 400, (repr(confirm), r.status_code, r.text[:200])
     r = client.post(f"/sessions/sessions/{quote(HILLY)}/delete", json={"kept_files": [kept.name]})
-    assert r.status_code == 422                              # no confirm at all
+    assert r.status_code == 422                              # no confirm at all (still required)
     # a slash never reaches the handler (router 404); either way nothing goes
     r = _delete(client, "a/b.duckdb", "a/b.duckdb", [kept.name])
     assert r.status_code in (400, 404)
@@ -212,6 +216,39 @@ def test_delete_remove_error_reports_in_use(kept_one, client, monkeypatch):
         r = _delete(client, HILLY, HILLY, [kept.name])
         assert r.status_code == 409 and r.json()["detail"] == main.DELETE_IN_USE
         assert src.is_file()
+
+
+def test_delete_removes_wal_sibling_only(kept_one, dirs, client):
+    src, kept = kept_one
+    wal = dirs[0] / (HILLY + ".wal")
+    wal.write_bytes(b"orphan")
+    others = [dirs[0] / n for n in ("." + HILLY + ".tmp", "." + HILLY.replace(".duckdb", ".spool"),
+                                    HILLY.replace(".duckdb", ".wal"), HILLY + ".wal.bak")]
+    for p in others:
+        p.write_bytes(b"x")
+    r = _delete(client, HILLY, HILLY, [kept.name])
+    assert r.status_code == 200, r.text[:300]
+    assert not src.exists() and not wal.exists()
+    assert all(p.is_file() for p in others)                  # nothing else touched
+    assert kept.is_file()
+
+
+def test_delete_wal_failure_is_logged_not_an_error(kept_one, dirs, client, monkeypatch, caplog):
+    src, kept = kept_one
+    wal = dirs[0] / (HILLY + ".wal")
+    wal.write_bytes(b"orphan")
+    real_remove = os.remove
+
+    def remove(path):
+        if str(path).endswith(".wal"):
+            raise PermissionError(13, "Permission denied")
+        real_remove(path)
+    monkeypatch.setattr(main.os, "remove", remove)
+    with caplog.at_level("WARNING"):
+        r = _delete(client, HILLY, HILLY, [kept.name])
+    assert r.status_code == 200 and r.json() == {"ok": True, "deleted": HILLY}
+    assert not src.exists() and wal.is_file()
+    assert any("could not remove" in m and ".wal" in m for m in caplog.messages)
 
 
 def test_delete_never_touches_reference_dir(kept_one, dirs, client):

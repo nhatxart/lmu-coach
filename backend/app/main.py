@@ -402,7 +402,10 @@ def keep_laps(file: str, req: KeepRequest):
 
 class DeleteRequest(BaseModel):
     confirm: str            # the exact file name (sent by the "Delete permanently" button)
-    kept_files: list[str]   # kept laps of this file, checked before the delete
+    # kept laps of this file, checked before the delete. PREVIOUSLY required,
+    # so a missing key gave pydantic's 422; Fix: default [] so it is the
+    # route's own 412 "no kept laps", like an empty list.
+    kept_files: list[str] = []
 
 
 DELETE_IN_USE = ("The recording is in use (the game's recorder or another program may "
@@ -440,6 +443,16 @@ def delete_original(file: str, req: DeleteRequest):
       The check compares against the original, so it must run while the
       original still exists: check every kept lap first, then remove;
     - 409: the remove itself failed (Windows lock, permissions): the file stays.
+      This is a Windows/host-side guard: on Linux (Docker) the remove succeeds
+      even while another process has the file open (it keeps the inode until
+      it closes). The recorder never holds a finished recording's name (it
+      writes .<name>.duckdb.tmp and renames), and a leftover .spool/.tmp for
+      this name would be recovered by the recorder at its next start, which
+      re-creates the file rather than losing data.
+
+    After the remove, a `<file>.wal` sibling is removed too, best effort: once
+    its database is gone it is orphaned, and DuckDB would replay it onto any
+    future file of the same name. Nothing else is touched.
     """
     name = _bare_duckdb_name(file)
     if req.confirm != name:
@@ -479,6 +492,12 @@ def delete_original(file: str, req: DeleteRequest):
         log.warning("delete of %s refused by the OS: %s", name, e)
         raise HTTPException(409, DELETE_IN_USE)
     session_index.forget(src)
+    wal = src.with_name(src.name + ".wal")
+    try:
+        if wal.is_file():
+            os.remove(wal)
+    except OSError as e:     # the recording is gone already: log, do not fail
+        log.warning("could not remove %s after deleting %s: %s", wal.name, name, e)
     log.warning("deleted recording %s (kept laps checked: %s)", name, ", ".join(kept_names))
     return {"ok": True, "deleted": name}
 
