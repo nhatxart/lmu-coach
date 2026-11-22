@@ -17,6 +17,10 @@ import numpy as np
 
 from .ideal_state import G, GRID_HZ, State
 
+# Version of the fit code: part of every group's fingerprint (ideal_store), so
+# a profile fitted by older code is refitted. BUMP IT WITH ANY CHANGE THAT CAN
+# MOVE A FITTED NUMBER. 2: round 1 (continuous knee, k / c span rule).
+FIT_VERSION = 2
 FRONT, REAR = (0, 1), (2, 3)
 AXLES = ("front", "rear")
 LAM_FLOOR = 0.02

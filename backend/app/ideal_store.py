@@ -28,7 +28,9 @@ from pathlib import Path
 import numpy as np
 
 from . import ideal_car as C
-from .ideal_state import FileReduction, MAX_GROUP_LAPS, load_reduction, setup_fingerprint
+from .ideal_state import LRU, FileReduction, MAX_GROUP_LAPS, load_reduction, setup_fingerprint
+
+REDUCTIONS_IN_MEMORY = 12          # ~8 MB each; a fit group rarely has more files (the npz cache keeps all)
 
 VERSION = 1
 LAYOUT_TOLERANCE = 0.03
@@ -59,12 +61,17 @@ class GroupEntry:
     confidence: str                  # 'high' | 'medium' | 'low'
     selfcheck: dict | None
     notes: list = field(default_factory=list)
+    # Full paths of `files` (same order). PREVIOUSLY only the names were kept and
+    # the store looked them up next to the reference file, so a group file in the
+    # other session folder (reference_laps) silently dropped out of the setup
+    # median (review minor 7). Profiles without it fall back to that lookup.
+    paths: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {"key": self.key, "scope": self.scope, "fingerprint": self.fingerprint,
                 "game_version": self.game_version, "files": list(self.files), "n_laps": self.n_laps,
                 "fit": self.fit.to_dict(), "beta": self.beta, "confidence": self.confidence,
-                "selfcheck": self.selfcheck, "notes": list(self.notes)}
+                "selfcheck": self.selfcheck, "notes": list(self.notes), "paths": list(self.paths)}
 
     @classmethod
     def from_dict(cls, d: dict) -> "GroupEntry":
@@ -88,11 +95,19 @@ def safe_name(car_model: str) -> str:
     return "".join(c if c.isalnum() or c in " -_" else "_" for c in car_model)
 
 
-def fingerprint(reductions: list) -> str:
-    """sha1 of the sorted file#lap keys, each file's mtime and size, VERSION."""
+def fingerprint(reductions: list, v3_peaks: dict | None = None) -> str:
+    """sha1 of the sorted file#lap keys, each file's mtime and size, VERSION,
+    the fit code's version (ideal_car.FIT_VERSION), the reduction version and
+    the tyre-v3 peaks of the knee cross-check.
+    PREVIOUSLY only VERSION: a profile written before a change of the fit code
+    (this branch had several) was reused as if nothing had changed (review
+    minor 5)."""
+    from . import ideal_state
     keys = sorted(f"{r.file}#{s.lap_number}" for r in reductions for s in r.laps)
     stamps = sorted(f"{r.file}|{r.mtime}|{r.size}" for r in reductions)
-    return hashlib.sha1("\n".join(keys + stamps + [f"v{VERSION}"]).encode()).hexdigest()
+    code = [f"v{VERSION}", f"fit{C.FIT_VERSION}", f"red{ideal_state.REDUCTION_VERSION}",
+            "v3 " + json.dumps(v3_peaks or {}, sort_keys=True)]
+    return hashlib.sha1("\n".join(keys + stamps + code).encode()).hexdigest()
 
 
 def _version_key(v):
@@ -168,8 +183,8 @@ def selfcheck(reductions: list, car_class: str) -> dict | None:
 
 def beta_and_confidence(scope: str, n_laps: int, fit: C.GroupFit, sc: dict | None) -> tuple[float, str, list]:
     """Design §5.4 (β, with the round-1 knee rule) and §6.3 (confidence).
-    `low` also when a part of the car is assumed / a prior / default terms;
-    step 5 may lower it further when such a part binds on > 10 % of the lap."""
+    `low` also with `default` grip terms; an assumed kb / kt or a drag prior is
+    listed and lowers it only where it binds on > 10 % of the lap (ideal_lap)."""
     axles = [fit.axle(0), fit.axle(1)]
     knee_based = any(a.saturation == "knee" for a in axles)
     both_observed = all(a.status == "observed" for a in axles)
@@ -186,7 +201,12 @@ def beta_and_confidence(scope: str, n_laps: int, fit: C.GroupFit, sc: dict | Non
         return BETA_CAR, "low", weak
     beta = BETA_TIGHT if (n_laps >= HIGH_LAPS and both_observed and not knee_based) else BETA_TRACK
     passes = sc is not None and abs(sc["shift"]) <= SELFCHECK_SHIFT and sc["sd"] <= SELFCHECK_SD
-    hard_weak = [w for w in weak if w != "drag prior"]        # §6.3: only if it binds; known at step 5
+    # PREVIOUSLY an assumed kb / kt made the fit `low` here unconditionally. §6.3:
+    # low only when the assumed part binds on > 10 % of the lap, which
+    # ideal_lap.analyse_lap checks from the solve's binding shares. Fix: only
+    # `default` grip terms (§13 R2) lower it here; kappa and the drag prior are
+    # notes, judged per lap.
+    hard_weak = [w for w in weak if w.endswith("terms default")]
     if hard_weak:
         conf = "low"
     elif n_laps >= HIGH_LAPS and both_observed and passes:
@@ -275,7 +295,7 @@ class IdealStore:
         self.indexer = indexer
         self.v3_peaks = v3_peaks
         self.fits_done = 0                       # how many group fits ran (tests, ingest log)
-        self._red: dict = {}
+        self._red = LRU(REDUCTIONS_IN_MEMORY)
 
     # ── files ────────────────────────────────────────────────────────────
     def _paths(self) -> list[Path]:
@@ -352,10 +372,11 @@ class IdealStore:
 
     def _fit_entry(self, key: str, scope: str, paths: list[Path], car_class: str, car_model: str,
                    prof: dict) -> GroupEntry | Refusal:
-        reds = []
+        reds, where = [], {}
         for p in paths:
             try:
                 reds.append(self._reduction(p))
+                where.setdefault(p.name, str(p))
             except Exception as exc:                         # one unreadable file must not refuse the group
                 prof.setdefault("unreadable", {})[p.name] = f"{type(exc).__name__}: {exc}"
         reds = [r for r in reds if r.laps]
@@ -368,12 +389,15 @@ class IdealStore:
         if n < need:
             where = "on this track" if scope == "track" else "of this car"
             return Refusal(f"{need} clean laps {where} needed, have {n}")
-        fp = fingerprint(reds)
+        peaks = self.v3_peaks(car_model) if self.v3_peaks else None
+        fp = fingerprint(reds, peaks)
         old = (prof["groups"].get(key) if scope == "track" else prof.get("car_scope")) or None
         if old and old.get("fingerprint") == fp:
-            return GroupEntry.from_dict(old)
+            ge = GroupEntry.from_dict(old)
+            ge.paths = [where.get(f, f) for f in ge.files]   # where the files are now
+            return ge
         try:
-            fit = C.fit_group(reds, car_class, self.v3_peaks(car_model) if self.v3_peaks else None)
+            fit = C.fit_group(reds, car_class, peaks)
         except C.InsufficientData as exc:
             return Refusal(str(exc))
         self.fits_done += 1
@@ -382,7 +406,7 @@ class IdealStore:
         notes = vnotes + weak + (["transferred: estimate from other tracks"] if scope == "car" else [])
         ge = GroupEntry(key=key, scope=scope, fingerprint=fp, game_version=version,
                         files=[r.file for r in reds], n_laps=n, fit=fit, beta=beta, confidence=conf,
-                        selfcheck=sc, notes=notes)
+                        selfcheck=sc, notes=notes, paths=[where.get(r.file, r.file) for r in reds])
         if scope == "track":
             prof["groups"][key] = ge.to_dict()
         else:
@@ -391,7 +415,7 @@ class IdealStore:
             lm = fit.load_models.get(r.file)
             prof["files"][r.file] = {"mtime": r.mtime, "size": r.size,
                                      "load_model": lm.to_dict() if lm else None,
-                                     "laps": [s.lap_number for s in r.laps],
+                                     "laps": [s.lap_number for s in r.laps], "path": where.get(r.file),
                                      "setup": setup_fingerprint(None, None, lm, measured=r.setup or {})}
         prof["car_class"] = car_class
         self.save_profile(prof)
@@ -456,10 +480,10 @@ class IdealStore:
         lm = lambda f: g.fit.load_models.get(f) or g.fit.load_models.get("__group__")   # noqa: E731
         fp = setup_fingerprint(None, None, lm(name), measured=red.setup or {})
         fps = []
-        for f in g.files:
+        paths = g.paths if len(g.paths) == len(g.files) else [str(path.with_name(f)) for f in g.files]
+        for f, p in zip(g.files, paths):
             try:
-                fps.append(setup_fingerprint(None, None, lm(f),
-                                             measured=self._reduction(path.with_name(f)).setup or {}))
+                fps.append(setup_fingerprint(None, None, lm(f), measured=self._reduction(Path(p)).setup or {}))
             except Exception:
                 continue
         differs = setup_differs(fp, group_median(fps)) if fps else []

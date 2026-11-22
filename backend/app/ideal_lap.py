@@ -21,32 +21,44 @@ import numpy as np
 
 from . import ideal_solver as SV
 from .ideal_car import AxleFit, AXLES, is_extrapolated
-from .ideal_state import G, GRID_HZ, lap_raw, lap_state, _ensure_wheel_channels
+from .ideal_state import G, GRID_HZ, LRU, lap_raw, lap_state, _ensure_wheel_channels
 
 CORNER_AT_LIMIT_S = 0.02            # §5.6 verdict
 ASSUMED_BINDS_SHARE = 0.10          # §6.3: an assumed part that binds on more of the lap -> low
 PUBLIC_MARGIN = 0.995               # §14 R9: ideal faster than public best x 0.995 -> flag
 FALLBACK_CURV = 1 / 300.0           # corner windows without a track reference: radius < 300 m
-_CACHE: dict = {}
+_CACHE = LRU(32)                    # responses (path, mtime, size, lap, fingerprint, points)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def _mono(ld: np.ndarray, L: float) -> np.ndarray:
-    """Game Lap Dist made monotonic over one lap: the first rows of a lap can
-    still read the previous lap's end (just before the wrap; they become
-    negative distances), and the last rows the next lap's start (the closing
-    row reads ~0; they become L + d)."""
-    ld = np.asarray(ld, float).copy()
-    if len(ld) == 0:
-        return ld
-    k = int(max(1, 0.05 * len(ld)))
-    head, tail = np.zeros(len(ld), bool), np.zeros(len(ld), bool)
-    head[:k] = ld[:k] > 0.5 * L
-    tail[-k:] = ld[-k:] < 0.5 * L
-    ld[head] -= L
-    ld[tail] += L
-    return ld
+    """Game Lap Dist made monotonic over one lap (ideal_solver.unwrap_lap_dist):
+    the first rows of a lap can still read the previous lap's end (negative
+    distances), and the last rows the next lap's start (L + d). The grid's
+    lap_dist is already unwrapped by line_of; unwrapping again changes nothing."""
+    return SV.unwrap_lap_dist(ld, L)
+
+
+def _nearest_index(p_ld: np.ndarray, ld: np.ndarray) -> np.ndarray:
+    """Index of the grid point NEAREST to each lap distance.
+    PREVIOUSLY searchsorted took the next grid point, up to 2 m off, for the
+    trace's binding / saturated_ref (review minor 3)."""
+    k = np.rint(np.interp(p_ld, ld, np.arange(len(ld), dtype=float)))
+    return np.clip(k.astype(int), 0, len(ld) - 1)
+
+
+def _trace_t(p_ld, p_t, ld, dt_ref, dt_i, ds) -> np.ndarray:
+    """Ideal game-clock time at the driven line's points: the driven time minus
+    the gain accumulated up to there.
+    PREVIOUSLY the cumulative times stopped at the last grid point, so a point on
+    the line lost the last step's gain and t ended one 2 m step short of
+    ideal.time_s (review minor 8). Fix: the closing step is part of the cumulative
+    times (at the last grid point + ds)."""
+    ld_ext = np.append(ld, ld[-1] + ds)
+    cum_ref = np.concatenate([[0.0], np.cumsum(dt_ref)])
+    cum_i = np.concatenate([[0.0], np.cumsum(dt_i)])
+    return np.asarray(p_t, float) - np.interp(p_ld, ld_ext, cum_ref - cum_i)
 
 
 def _axle_fits(info: dict) -> list:
@@ -193,7 +205,6 @@ def analyse_lap(car, info: dict, raw: dict, lap_time_s: float, beta: float | Non
 
     # trace at the driven line's points
     cum_ref = np.concatenate([[0.0], np.cumsum(dt_ref)])[:-1]
-    cum_i = np.concatenate([[0.0], np.cumsum(dt_i)])[:-1]
     if points and points.get("lap_dist"):
         p_ld = _mono(np.asarray(points["lap_dist"], float), L)
         p_t = np.asarray(points.get("t") or [], float)
@@ -202,8 +213,8 @@ def analyse_lap(car, info: dict, raw: dict, lap_time_s: float, beta: float | Non
     else:
         p_ld, p_t = ld, cum_ref
     at = lambda a: np.interp(p_ld, ld, a)                               # noqa: E731
-    t_trace = p_t - at(cum_ref - cum_i)
-    near = np.clip(np.searchsorted(ld, p_ld), 0, len(ld) - 1)
+    t_trace = _trace_t(p_ld, p_t, ld, dt_ref, dt_i, ds)
+    near = _nearest_index(p_ld, ld)
     ideal_time = shown(exp["env"]["time"])
     trace = {"lap_dist": [round(float(x), 2) for x in p_ld], "v_kmh": [round(float(x) * 3.6, 2) for x in at(v_i)],
              "v_ref_kmh": [round(float(x) * 3.6, 2) for x in at(v_ref)], "t": [round(float(x), 3) for x in t_trace],
@@ -283,9 +294,10 @@ def _refusal(reason: str, **kw) -> dict:
 
 
 def build_ideal_lap(path: str | Path, lap_number: int | None = None, store=None,
-                    points: dict | None = None) -> dict:
+                    points: dict | None = None, source: str = "sessions") -> dict:
     """The /ideal-lap response (§7). Never raises for data reasons: a missing
-    fit or lap is `insufficient_data` with the reason."""
+    fit or lap is `insufficient_data` with the reason. `source`: the folder the
+    file is in ('sessions' | 'reference_laps'), for the session index."""
     from .ideal_store import Refusal, default_store
     from . import track_topography as tt
     path = Path(path)
@@ -329,7 +341,8 @@ def build_ideal_lap(path: str | Path, lap_number: int | None = None, store=None,
     red = store._reduction(path)
     from .session_index import file_entry
     try:
-        entry = file_entry(path, "sessions")
+        # PREVIOUSLY always "sessions" (review minor 9); the index caches per source
+        entry = file_entry(path, source)
     except Exception:
         entry = {}
     pub, check = public_block(red.car_model, red.car_class, entry.get("track_slug"), entry.get("layout_len_m"),

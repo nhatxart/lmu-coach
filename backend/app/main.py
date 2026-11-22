@@ -1225,7 +1225,8 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
 # ── Ideal lap (design docs/superpowers/specs/2026-11-10-ideal-lap-design.md) ──
 # One store per (session folders, profiles dir): it keeps the per-file
 # reductions in memory, and its JSON profiles under <profiles>/ideal_lap.
-_IDEAL_STORES: dict = {}
+from .ideal_state import LRU as _LRU   # noqa: E402
+_IDEAL_STORES = _LRU(4)
 
 
 def _ideal_store():
@@ -1255,4 +1256,4 @@ def get_ideal_lap(source: str, file: str, lap_number: int | None = None):
         points = {"lap_dist": dl.get("lap_dist") or [], "t": dl.get("t") or []}
     except Exception as e:                    # incl. a /trackmap 422: the ideal lap does not need positions
         print(f"[ideal-lap] trackmap points failed, using the 2 m grid: {type(e).__name__}: {e}")
-    return ideal_lap.build_ideal_lap(path, lap_number, store=_ideal_store(), points=points)
+    return ideal_lap.build_ideal_lap(path, lap_number, store=_ideal_store(), points=points, source=source)

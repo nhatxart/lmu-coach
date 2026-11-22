@@ -90,6 +90,22 @@ def apply_clamp(ln: dict, sat_grid: np.ndarray, axle_grid: np.ndarray | None = N
     return ln
 
 
+def unwrap_lap_dist(ld, L: float | None = None) -> np.ndarray:
+    """Game Lap Dist of one lap made monotonic: every drop by more than half a
+    lap (the wrap at the line) adds L to what follows, and a lap whose first
+    rows still read the previous lap's end starts negative. L: the lap length
+    (default: the largest value)."""
+    ld = np.asarray(ld, float).copy()
+    if len(ld) == 0:
+        return ld
+    L = float(L) if L else float(np.nanmax(ld))
+    wraps = np.concatenate([[0], np.cumsum(np.diff(ld) < -0.5 * L)])
+    ld = ld + L * wraps
+    if ld[0] > 0.5 * L:
+        ld -= L
+    return ld
+
+
 def line_of(raw: dict, ds: float = DS, sat_ref: np.ndarray | None = None,
             sat_axles: np.ndarray | None = None) -> dict:
     """The reference lap's line on a ds grid of its own distance (il_core.line_of):
@@ -110,7 +126,12 @@ def line_of(raw: dict, ds: float = DS, sat_ref: np.ndarray | None = None,
     out = dict(s=sg, ks=f(ks), kv=f(kv), grade=f(gr), v=f(v), thr=f(raw["thr"]), brk=f(raw["brk"]),
                ds=ds, time=float(raw["time"]))
     if raw.get("lapdist") is not None:
-        out["lap_dist"] = f(np.asarray(raw["lapdist"], float))
+        # PREVIOUSLY the raw Lap Dist was interpolated onto the grid and unwrapped
+        # afterwards: a wrap between two samples (the closing row reads ~0) gave
+        # a grid point halfway between L and 0 (e.g. 400 m at the line), a dip
+        # that no unwrap could repair, and np.interp later got a non-monotonic
+        # xp (review minor 2). Fix: unwrap the samples first.
+        out["lap_dist"] = f(unwrap_lap_dist(raw["lapdist"]))
     if sat_ref is not None:
         ax = None
         if sat_axles is not None:
@@ -159,21 +180,38 @@ def _cap_scale(ln: dict) -> np.ndarray:
     return np.ones(len(ln["ks"])) if sc is None else np.asarray(sc, float)
 
 
-def corner_limit(car, ln: dict, mode: str = "balanced") -> tuple[np.ndarray, np.ndarray]:
+VC_BISECT_DIRECT = 21                       # 109 m/s / 2^21: 5e-5 m/s
+
+
+def corner_limit(car, ln: dict, mode: str = "balanced", scan: bool = False) -> tuple[np.ndarray, np.ndarray]:
     """(vc, axle) per grid point: the highest v at which SOME tyre demand is
     feasible, and which axle limits there (0 front, 1 rear, -1 none).
     PREVIOUSLY (spike): vc was the last 0.5 m/s grid speed that was feasible,
     up to 0.5 m/s low (1.3 % on a 38 m/s corner). Fix: bisect between the last
-    feasible and the first infeasible grid speed."""
+    feasible and the first infeasible grid speed (`scan=True`, the reference).
+    Review I1: the grid scan evaluated all 219 grid speeds x 10 demands per point
+    (0.7 s per COTA solve). The lateral demand grows with v^2 faster than the
+    capacity does (load ~ 1 + a v^2, mu falling with v), so feasibility only gets
+    harder with speed and vc is bisected directly between 6 and 115 m/s."""
     ks, kv = ln["ks"], ln["kv"]
     sc = _cap_scale(ln)
-    ok = _any_feasible(car, mode, VG[None, :], ks[:, None], kv[:, None], sc[:, None])
-    allok = ok.all(1)
-    first_bad = np.argmax(~ok, axis=1)
-    vc = np.where(allok, VG[-1], VG[np.maximum(first_bad - 1, 0)])
-    lo, hi = vc.copy(), np.where(allok, VG[-1], VG[first_bad])
-    act = ~allok & (first_bad > 0)
-    for _ in range(VC_BISECT):
+    if scan:
+        ok = _any_feasible(car, mode, VG[None, :], ks[:, None], kv[:, None], sc[:, None])
+        allok = ok.all(1)
+        first_bad = np.argmax(~ok, axis=1)
+        vc = np.where(allok, VG[-1], VG[np.maximum(first_bad - 1, 0)])
+        lo, hi = vc.copy(), np.where(allok, VG[-1], VG[first_bad])
+        act = ~allok & (first_bad > 0)
+        iters = VC_BISECT
+    else:
+        n = len(ks)
+        allok = _any_feasible(car, mode, np.full(n, VG[-1]), ks, kv, sc)
+        none = ~_any_feasible(car, mode, np.full(n, VG[0]), ks, kv, sc)
+        vc = np.where(allok, VG[-1], VG[0])
+        lo, hi = np.full(n, VG[0]), np.full(n, VG[-1])
+        act = ~allok & ~none
+        iters = VC_BISECT_DIRECT
+    for _ in range(iters):
         mid = 0.5 * (lo + hi)
         good = _any_feasible(car, mode, mid, ks, kv, sc)
         lo = np.where(act & good, mid, lo)
@@ -196,7 +234,73 @@ def corner_limit(car, ln: dict, mode: str = "balanced") -> tuple[np.ndarray, np.
     return vc, axle
 
 
-def solve(car, ln: dict, mode: str = "balanced", refine: bool = True, clamp: bool = True) -> dict:
+TABLE_K = 32                                # speed nodes per grid point, dense near the corner limit
+TABLE_BISECT = 12                           # 7.5 g / 2^12 = 0.0018 g on the demand edge (the per-step search: 0.0016)
+GX_MIN, GX_MAX = float(GXT_DN[-1]), float(GXT_UP[-1])
+
+
+def demand_tables(car, ln: dict, mode: str, vc: np.ndarray) -> dict:
+    """Review I1: per grid point i and speed node V[i, k] (from 2 m/s to the
+    point's corner limit vc[i], spaced quadratically towards vc where the
+    feasible demands change fastest), the strongest feasible drive demand `up`
+    and braking demand `dn` (g), and whether any demand is feasible there.
+    Fully vectorised: a feasible seed among G_TRY, then the edge bisected from
+    it (up towards 2 g, down towards -5.5 g); a node without a feasible seed is
+    `ok = False` (the passes then fall back to the per-step search).
+    WHY: the per-step search called _feasible ~40,000 times per solve on tiny
+    arrays (2.3 of 2.5 s); here it is ~40 calls on (n x K) arrays."""
+    ks, kv = ln["ks"], ln["kv"]
+    sc = _cap_scale(ln)[:, None]
+    f = 1.0 - (1.0 - np.linspace(0.0, 1.0, TABLE_K)) ** 2
+    lo_v = 2.0
+    V = lo_v + (np.maximum(vc, lo_v + 1e-3) - lo_v)[:, None] * f[None, :]
+    gy = ks[:, None] * V * V / G
+    gz = np.clip(kv[:, None] * V * V / G, GZ_MIN, GZ_MAX)
+    feas = np.stack([_feasible(car, mode, V, g, gy, gz, sc) for g in G_TRY])
+    ok = feas.any(0)
+    gt = np.asarray(G_TRY, float)[:, None, None]
+    seed_up = np.where(feas, gt, -np.inf).max(0)
+    seed_dn = np.where(feas, gt, np.inf).min(0)
+    seed_up = np.where(ok, seed_up, 0.0)
+    seed_dn = np.where(ok, seed_dn, 0.0)
+
+    def edge(seed, bound):
+        top = _feasible(car, mode, V, np.full(V.shape, bound), gy, gz, sc)
+        lo, hi = seed.copy(), np.full(V.shape, bound)
+        for _ in range(TABLE_BISECT):
+            mid = 0.5 * (lo + hi)
+            good = _feasible(car, mode, V, mid, gy, gz, sc)
+            lo, hi = np.where(good, mid, lo), np.where(good, hi, mid)
+        return np.where(top, bound, lo)
+
+    up = edge(seed_up, GX_MAX)
+    dn = edge(seed_dn, GX_MIN)
+    # the per-step search took braking demands in [-5.5, 0] only: a feasible set
+    # entirely above 0 gave no braking (0)
+    dn = np.where(dn <= 0.0, dn, 0.0)
+    return dict(V=V, up=up, dn=dn, ok=ok)
+
+
+def _lookup(tab: dict, key: str, i: int, v: float):
+    """Interpolated demand at point i and speed v, or None when v is outside
+    the nodes or a bracketing node has no feasible demand."""
+    Vi = tab["V"][i]
+    if v > Vi[-1] + 1e-9:
+        return None
+    k = int(np.searchsorted(Vi, v))
+    if k <= 0:
+        return float(tab[key][i, 0]) if tab["ok"][i, 0] else None
+    if k >= len(Vi):
+        k = len(Vi) - 1
+    if not (tab["ok"][i, k] and tab["ok"][i, k - 1]):
+        return None
+    w = (v - Vi[k - 1]) / (Vi[k] - Vi[k - 1])
+    a = tab[key][i]
+    return float(a[k - 1] + w * (a[k] - a[k - 1]))
+
+
+def solve(car, ln: dict, mode: str = "balanced", refine: bool = True, clamp: bool = True,
+          fast: bool = True) -> dict:
     """Quasi-steady lap on the fixed line (design §5.2 / §5.3).
     mode 'balanced': each axle carries its share (|gy| <= Af and <= Ar).
     mode 'ceiling': |gy| <= s_f Af + s_r Ar (both axles at the limit at once).
@@ -207,17 +311,21 @@ def solve(car, ln: dict, mode: str = "balanced", refine: bool = True, clamp: boo
     limit replaced by the driven speed at the clamped points (code `measured`,
     §5.4); the ceiling is never clamped. clamp=False gives the plain model.
     `refine`: TEST ONLY (False = the spike's 0.5 m/s corner limit and 0.025 g
-    demand grid, for the parity check); the app always refines."""
+    demand grid, for the parity check); the app always refines.
+    `fast`: the demands from demand_tables (review I1); False = the per-step
+    search (the reference of test_ideal_solver_fast; refine=False implies it)."""
     ks, kv, gr, ds = ln["ks"], ln["kv"], ln["grade"], ln["ds"]
     n = len(ks)
+    fast = fast and refine
     if refine:
-        vc, axle = corner_limit(car, ln, mode)
+        vc, axle = corner_limit(car, ln, mode, scan=not fast)
     else:
         ok = _any_feasible(car, mode, VG[None, :], ks[:, None], kv[:, None], _cap_scale(ln)[:, None])
         first_bad = np.argmax(~ok, axis=1)
         vc = np.where(ok.all(1), VG[-1], VG[np.maximum(first_bad - 1, 0)])
         axle = np.where(ok.all(1), -1, 0)
     code = np.where(axle == 0, 0, np.where(axle == 1, 1, 4)).astype(int)
+    tab = demand_tables(car, ln, mode, vc) if fast else None      # on the MODEL's corner limit
     if clamp and mode == "balanced" and ln.get("v_clamp") is not None:
         # The measurement replaces the model where there is one: at a point the
         # lap's own tyres were saturated, v_M / v_ref = sqrt(A / |gy|) is the
@@ -244,23 +352,27 @@ def solve(car, ln: dict, mode: str = "balanced", refine: bool = True, clamp: boo
 
     def accel(i, v):
         gy = ks[i] * v * v / G
-        gz = min(max(kv[i] * v * v / G, GZ_MIN), GZ_MAX)
-        ok = _feasible(car, mode, v, GX_ALL, gy, gz, scs[i])
-        t = 0.0
-        if ok.any():
-            k = int(np.flatnonzero(ok)[-1])
-            t = GX_ALL[k] if (k == len(GX_ALL) - 1 or not refine) else edge(v, gy, gz, GX_ALL[k], GX_STEP, scs[i])
+        t = _lookup(tab, "up", i, v) if fast else None
+        if t is None:
+            gz = min(max(kv[i] * v * v / G, GZ_MIN), GZ_MAX)
+            ok = _feasible(car, mode, v, GX_ALL, gy, gz, scs[i])
+            t = 0.0
+            if ok.any():
+                k = int(np.flatnonzero(ok)[-1])
+                t = GX_ALL[k] if (k == len(GX_ALL) - 1 or not refine) else edge(v, gy, gz, GX_ALL[k], GX_STEP, scs[i])
         p, g = car.power(v, gy) - gr[i], t - car.drag(v) - gr[i]
         return (p, 4) if p <= g else (g, 3)
 
     def brake(i, v):
-        gy = ks[i] * v * v / G
-        gz = min(max(kv[i] * v * v / G, GZ_MIN), GZ_MAX)
-        ok = _feasible(car, mode, v, GXT_DN, gy, gz, scs[i])
-        t = 0.0
-        if ok.any():
-            k = int(np.flatnonzero(ok)[-1])
-            t = GXT_DN[k] if (k == len(GXT_DN) - 1 or not refine) else edge(v, gy, gz, GXT_DN[k], -GX_STEP, scs[i])
+        t = _lookup(tab, "dn", i, v) if fast else None
+        if t is None:
+            gy = ks[i] * v * v / G
+            gz = min(max(kv[i] * v * v / G, GZ_MIN), GZ_MAX)
+            ok = _feasible(car, mode, v, GXT_DN, gy, gz, scs[i])
+            t = 0.0
+            if ok.any():
+                k = int(np.flatnonzero(ok)[-1])
+                t = GXT_DN[k] if (k == len(GXT_DN) - 1 or not refine) else edge(v, gy, gz, GXT_DN[k], -GX_STEP, scs[i])
         return t - car.drag(v) - gr[i]            # kinematic gx (negative)
 
     # Values only ever decrease, so the last bound that lowered a point is the

@@ -14,6 +14,7 @@ Conventions (measured, see 2026-11-10-ideal-lap-strategy.md):
 from __future__ import annotations
 
 import hashlib
+from collections import OrderedDict
 import io
 import contextlib
 from dataclasses import dataclass, field, fields
@@ -33,6 +34,30 @@ WHEELS = ("FL", "FR", "RL", "RR")
 # Per-wheel arrays a State may carry (4 x n each, None when the file lacks them).
 WHEEL_KEYS = ("load", "susp", "slip", "fx", "fy", "gf")
 SCALAR_KEYS = ("v", "gx", "gy", "gz", "grade", "thr", "brk", "abs", "tc", "yawacc")
+
+
+class LRU(OrderedDict):
+    """A dict that keeps its `maxsize` most recently used entries (review
+    minor 4: the reductions are ~8 MB each, and the response and store caches
+    grew with every file and lap ever asked for)."""
+
+    def __init__(self, maxsize: int):
+        super().__init__()
+        self.maxsize = int(maxsize)
+
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        self.move_to_end(key)
+        return value
+
+    def get(self, key, default=None):
+        return self[key] if key in self else default
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        while len(self) > self.maxsize:
+            self.popitem(last=False)
 
 
 def smooth(a: np.ndarray, n: int) -> np.ndarray:
@@ -221,9 +246,35 @@ def _ensure_wheel_channels() -> None:
             telemetry.WHEEL_CHANNELS.append(extra)
 
 
+def _topography_stamp(path: Path) -> str:
+    """'' for a recording with Pos Y (its grade is its own); else the mtime of
+    its track's topography file, which gives its grade ('none' without one)."""
+    import duckdb
+    from . import track_topography as tt
+    try:
+        con = duckdb.connect(str(path), read_only=True)
+        try:
+            tables = {r[0] for r in con.execute("SELECT table_name FROM information_schema.tables").fetchall()}
+            if "Pos Y" in tables:
+                return ""
+            md = dict(con.execute("SELECT key, value FROM metadata").fetchall())
+        finally:
+            con.close()
+        slug = tt.slug_for_track(md.get("TrackName", ""))
+        p = tt.topography_path(slug) if slug else None
+        return f"topo {p.stat().st_mtime_ns}" if p is not None and p.exists() else "topo none"
+    except Exception:
+        return "topo ?"
+
+
 def _cache_key(path: Path) -> str:
+    """name, mtime, size, REDUCTION_VERSION and, for files without Pos Y, the
+    topography's mtime.
+    PREVIOUSLY a rebuilt <slug>.topography.json did not refresh the grade of the
+    files that take it from there (review minor 6)."""
     st = path.stat()
-    return hashlib.sha1(f"{path.name}|{st.st_mtime}|{st.st_size}|{REDUCTION_VERSION}".encode()).hexdigest()[:20]
+    key = f"{path.name}|{st.st_mtime}|{st.st_size}|{REDUCTION_VERSION}|{_topography_stamp(path)}"
+    return hashlib.sha1(key.encode()).hexdigest()[:20]
 
 
 def _save_npz(red: FileReduction, p: Path) -> None:

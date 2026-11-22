@@ -79,7 +79,8 @@ def test_ideal_lap_schema_and_trace_on_the_driven_line(session, monkeypatch):
     assert n > 10 and all(len(v) == n for v in d["trace"].values())
     t = np.asarray(d["trace"]["t"])
     assert (np.diff(t) > 0).all()
-    assert t[-1] == pytest.approx(d["ideal"]["time_s"], abs=0.15)      # the last point is just before the line
+    # §7: t ends at ideal.time_s (review minor 8: it ended one 2 m step short)
+    assert t[-1] == pytest.approx(d["ideal"]["time_s"], abs=0.005)
     i = d["ideal"]
     assert i["gain_min_s"] <= i["gain_s"] <= i["gain_max_s"]
     assert i["time_s"] <= d["lap_time_s"] + 1e-6                        # never slower than the lap
@@ -98,6 +99,25 @@ def test_lap_omitted_is_the_lap_trackmap_picks(session, monkeypatch):
     tm = _get(session, "trackmap")
     assert d["status"] == "ok" and d["lap_number"] == tm["lap_number"]
     assert len(d["trace"]["t"]) == len(tm["driven_line"]["lap_dist"])
+
+
+def test_a_reference_lap_is_indexed_under_its_own_source(tmp_path, monkeypatch):
+    """Review minor 9: the public-line lookup indexed every file as 'sessions'."""
+    from app import session_index
+    ref = tmp_path / "reference_laps"
+    ref.mkdir()
+    f = write_hilly_session(ref / "Synthetic Hill Ring-Synthetic Car #1-2026-11-02T10_00_00Z.duckdb",
+                            lap_offsets=(0.0, 1.0), slip_angles=True)
+    monkeypatch.setattr(main, "OWN_SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(main, "REFERENCE_LAPS_DIR", ref)
+    monkeypatch.setattr(main, "_ideal_store", lambda: FakeStore(_car(mu=(1.6, 1.7), power=0.6)))
+    ideal_lap._CACHE.clear()
+    seen = []
+    real = session_index.file_entry
+    monkeypatch.setattr(session_index, "file_entry", lambda p, source: seen.append(source) or real(p, source))
+    r = TestClient(main.app).get(f"/sessions/reference_laps/{quote(f.name)}/ideal-lap?lap_number=0")
+    assert r.status_code == 200 and r.json()["status"] == "ok"
+    assert seen and set(seen) == {"reference_laps"}
 
 
 def test_the_real_store_refuses_this_session_without_an_error(session):
