@@ -141,6 +141,33 @@ def test_reduction_key_follows_the_topography_file(tmp_path, monkeypatch):
     assert ideal_state._cache_key(with_y) == k_y                               # grade from Pos Y: keep
 
 
+# ── Minor 7: group files from the other session folder count ─────────────────
+
+def test_setup_median_uses_group_files_from_both_folders(tmp_path, states):
+    from test_ideal_store import _red, _entry, NAME, NAME2
+    own, ref = tmp_path / "sessions", tmp_path / "reference_laps"
+    own.mkdir(); ref.mkdir()
+    base = dict(toe=[0.3, 0.2], press=[180.0, 178.0], rh_mid=[52.0, 70.0], rh_fast=[45.0, 66.0],
+                compound="M/M", track_temp=30.0)
+    reds = {NAME: _red(NAME, states[:3], setup=dict(base, camber=[2.0, 1.6])),
+            NAME2: _red(NAME2, states[3:6], setup=dict(base, camber=[3.0, 3.0]))}
+    (own / NAME).write_bytes(b"")
+    (ref / NAME2).write_bytes(b"")
+    def reducer(p):                                    # as the real one: only a file that is there
+        if not p.exists():
+            raise FileNotFoundError(p)
+        return reds[p.name]
+
+    st = ST.IdealStore(tmp_path / "profiles", [own, ref], reducer=reducer,
+                       indexer=lambda p: _entry(p.name), v3_peaks=None)
+    _, info = st.car_for_lap(own / NAME)
+    assert info["n_files"] == 2
+    # median of the two files' camber = [2.5, 2.3]: NAME is 0.5 / 0.7 deg off it
+    assert info["setup_differs"] == ["camber"]
+    g = st.group_for(own / NAME)
+    assert sorted(g.paths) == sorted([str(own / NAME), str(ref / NAME2)])
+
+
 # ── Minor 8: the trace's t ends at the ideal lap time ────────────────────────
 
 def test_trace_t_includes_the_closing_step():

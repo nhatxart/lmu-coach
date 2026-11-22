@@ -61,12 +61,17 @@ class GroupEntry:
     confidence: str                  # 'high' | 'medium' | 'low'
     selfcheck: dict | None
     notes: list = field(default_factory=list)
+    # Full paths of `files` (same order). PREVIOUSLY only the names were kept and
+    # the store looked them up next to the reference file, so a group file in the
+    # other session folder (reference_laps) silently dropped out of the setup
+    # median (review minor 7). Profiles without it fall back to that lookup.
+    paths: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {"key": self.key, "scope": self.scope, "fingerprint": self.fingerprint,
                 "game_version": self.game_version, "files": list(self.files), "n_laps": self.n_laps,
                 "fit": self.fit.to_dict(), "beta": self.beta, "confidence": self.confidence,
-                "selfcheck": self.selfcheck, "notes": list(self.notes)}
+                "selfcheck": self.selfcheck, "notes": list(self.notes), "paths": list(self.paths)}
 
     @classmethod
     def from_dict(cls, d: dict) -> "GroupEntry":
@@ -367,10 +372,11 @@ class IdealStore:
 
     def _fit_entry(self, key: str, scope: str, paths: list[Path], car_class: str, car_model: str,
                    prof: dict) -> GroupEntry | Refusal:
-        reds = []
+        reds, where = [], {}
         for p in paths:
             try:
                 reds.append(self._reduction(p))
+                where.setdefault(p.name, str(p))
             except Exception as exc:                         # one unreadable file must not refuse the group
                 prof.setdefault("unreadable", {})[p.name] = f"{type(exc).__name__}: {exc}"
         reds = [r for r in reds if r.laps]
@@ -387,7 +393,9 @@ class IdealStore:
         fp = fingerprint(reds, peaks)
         old = (prof["groups"].get(key) if scope == "track" else prof.get("car_scope")) or None
         if old and old.get("fingerprint") == fp:
-            return GroupEntry.from_dict(old)
+            ge = GroupEntry.from_dict(old)
+            ge.paths = [where.get(f, f) for f in ge.files]   # where the files are now
+            return ge
         try:
             fit = C.fit_group(reds, car_class, peaks)
         except C.InsufficientData as exc:
@@ -398,7 +406,7 @@ class IdealStore:
         notes = vnotes + weak + (["transferred: estimate from other tracks"] if scope == "car" else [])
         ge = GroupEntry(key=key, scope=scope, fingerprint=fp, game_version=version,
                         files=[r.file for r in reds], n_laps=n, fit=fit, beta=beta, confidence=conf,
-                        selfcheck=sc, notes=notes)
+                        selfcheck=sc, notes=notes, paths=[where.get(r.file, r.file) for r in reds])
         if scope == "track":
             prof["groups"][key] = ge.to_dict()
         else:
@@ -407,7 +415,7 @@ class IdealStore:
             lm = fit.load_models.get(r.file)
             prof["files"][r.file] = {"mtime": r.mtime, "size": r.size,
                                      "load_model": lm.to_dict() if lm else None,
-                                     "laps": [s.lap_number for s in r.laps],
+                                     "laps": [s.lap_number for s in r.laps], "path": where.get(r.file),
                                      "setup": setup_fingerprint(None, None, lm, measured=r.setup or {})}
         prof["car_class"] = car_class
         self.save_profile(prof)
@@ -472,10 +480,10 @@ class IdealStore:
         lm = lambda f: g.fit.load_models.get(f) or g.fit.load_models.get("__group__")   # noqa: E731
         fp = setup_fingerprint(None, None, lm(name), measured=red.setup or {})
         fps = []
-        for f in g.files:
+        paths = g.paths if len(g.paths) == len(g.files) else [str(path.with_name(f)) for f in g.files]
+        for f, p in zip(g.files, paths):
             try:
-                fps.append(setup_fingerprint(None, None, lm(f),
-                                             measured=self._reduction(path.with_name(f)).setup or {}))
+                fps.append(setup_fingerprint(None, None, lm(f), measured=self._reduction(Path(p)).setup or {}))
             except Exception:
                 continue
         differs = setup_differs(fp, group_median(fps)) if fps else []
