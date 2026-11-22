@@ -33,20 +33,11 @@ _CACHE: dict = {}
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def _mono(ld: np.ndarray, L: float) -> np.ndarray:
-    """Game Lap Dist made monotonic over one lap: the first rows of a lap can
-    still read the previous lap's end (just before the wrap; they become
-    negative distances), and the last rows the next lap's start (the closing
-    row reads ~0; they become L + d)."""
-    ld = np.asarray(ld, float).copy()
-    if len(ld) == 0:
-        return ld
-    k = int(max(1, 0.05 * len(ld)))
-    head, tail = np.zeros(len(ld), bool), np.zeros(len(ld), bool)
-    head[:k] = ld[:k] > 0.5 * L
-    tail[-k:] = ld[-k:] < 0.5 * L
-    ld[head] -= L
-    ld[tail] += L
-    return ld
+    """Game Lap Dist made monotonic over one lap (ideal_solver.unwrap_lap_dist):
+    the first rows of a lap can still read the previous lap's end (negative
+    distances), and the last rows the next lap's start (L + d). The grid's
+    lap_dist is already unwrapped by line_of; unwrapping again changes nothing."""
+    return SV.unwrap_lap_dist(ld, L)
 
 
 def _axle_fits(info: dict) -> list:

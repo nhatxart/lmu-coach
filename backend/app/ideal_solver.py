@@ -90,6 +90,22 @@ def apply_clamp(ln: dict, sat_grid: np.ndarray, axle_grid: np.ndarray | None = N
     return ln
 
 
+def unwrap_lap_dist(ld, L: float | None = None) -> np.ndarray:
+    """Game Lap Dist of one lap made monotonic: every drop by more than half a
+    lap (the wrap at the line) adds L to what follows, and a lap whose first
+    rows still read the previous lap's end starts negative. L: the lap length
+    (default: the largest value)."""
+    ld = np.asarray(ld, float).copy()
+    if len(ld) == 0:
+        return ld
+    L = float(L) if L else float(np.nanmax(ld))
+    wraps = np.concatenate([[0], np.cumsum(np.diff(ld) < -0.5 * L)])
+    ld = ld + L * wraps
+    if ld[0] > 0.5 * L:
+        ld -= L
+    return ld
+
+
 def line_of(raw: dict, ds: float = DS, sat_ref: np.ndarray | None = None,
             sat_axles: np.ndarray | None = None) -> dict:
     """The reference lap's line on a ds grid of its own distance (il_core.line_of):
@@ -110,7 +126,12 @@ def line_of(raw: dict, ds: float = DS, sat_ref: np.ndarray | None = None,
     out = dict(s=sg, ks=f(ks), kv=f(kv), grade=f(gr), v=f(v), thr=f(raw["thr"]), brk=f(raw["brk"]),
                ds=ds, time=float(raw["time"]))
     if raw.get("lapdist") is not None:
-        out["lap_dist"] = f(np.asarray(raw["lapdist"], float))
+        # PREVIOUSLY the raw Lap Dist was interpolated onto the grid and unwrapped
+        # afterwards: a wrap between two samples (the closing row reads ~0) gave
+        # a grid point halfway between L and 0 (e.g. 400 m at the line), a dip
+        # that no unwrap could repair, and np.interp later got a non-monotonic
+        # xp (review minor 2). Fix: unwrap the samples first.
+        out["lap_dist"] = f(unwrap_lap_dist(raw["lapdist"]))
     if sat_ref is not None:
         ax = None
         if sat_axles is not None:
