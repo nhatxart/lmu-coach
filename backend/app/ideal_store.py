@@ -168,8 +168,8 @@ def selfcheck(reductions: list, car_class: str) -> dict | None:
 
 def beta_and_confidence(scope: str, n_laps: int, fit: C.GroupFit, sc: dict | None) -> tuple[float, str, list]:
     """Design §5.4 (β, with the round-1 knee rule) and §6.3 (confidence).
-    `low` also when a part of the car is assumed / a prior / default terms;
-    step 5 may lower it further when such a part binds on > 10 % of the lap."""
+    `low` also with `default` grip terms; an assumed kb / kt or a drag prior is
+    listed and lowers it only where it binds on > 10 % of the lap (ideal_lap)."""
     axles = [fit.axle(0), fit.axle(1)]
     knee_based = any(a.saturation == "knee" for a in axles)
     both_observed = all(a.status == "observed" for a in axles)
@@ -186,7 +186,12 @@ def beta_and_confidence(scope: str, n_laps: int, fit: C.GroupFit, sc: dict | Non
         return BETA_CAR, "low", weak
     beta = BETA_TIGHT if (n_laps >= HIGH_LAPS and both_observed and not knee_based) else BETA_TRACK
     passes = sc is not None and abs(sc["shift"]) <= SELFCHECK_SHIFT and sc["sd"] <= SELFCHECK_SD
-    hard_weak = [w for w in weak if w != "drag prior"]        # §6.3: only if it binds; known at step 5
+    # PREVIOUSLY an assumed kb / kt made the fit `low` here unconditionally. §6.3:
+    # low only when the assumed part binds on > 10 % of the lap, which
+    # ideal_lap.analyse_lap checks from the solve's binding shares. Fix: only
+    # `default` grip terms (§13 R2) lower it here; kappa and the drag prior are
+    # notes, judged per lap.
+    hard_weak = [w for w in weak if w.endswith("terms default")]
     if hard_weak:
         conf = "low"
     elif n_laps >= HIGH_LAPS and both_observed and passes:
