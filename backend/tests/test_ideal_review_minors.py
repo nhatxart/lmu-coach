@@ -122,6 +122,25 @@ def test_fingerprint_holds_the_fit_version_and_the_peaks(tmp_path, states, monke
     s5 = store(); s5.group_for(w.path(NAME)); assert s5.fits_done == 1          # new tyre-v3 peaks (knee_vs_v3)
 
 
+# ── Minor 6: the npz key follows the topography of files without Pos Y ──────
+
+def test_reduction_key_follows_the_topography_file(tmp_path, monkeypatch):
+    import os
+    from app import ideal_state, track_topography as tt
+    from synthetic_track import write_hilly_session
+    no_y = write_hilly_session(tmp_path / "noy.duckdb", lap_offsets=(0.0,), with_pose=False)
+    with_y = write_hilly_session(tmp_path / "y.duckdb", lap_offsets=(0.0,), with_pose=True)
+    topo = tmp_path / "synth.topography.json"
+    topo.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(tt, "slug_for_track", lambda name: "synth")
+    monkeypatch.setattr(tt, "topography_path", lambda slug: topo)
+    k_no_y, k_y = ideal_state._cache_key(no_y), ideal_state._cache_key(with_y)
+    st = topo.stat()
+    os.utime(topo, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))       # the topography was rebuilt
+    assert ideal_state._cache_key(no_y) != k_no_y                              # grade from it: rebuild
+    assert ideal_state._cache_key(with_y) == k_y                               # grade from Pos Y: keep
+
+
 # ── Minor 8: the trace's t ends at the ideal lap time ────────────────────────
 
 def test_trace_t_includes_the_closing_step():

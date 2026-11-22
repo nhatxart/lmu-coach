@@ -246,9 +246,35 @@ def _ensure_wheel_channels() -> None:
             telemetry.WHEEL_CHANNELS.append(extra)
 
 
+def _topography_stamp(path: Path) -> str:
+    """'' for a recording with Pos Y (its grade is its own); else the mtime of
+    its track's topography file, which gives its grade ('none' without one)."""
+    import duckdb
+    from . import track_topography as tt
+    try:
+        con = duckdb.connect(str(path), read_only=True)
+        try:
+            tables = {r[0] for r in con.execute("SELECT table_name FROM information_schema.tables").fetchall()}
+            if "Pos Y" in tables:
+                return ""
+            md = dict(con.execute("SELECT key, value FROM metadata").fetchall())
+        finally:
+            con.close()
+        slug = tt.slug_for_track(md.get("TrackName", ""))
+        p = tt.topography_path(slug) if slug else None
+        return f"topo {p.stat().st_mtime_ns}" if p is not None and p.exists() else "topo none"
+    except Exception:
+        return "topo ?"
+
+
 def _cache_key(path: Path) -> str:
+    """name, mtime, size, REDUCTION_VERSION and, for files without Pos Y, the
+    topography's mtime.
+    PREVIOUSLY a rebuilt <slug>.topography.json did not refresh the grade of the
+    files that take it from there (review minor 6)."""
     st = path.stat()
-    return hashlib.sha1(f"{path.name}|{st.st_mtime}|{st.st_size}|{REDUCTION_VERSION}".encode()).hexdigest()[:20]
+    key = f"{path.name}|{st.st_mtime}|{st.st_size}|{REDUCTION_VERSION}|{_topography_stamp(path)}"
+    return hashlib.sha1(key.encode()).hexdigest()[:20]
 
 
 def _save_npz(red: FileReduction, p: Path) -> None:
