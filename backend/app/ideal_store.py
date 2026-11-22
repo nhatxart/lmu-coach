@@ -90,11 +90,19 @@ def safe_name(car_model: str) -> str:
     return "".join(c if c.isalnum() or c in " -_" else "_" for c in car_model)
 
 
-def fingerprint(reductions: list) -> str:
-    """sha1 of the sorted file#lap keys, each file's mtime and size, VERSION."""
+def fingerprint(reductions: list, v3_peaks: dict | None = None) -> str:
+    """sha1 of the sorted file#lap keys, each file's mtime and size, VERSION,
+    the fit code's version (ideal_car.FIT_VERSION), the reduction version and
+    the tyre-v3 peaks of the knee cross-check.
+    PREVIOUSLY only VERSION: a profile written before a change of the fit code
+    (this branch had several) was reused as if nothing had changed (review
+    minor 5)."""
+    from . import ideal_state
     keys = sorted(f"{r.file}#{s.lap_number}" for r in reductions for s in r.laps)
     stamps = sorted(f"{r.file}|{r.mtime}|{r.size}" for r in reductions)
-    return hashlib.sha1("\n".join(keys + stamps + [f"v{VERSION}"]).encode()).hexdigest()
+    code = [f"v{VERSION}", f"fit{C.FIT_VERSION}", f"red{ideal_state.REDUCTION_VERSION}",
+            "v3 " + json.dumps(v3_peaks or {}, sort_keys=True)]
+    return hashlib.sha1("\n".join(keys + stamps + code).encode()).hexdigest()
 
 
 def _version_key(v):
@@ -375,12 +383,13 @@ class IdealStore:
         if n < need:
             where = "on this track" if scope == "track" else "of this car"
             return Refusal(f"{need} clean laps {where} needed, have {n}")
-        fp = fingerprint(reds)
+        peaks = self.v3_peaks(car_model) if self.v3_peaks else None
+        fp = fingerprint(reds, peaks)
         old = (prof["groups"].get(key) if scope == "track" else prof.get("car_scope")) or None
         if old and old.get("fingerprint") == fp:
             return GroupEntry.from_dict(old)
         try:
-            fit = C.fit_group(reds, car_class, self.v3_peaks(car_model) if self.v3_peaks else None)
+            fit = C.fit_group(reds, car_class, peaks)
         except C.InsufficientData as exc:
             return Refusal(str(exc))
         self.fits_done += 1

@@ -90,6 +90,38 @@ def test_caches_are_bounded(tmp_path):
     assert loads.count("f0.duckdb") == 2
 
 
+# ── Minor 5: a fit-code change, a new reduction version or new tyre-v3 peaks refit ──
+
+@pytest.fixture(scope="module")
+def states():
+    from app.ideal_state import lap_state
+    from synthetic_ideal import true_car, line, perfect_laps
+    raws, _, _ = perfect_laps(true_car(), line(), n_laps=6, rng=np.random.default_rng(4), place_sd=0.0, lap_sd=0.0)
+    return [lap_state(r) for r in raws]
+
+
+def test_fingerprint_holds_the_fit_version_and_the_peaks(tmp_path, states, monkeypatch):
+    from test_ideal_store import World, _red, _entry, NAME
+    w = World(tmp_path)
+    w.add(_red(NAME, states), _entry(NAME))
+    peaks = {"front": 4.0, "rear": 3.5}
+
+    def store():
+        s = w.store()
+        s.v3_peaks = lambda model: dict(peaks)
+        return s
+
+    s1 = store(); s1.group_for(w.path(NAME)); assert s1.fits_done == 1
+    s2 = store(); s2.group_for(w.path(NAME)); assert s2.fits_done == 0          # unchanged: from the profile
+    monkeypatch.setattr(C, "FIT_VERSION", C.FIT_VERSION + 1)
+    s3 = store(); s3.group_for(w.path(NAME)); assert s3.fits_done == 1          # the fit code changed
+    from app import ideal_state
+    monkeypatch.setattr(ideal_state, "REDUCTION_VERSION", ideal_state.REDUCTION_VERSION + 1)
+    s4 = store(); s4.group_for(w.path(NAME)); assert s4.fits_done == 1
+    peaks["rear"] = 3.9
+    s5 = store(); s5.group_for(w.path(NAME)); assert s5.fits_done == 1          # new tyre-v3 peaks (knee_vs_v3)
+
+
 # ── Minor 8: the trace's t ends at the ideal lap time ────────────────────────
 
 def test_trace_t_includes_the_closing_step():
