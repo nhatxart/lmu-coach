@@ -62,6 +62,34 @@ def test_trace_codes_take_the_nearest_grid_point():
                                   [0, 1, 2, 4, 9, 0])
 
 
+# ── Minor 4: the in-memory caches are bounded ────────────────────────────────
+
+def test_lru_keeps_the_most_recent():
+    from app.ideal_state import LRU
+    c = LRU(3)
+    for k in "abc":
+        c[k] = k
+    assert c["a"] == "a"                                # a is now the most recent
+    c["d"] = "d"
+    assert list(c) == ["c", "a", "d"] and "b" not in c
+    assert c.get("zz") is None
+
+
+def test_caches_are_bounded(tmp_path):
+    from app import ideal_lap, main
+    from app.ideal_state import LRU
+    assert isinstance(ideal_lap._CACHE, LRU) and isinstance(main._IDEAL_STORES, LRU)
+    loads = []
+    st = ST.IdealStore(tmp_path, [tmp_path], reducer=lambda p: loads.append(p.name) or p.name,
+                       indexer=lambda p: {})
+    assert isinstance(st._red, LRU)
+    for i in range(st._red.maxsize + 3):
+        st._reduction(tmp_path / f"f{i}.duckdb")
+    assert len(st._red) == st._red.maxsize
+    st._reduction(tmp_path / "f0.duckdb")              # evicted: loaded again
+    assert loads.count("f0.duckdb") == 2
+
+
 # ── Minor 8: the trace's t ends at the ideal lap time ────────────────────────
 
 def test_trace_t_includes_the_closing_step():

@@ -21,13 +21,13 @@ import numpy as np
 
 from . import ideal_solver as SV
 from .ideal_car import AxleFit, AXLES, is_extrapolated
-from .ideal_state import G, GRID_HZ, lap_raw, lap_state, _ensure_wheel_channels
+from .ideal_state import G, GRID_HZ, LRU, lap_raw, lap_state, _ensure_wheel_channels
 
 CORNER_AT_LIMIT_S = 0.02            # §5.6 verdict
 ASSUMED_BINDS_SHARE = 0.10          # §6.3: an assumed part that binds on more of the lap -> low
 PUBLIC_MARGIN = 0.995               # §14 R9: ideal faster than public best x 0.995 -> flag
 FALLBACK_CURV = 1 / 300.0           # corner windows without a track reference: radius < 300 m
-_CACHE: dict = {}
+_CACHE = LRU(32)                    # responses (path, mtime, size, lap, fingerprint, points)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

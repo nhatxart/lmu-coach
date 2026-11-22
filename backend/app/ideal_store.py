@@ -28,7 +28,9 @@ from pathlib import Path
 import numpy as np
 
 from . import ideal_car as C
-from .ideal_state import FileReduction, MAX_GROUP_LAPS, load_reduction, setup_fingerprint
+from .ideal_state import LRU, FileReduction, MAX_GROUP_LAPS, load_reduction, setup_fingerprint
+
+REDUCTIONS_IN_MEMORY = 12          # ~8 MB each; a fit group rarely has more files (the npz cache keeps all)
 
 VERSION = 1
 LAYOUT_TOLERANCE = 0.03
@@ -280,7 +282,7 @@ class IdealStore:
         self.indexer = indexer
         self.v3_peaks = v3_peaks
         self.fits_done = 0                       # how many group fits ran (tests, ingest log)
-        self._red: dict = {}
+        self._red = LRU(REDUCTIONS_IN_MEMORY)
 
     # ── files ────────────────────────────────────────────────────────────
     def _paths(self) -> list[Path]:

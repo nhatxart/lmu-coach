@@ -14,6 +14,7 @@ Conventions (measured, see 2026-11-10-ideal-lap-strategy.md):
 from __future__ import annotations
 
 import hashlib
+from collections import OrderedDict
 import io
 import contextlib
 from dataclasses import dataclass, field, fields
@@ -33,6 +34,30 @@ WHEELS = ("FL", "FR", "RL", "RR")
 # Per-wheel arrays a State may carry (4 x n each, None when the file lacks them).
 WHEEL_KEYS = ("load", "susp", "slip", "fx", "fy", "gf")
 SCALAR_KEYS = ("v", "gx", "gy", "gz", "grade", "thr", "brk", "abs", "tc", "yawacc")
+
+
+class LRU(OrderedDict):
+    """A dict that keeps its `maxsize` most recently used entries (review
+    minor 4: the reductions are ~8 MB each, and the response and store caches
+    grew with every file and lap ever asked for)."""
+
+    def __init__(self, maxsize: int):
+        super().__init__()
+        self.maxsize = int(maxsize)
+
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        self.move_to_end(key)
+        return value
+
+    def get(self, key, default=None):
+        return self[key] if key in self else default
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        while len(self) > self.maxsize:
+            self.popitem(last=False)
 
 
 def smooth(a: np.ndarray, n: int) -> np.ndarray:

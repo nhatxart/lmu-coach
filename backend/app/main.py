@@ -1225,7 +1225,8 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
 # ── Ideal lap (design docs/superpowers/specs/2026-11-10-ideal-lap-design.md) ──
 # One store per (session folders, profiles dir): it keeps the per-file
 # reductions in memory, and its JSON profiles under <profiles>/ideal_lap.
-_IDEAL_STORES: dict = {}
+from .ideal_state import LRU as _LRU   # noqa: E402
+_IDEAL_STORES = _LRU(4)
 
 
 def _ideal_store():
