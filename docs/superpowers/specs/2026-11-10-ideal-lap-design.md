@@ -177,6 +177,8 @@ saturated set has ≥ 250 samples, a speed span (p90 − p10 of `v`) ≥ 15 m/s 
 axle when that one is fitted (only `mu1` is then fitted), else the defaults `k = 0.03, c = 0.10`.
 Stored as `terms: fitted | borrowed | default`, with `v_sat: [p02, p98]` of the set's speed.
 
+**(validation round 1, §15 V2: the level of an `observed` axle is now the 0.75 QUANTILE, the
+median below reads 3-4 % low under place noise; `lower_bound` keeps the median.)**
 Calibration **[Fable]**: scale `mu1_j` so that the MEDIAN of observed / predicted on the set is 1
 (`q = 0.5`). Past the knee a tyre holds its peak force, so a saturated sample IS the limit plus
 noise, and the median is the unbiased level. The prototype's 0.75 bought fewer "slower than
@@ -236,6 +238,8 @@ Full throttle (> 98 %, TC off), `|gy| < 0.25`: median of `gx + grade` per 2.5 m/
 (≥ 25 samples), smoothed, extended as the prototype does. Cornering cost `cc` = median of
 (curve − (gx + grade)) / gy² on full throttle with `|gy| > 0.8`, clipped to [0, 0.08].
 `power(v, gy) = curve(v) − cc·gy²`.
+**(validation round 1, §15 V1)** On the reference lap's line the solver adds the measured
+offset `p_off(s)` where that lap was flat out: `power(s, v, gy) = curve(v) − cc·gy² + p_off(s)`.
 
 ### 4.8 What is dropped from the prototype
 `q` as a parameter (fixed median everywhere), the joint drag fit, fitting on measured `lam`.
@@ -267,6 +271,8 @@ axle), `brake`, `traction`, `power`, and `measured` (the point is held by the sa
 
 ### 5.3 Ceiling solve (setup potential)
 `|gy| ≤ s_f·A_f + s_r·A_r` instead of the two axle conditions; rest the same. One time only.
+**(validation round 1, §15 V3)** Braking/traction room per axle `A_j·√(1 − u²)`,
+`u = |gy| / (s_f·A_f + s_r·A_r)` (both axles at the same usage), not `max(A_j, tot)`.
 Meaning shown to the user: "with a setup that brings both axles to the limit together, up to
 −X s". It is an upper bound on what balance changes could give, not a lap this car can do (F2).
 
@@ -545,6 +551,9 @@ Checks (thresholds are from the probes with margin; a fail is a finding, not a r
 | V15 | (round 2) Public sheet: per test lap `driven_pct`, `ideal_pct`, `public_check` | report; any `faster_than_public_best` is a finding | driven 104.8-105.3 %, ideal ≈ 104.5 % (COTA) |
 | V13 | (round 1) Clamp and extrapolation: `clamped_share`; gain with and without the clamp; share of `gain` in corners flagged `extrapolated`; `terms` per axle; knee (continuous) per file of a group | report only; come back if more than half of the gain of a class sits in `extrapolated` corners | clamp removes 0.18-0.94 s per COTA lap |
 
+**(validation round 1, §15 V5: V2 uses the 0.75 quantile; V6 is report-only and V6b is gated;
+the gate counts pairs with ≥ 3 fit laps and confidence not `low`; the gate sentence below is
+superseded there.)**
 Report per pair one row with V1-V12, then a per-class summary. Gate for the UI step: V1-V3 and
 V5-V7 pass on every Hypercar pair and every LMGT3 pair that has ≥ 6 laps; anything else is
 listed with its `confidence`. The user's draft acceptance test ("less than 2 % of the lap more
@@ -561,7 +570,8 @@ Same spirit as `tire_mf.ENABLED_FACTORS`.
 - V2 or V5 fails on a whole class (the model is structurally wrong there, as F1 was).
 - A class shows up whose channels fit neither column of §6.1.
 - V6 fails (the ideal depends on which lap gave the line more than 0.5 %): the line handling or
-  the envelope is wrong.
+  the envelope is wrong. **(Withdrawn in §15 C2: replaced by V6b, the plain model on one line
+  fitted on different lap subsets, > 0.5 %.)**
 - The phantom gain of T6 exceeds 0.5 % of the lap. (Round 1: it did, 0.26-0.72 %; answered in
   §13 with the saturation clamp and a rewritten T6. The trigger stands for the new T6; the next
   candidate would be the same clamp on braking and traction zones.)
@@ -840,6 +850,239 @@ Decisions:
 5. `ideal_lap` / API (§7): `fit.setup`, `fit.setup_differs`, `fit.axles.<j>.trim`,
    `trim_w`, `clamp_conflict`; top-level `public` and `public_check`.
 6. Validation (§9): V14 and V15.
+
+## 15. Validation round 1 decisions (11/22/2026)
+
+Answers the §9 run (`.superpowers/sdd/2026-11-11-ideal-lap/validation-report.md`, summary and
+`validate/tally_out.txt`, code cc7dabe) and the branch review (I2, D1, D2). The §11 trigger fired
+(V5 on a whole class). Conceptual owner from this round: Opus 5.5 (the user moved it from Fable);
+every decision below carries the probe and numbers that let a checker verify it. Probes in the
+spike folder: `opus_p1_v5.py` (where V5 fails, by binding code), `opus_p2_power.py` (measured
+power), `opus_p3_t6level.py` (synthetic level rule). All run the perf worktree's code
+(`ideal-lap-perf`, same times as cc7dabe within 0.01 s), patched in memory only.
+
+### V1. A: the GT3 V5 failure is the ENGINE curve, not the grip model
+
+`opus_p1_v5.py` splits the V5 points (plain model at grip ×1.10, > 2 km/h under driven) by the
+solver's binding code:
+
+| Pair (lap) | V5 base | of it `power` | `brake` | grip ×1.10 and level q75 (`grip_q75`) | power ×1.10 |
+|---|---|---|---|---|---|
+| BMW M4 Fuji 14→15 L7 / L4 / L3 | 17.5 / 16.6 / 14.7 % | 13.8 / 13.3 / 13.0 | 3.7 / 3.3 / 1.7 | 14.6 / 12.7 / 12.7 % | 3.7 / 3.3 / 1.7 % |
+| Porsche Barcelona 24→18 (3 laps) | 5.3 / 2.6 / 0.2 % | all `power` | 0 | | |
+| BMW M4 Imola odd/even (3 laps) | 14.7 / 10.8 / 10.9 % | 14.7 / 10.3 / 10.9 | ≤ 0.4 | | |
+| Ferrari COTA 27→30 | 0.4 / 0 / 0 % | 0 | ≤ 0.2 | | |
+
+Cause: `CarModel.scaled(level)` multiplies `mu1` only, so V5's "level ×1.10" cannot lift a
+power-limited stretch, and the engine curve (§4.7) is the MEDIAN full-throttle acceleration per
+2.5 m/s bin. Lap to lap and place to place the real acceleration at a given speed varies (gear
+at that speed, draft, wind, ERS on Hypercars, grade error), so on half of every straight the
+driven lap accelerates faster than the curve and the deficit accumulates down the straight
+(Fuji's 1.5 km straight: 13 % of the lap). A higher grip quantile does not touch it (`grip_q75`:
+14.6 %). The same median also gave PHANTOM gain on the other half of the straights (below).
+
+**Decision A1: measured power on the reference lap ("power clamp"), the engine analogue of the
+saturation clamp.** Where the reference lap was flat out, the acceleration that was driven is a
+measurement of the engine at that place; the model must not replace it by a median.
+
+    full(s)  = grid points of the reference lap with thr > 98 % and brk < 1 %
+    gx_ref(s) = (v_ref(i+1)^2 - v_ref(i)^2) / (2 g ds)          (kinematic, on the line's smoothed v)
+    p_off(s) = gx_ref + grade - power(v_ref, gy_ref)  on full(s), smoothed by a 5-point (10 m)
+               circular moving average, then set to 0 outside full(s)
+    solver:  power(s, v, gy) = curve(v) - cc gy^2 + p_off(s)          (every solve, every level,
+             model_only, V5, ceiling: p_off is part of the LINE, like ks, kv and grade)
+
+At the driven speed the model then reproduces the driven acceleration exactly; at another speed
+(a faster exit) the curve's shape gives the change. It carries the gear, draft and deployment of
+THAT lap, which is consistent with §12 Q2 ("the ideal lap belongs to that lap"). It is NOT scaled
+by the grip level. Binding code stays `power`.
+
+Measured with A1 (`opus_p2_power.py`; V5 / headline expected gain / unclamped envelope):
+
+| Pair (laps) | V5 base → A1 | expected gain base → A1 | V6 unclamped base → A1 |
+|---|---|---|---|
+| BMW M4 Fuji 14→15 (L7, L4, L3) | 17.5/16.6/14.7 → 3.7/3.3/1.7 % (rest = `brake`) | 0.17/0.29/0.33 → 0.11/0.18/0.18 s | 0.67 → 0.77 % |
+| Porsche Barcelona 24→18 | 5.3/2.6/0.2 → 0/0/0 % | 1.19/1.38/1.49 → 0.93/1.15/1.13 s | 0.52 → 0.56 % |
+| BMW M4 Imola odd/even | 14.7/10.8/10.9 → 0/1.5/0 % | 0.41/0.64/0.75 → 0.14/0.40/0.42 s | 0.70 → 0.76 % |
+| Ferrari COTA 27→30 | 0.4/0/0 → 0.4/0/0 % | 1.17/1.51/1.06 → 0.84/1.35/0.94 s | 0.45 → 0.41 % |
+| Cadillac Road Atlanta 1→2 (v4) | 22.9/22.8/19.3 → 23.3/23.7/22.0 % | 0.91/0.88/0.88 → 0.87/0.79/0.71 s | 0.74 → 0.92 % |
+
+Read: V5 passes on the GT3 pairs (≤ 3.7 %, the rest is braking zones) and is unchanged on
+Ferrari. The headline gain DROPS by 0.06-0.35 s: that was phantom engine gain (the median curve
+above the driven acceleration on part of the straights, where the driver was already flat out).
+Cadillac is not fixed: its under-driven stretches start at slow corner exits (traction 2-5 %,
+worst 15-21 km/h) on v4 files without Pos Y and Yaw Accel; see C.
+V6 does not improve with A1 (it moves 0.04-0.18 % either way); see C2.
+
+### V2. A (continued): the grip level reads LOW under place noise (review I2); level at q 0.75
+
+The second part of the plain model's slowness (BMW Fuji `model_only` −0.75..−1.62 % of the lap,
+under driven on 30-37 % at level 1) is review I2: a limit-driving driver is saturated where the
+local capacity dips, so the median of the saturated set is below the mean capacity.
+`opus_p3_t6level.py` (T6 synthetic, cars A/B, seeds 2026/7/99, place and lap log sd 0.035 each,
+one set at 0.05; capacity = fitted A_j / true A_j at v 25/40/55 m/s, gy 1.6; vs_true = plain
+model time, fitted vs TRUE MEAN car, + = fitted faster; phantom = clamped expected gain on lap 3,
+which a perfect driver should not have):
+
+| level rule | capacity F mean / worst | capacity R mean / worst | vs_true mean / worst | phantom worst | braking cap. | traction cap. |
+|---|---|---|---|---|---|---|
+| median (as built) | 0.957 / 0.934 | 0.969 / 0.934 | −1.42 / −1.93 % | 0.09 % | 0.97-1.03 | 0.93-1.00 |
+| q 0.65 | 0.974 / 0.950 | 0.988 / 0.950 | −0.82 / −1.40 % | 0.12 % | same | 0.92-0.99 |
+| **q 0.75** | **0.991 / 0.965** | **1.002 / 1.059** | **−0.34 / −0.88 %** | **0.14 %** | 0.97-1.03 | 0.90-0.98 |
+| q 0.85 | 1.012 / 1.041 | 1.020 / 1.074 | +0.27 / +1.23 % | 0.17 % | same | 0.88-0.96 |
+| median, base \|gxt\| < 0.08 (D1) | 0.956 | 0.971 | −1.41 % | 0.09 % | | |
+
+Without noise every q gives the same car (capacity within 3 %, vs_true −0.20..+0.08 %), so the
+quantile only corrects the selection, as intended. q 0.75 is the only rule whose MEAN capacity is
+the true one (0.99 / 1.00) without overshooting (q 0.85: +1.2 % lap time on B/99). The phantom
+gain stays ≤ 0.17 % at every q because the clamp holds the saturated points: with the clamp, the
+right level is the TRUE MEAN capacity, and a low level only makes the unclamped parts
+conservative while biasing V5/model_only. D1's tighter base changes nothing under noise
+(0.956 vs 0.957) and costs the noise-free car A front 8 % (0.918, its set drops to 0 samples):
+**rejected; D1 is closed as negligible next to the selection bias.**
+
+**Decision B1:** the level of an `observed` axle is calibrated at **q = 0.75** of
+observed / predicted on its saturated set (§4.2; was the median). `lower_bound` axles keep the
+median of their top-20 % set (they are a lower bound by definition). The trim (§14 R8) uses the
+same statistic: `t_j` = the 0.75 quantile of log(|gy| / A_j) of the file's set. kb and kt stay at
+the median (braking capacity 0.97-1.03 of true at every q; traction 0.90-0.98, a known small low
+bias, conservative; reported by T6, not corrected).
+
+Real pairs with A1 + B1 (`opus_p4_real.py`; V2 at q 0.75 per axle, V5 per lap, V6 unclamped):
+
+| Pair | V2 F / R (q 0.75) | V3 sd F / R | V5 (3 laps) | model_only vs driven | expected gain (3 laps) | V6 |
+|---|---|---|---|---|---|---|
+| BMW M4 Fuji 14→15 | −0.003 / −0.015 | 0.051 / 0.085 | 1.4 / 0.1 / 0.3 % | −0.73 / −0.50 / −0.08 % | 0.17 / 0.37 / 0.26 s | 0.68 % |
+| Porsche Barcelona 24→18 | −0.007 / +0.021 | 0.032 / 0.033 | 0 / 0 / 0 % | +1.29 / +1.23 / +1.35 % | 1.02 / 1.31 / 1.29 s | 0.56 % |
+| Ferrari COTA 27→30 | +0.007 / −0.012 | 0.060 / 0.064 | 0.1 / 0 / 0 % | +1.22 / +1.49 / +1.24 % | 0.96 / 1.52 / 1.11 s | 0.44 % |
+| Ferrari COTA 30→27 | −0.008 / +0.018 | 0.061 / 0.071 | 0 / 0.5 / 0.2 % | +0.77 / +0.72 / +1.11 % | 1.24 / 0.82 / 1.15 s | 0.43 % |
+| BMW M4 Imola odd/even | −0.014 / −0.012 | 0.030 / 0.059 | 0 / 0 / 0 % | −0.30 / −0.18 / +0.16 % | 0.18 / 0.48 / 0.52 s | 0.69 % |
+
+V2 (q 0.75) is inside ±0.02 odd/even and ±0.03 cross-session on every axle; V3 is unchanged
+(a level shift does not change a spread); V5 passes everywhere. (At the median the same pairs
+read V2 −0.048 / +0.015 / ... on the median statistic, which is what the old V2 measured.)
+
+### V3. B: D2, the ceiling
+
+§5.3 models "a setup that brings both axles to the limit together". With balance shifted, the
+lateral force is shared so that both axles reach the same usage `u = |gy| / tot`,
+`tot = s_f A_f + s_r A_r`; a setup change does not make the weaker axle's tyres stronger in
+braking or traction. **Decision:** in ceiling mode the longitudinal room of axle j is
+`A_j · sqrt(1 − u^2)` (braking: `kb (s_f A_f + s_r A_r) sqrt(1 − u^2)`; traction:
+`kt s_r A_r sqrt(1 − u^2)`), replacing `max(A_j, tot)` (spike `il_core.py:264-266`), which gave
+the weaker axle the combined capacity. Lateral condition unchanged (`|gy| ≤ tot`). Effect not
+measured; expected: the ceiling gets slightly slower; the builder reports the ceiling time
+before/after on Ferrari COTA 27→30 and BMW Fuji 14→15 (V13 row), and T5 still holds
+(ceiling ≥ balanced; equal when A_f = A_r, where u = |gy|/A_j exactly).
+
+### V4. C: the remaining failures are sparsity and old recordings, plus one mis-specified check
+
+C1. **V2 (Hypercar)** fails only on pairs fitted on 2 laps (Aston 2→1, Ferrari RA, BMW Hybrid
+Daytona odd/even: −0.049..−0.059). The app refuses a group with fewer than 3 qualifying laps
+(§6.3), so the validation ran on fits the app never makes. Sparsity, not a model fault.
+**Rule:** the gate counts only pairs whose fit set meets §6.3 (≥ 3 qualifying laps); pairs
+below it are reported with "below the app's minimum".
+
+C2. **V6** (GT3 0.52-0.77 % before and 0.56-0.69 % after A1 + B1; Ferrari 0.41-0.55 %) is
+mis-specified as a gate. The unclamped envelope is `max(v_M, v_ref)`: wherever the model is below
+the driven lap (half of the at-limit points by construction of a ±6 % model, plus braking
+zones), it IS the driven lap, so its spread over three laps follows the driver's own lap-to-lap
+spread (BMW Fuji laps 102.65 / 103.23 / 103.74 s, 1.06 %), not the model. The line itself also
+differs lap to lap, and §12 Q2 (accepted) makes the ideal lap belong to its lap. No form of
+"same ideal from every lap" can separate a better line from a model fault. **Decision:** V6 is
+report-only; the §11 trigger on V6 is withdrawn. What V6 meant to catch (the model depends on
+the laps it was fitted on) is V7 (cross-session, 0.01-0.32 %, passing everywhere) plus a new
+**V6b**: the plain model time (unclamped, power curve without A1) on ONE fixed line, fitted on
+the even laps vs the odd laps vs all laps of the fit set: spread ≤ 0.5 % of the lap (gated).
+Sarthe (1.55-2.93 %) is fitted on 1-2 laps: C1.
+
+C3. **V3 (Hypercar)** fails on the v4 Road Atlanta files (Aston, Cadillac: sd 0.076-0.167, no
+Pos Y, grade from topography, no Yaw Accel) and on the 1-2-lap Sarthe fits (C1). The v4 files
+also carry the one V5 failure A1 does not fix (Cadillac 22-24 %, worst 15-21 km/h at slow exits).
+**Rule (data quality, applied by the app, not only by the validation):** a fit whose
+`selfcheck_sd` (§6.3, odd-lap log sd on the saturated set) exceeds **0.075** (the V3 threshold)
+gets confidence `low`, β = max(β, 0.05) and the note "grip varies more than usual in these
+recordings (older recorder files have no height or yaw-acceleration channels)". Such pairs are
+listed, not gated. Measured V3 sd (the same statistic on held-out laps; tally): HF1 pairs with
+≥ 3 fit laps 0.030-0.071, v4 pairs 0.076-0.167, so the rule separates them without naming the
+recorder. The builder checks that `selfcheck_sd` separates them the same way on the v4 and HF1
+groups (report it per pair); if not, the rule keys on the V3-type sd of the fit's own odd laps.
+
+### V5. D: gate and thresholds
+
+Changes, each with its reason:
+- **V2 statistic → the 0.75 quantile** of the held-out log ratio (was the median), thresholds
+  unchanged (±0.02 odd/even, ±0.03 cross-session). Reason: V2 checks that the fit's calibration
+  transfers to held-out laps; it must use the calibration's own statistic (B1). The median is
+  reported next to it.
+- **V6 → report-only; new V6b gated** (C2).
+- **Gate population:** every Hypercar and every LMGT3 pair whose fit set has ≥ 3 qualifying laps
+  and whose fit confidence is not `low` by the C3 rule (was: every Hypercar pair, LMGT3 with ≥ 6
+  laps). Reason: the gate must test fits the app shows with medium/high confidence; low-confidence
+  and refused fits are listed with their reason, and a low-confidence fit on an HF1 recording is
+  itself a finding.
+- **V5 unchanged** (> 2 km/h on ≤ 4 % of the lap, nowhere > 10 km/h at level ×1.10, grip only).
+  It now passes for the right reason; power is not scaled because A1 makes it a measurement.
+- Unchanged: V1, V3, V4, V7, V9, V12 (≤ 10 s, the perf branch), V13-V15.
+
+### V6. T6 asserts (replaces the round-1 list in §8 T6)
+
+Per noisy seed (cars A, B; seeds 2026 / 7 / 99; place and lap log sd 0.035), compared to the
+TRUE MEAN car (the T6 car without the noise field), never to the noisy driven lap:
+- capacity of each `observed` axle (A_j at v 25 / 40 / 55 m/s, gy 1.6, gx 0, gz 0, mean of the
+  three; each car on its own load model): within ±7 % per seed, mean over the seeds within ±3 %
+  (measured q 0.75: 0.965-1.059 per seed, means 0.991 / 1.002);
+- braking capacity `kb (s_f A_f + s_r A_r)` at v 40, gy 0: within ±4 % (0.970-1.031);
+- traction capacity `kt s_r A_r` at v 40, gy 0: within −12 % / +4 % (0.899-0.975; the known low
+  bias, reported);
+- plain-model time on lap 3's line, fitted vs true mean car: within ±1.0 % per seed, mean within
+  ±0.5 % (measured −0.88..+0.73 %, mean −0.34 %);
+- phantom `gain` (clamped, level 1) ≤ 0.5 % of the lap (the §11 trigger; measured ≤ 0.17 %);
+  `gain_min ≤ gain ≤ gain_max`.
+Without noise: capacities within ±4 % (measured 0.994-1.030), plain model
+vs true mean car within ±0.3 %, phantom ≤ 0.1 %. kb and kt are no longer asserted as ratios
+(they compensate the capacity, review I2). Remove the xfails.
+
+### V7. Builder steps (in this order; worktree `ideal-lap`, after merging the perf branch)
+
+1. **A1, measured power** (`ideal_solver.py`): `power_offset(car, ln) -> np.ndarray` as in V1
+   (full = thr > 98 and brk < 1 on the grid; gx_ref kinematic from the line's v with the closing
+   step wrapping; 5-point circular moving average; 0 outside full). Store it in the line
+   (`ln["p_off"]`) when the line is built for a car (`analyse_lap`), and use
+   `car.power(v, gy) + ln["p_off"][i]` in the forward pass of every solve (balanced, ceiling,
+   every level, plain). A line without `p_off` (T3, T5, synthetic tests) behaves as before.
+   PREVIOUSLY / Fix comment with the V1 table. Tests: T3 (circle and straight) unchanged; new
+   T11: a line whose driven profile is the true car's own power-limited straight with a +5 %
+   acceleration bump in one place → the plain model at the driven entry speed reproduces the
+   driven speed along the straight within 0.3 km/h; with `p_off` removed it does not.
+2. **B1, level at q 0.75** (`ideal_car.py`): constant `LEVEL_Q = 0.75`; `finish()` uses it for
+   `observed` axles, the median for `lower_bound`; `axle_trim` uses `np.quantile(x, LEVEL_Q)`.
+   Docstrings (§4.2 "Calibration at the median" → q 0.75, with the V2 table). `ratio_sd` unchanged.
+3. **D2, ceiling room** (`ideal_solver._lat_ok` / `_feasible`): in ceiling mode return the
+   rooms `A_j sqrt(1 - u^2)` with `u = |gy| / tot` as in V3. T5 stays green.
+4. **C3 rule** (`ideal_store.beta_and_confidence`): `selfcheck_sd > 0.075` → `low`, β ≥ 0.05,
+   note. Test: a synthetic group with lap noise 0.06 + 0.06 gets `low`.
+5. **T6** as V6 above (`backend/tests/test_ideal_t6.py` or where T6 lives); report the numbers per
+   seed in the test output.
+6. **Validation tool** (`backend/tools/ideal_lap_report.py`): V2 at q 0.75 (median also printed),
+   V6 report-only, V6b (fit on even / odd / all laps of the fit set, plain model, A1 off, on the
+   first test lap's line; spread %), the gate population rule of V5 above, and in V13 the
+   ceiling time. Re-run all 41 pairs (`validate/run_all.ps1`) on the merged code; new tally.
+7. Bump `ideal_store.VERSION` (profiles from before this round must refit: review minor 5).
+8. DevNotes entry under `### 11/22/2026`.
+
+### V8. What the checker should verify (numbers to reproduce)
+
+- `opus_p1_v5.py` on BMW Fuji 14→15: V5 base 17.5 / 16.6 / 14.7 %, of it `power` 13.8 / 13.3 /
+  13.0 %; `grip_q75` 14.6 / 12.7 / 12.7 % (grip cannot fix it).
+- `opus_p3_t6level.py`: the table of V2 (q 0.75 row: capacity means 0.991 / 1.002, vs_true mean
+  −0.34 %, phantom ≤ 0.14 %), and that without noise q does not matter.
+- `opus_p4_real.py` on the five pairs of the V2 table: V5, V2 (q 0.75) and V6 as listed.
+- After the build, the full §9 re-run: V5 passes on every gated GT3 pair (expected ≤ 4 %; the five
+  probed pairs ≤ 1.4 %); V2 (q 0.75) passes on every gated pair; V3 fails only on `low` fits;
+  V6b ≤ 0.5 %; headline gains drop by 0.0-0.35 s vs the cc7dabe run on GT3 and Ferrari
+  (phantom engine gain removed) and V9 stays inside 0-3 %. If V5 still fails on a gated GT3 pair,
+  or V6b > 0.5 % on a gated pair, that is a finding for the conceptual owner (§11).
 
 ## 12. Questions for the user (most important first; my recommendation after each)
 
