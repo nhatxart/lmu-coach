@@ -1164,3 +1164,12 @@ recommendation.**
 **Answered 11/12/2026:** Q11 yes, public times shown and implausible ideals flagged. Q12: the
 user's Fuji sessions were the layout **with the chicane** (recorded lap length about 4,527 m);
 map that length to the sheet's chicane layout. Q13: accept the per-session grip adjustment.
+
+### 15.x Check amendments and user answers (11/22/2026)
+
+Independent check (Sonnet, .superpowers/sdd/2026-11-11-ideal-lap/check-s15.md): CONFIRMED_WITH_NOTES; every cited number reproduced. Binding for the builder, in addition to §15:
+1. **User answers:** grip level quantile **0.75** (with the C3 cap for low-confidence fits); **measured power (A1) now**, with a diagnostic.
+2. **A1 mask:** exclude TC-active samples from the flat-out set used for the per-place power offset (they read about -0.22 g and would hide 	raction binding). Add the diagnostic: per place with |gy| >= 0.25 on the reference lap, report the offset applied (the mis-specified cc*gy^2 cornering-power term shows here; median shortfall 0.03 g at 55-59 m/s, |gy| ~0.5, BMW Fuji). Record in DevNotes that A1 masks rather than fixes the cornering-power term, and that after A1, V5 no longer tests the engine curve.
+3. **Gate:** do NOT exclude low-confidence pairs from the gate (it would make V3 tautological and drop the Cadillac V5 failure); report them in their own row instead. The >= 3-fit-lap rule stays.
+4. **V6b:** run it first and report the measured spread; its limit is set from that run (not 0.5 % a priori).
+5. **Ceiling (D2):** the formula can be slower than balanced for traction when A_r > tot (e.g. A_f 1.3, A_r 1.5, gy 0.9: 1.149 vs 1.200). Use per point max(ceiling room, balanced room) so ceiling >= balanced holds everywhere; T5 asserts on lap time and includes a rear-strong car. §5.3: the ceiling bounds the lateral part only.
