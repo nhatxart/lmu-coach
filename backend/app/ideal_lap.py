@@ -294,9 +294,10 @@ def _refusal(reason: str, **kw) -> dict:
 
 
 def build_ideal_lap(path: str | Path, lap_number: int | None = None, store=None,
-                    points: dict | None = None) -> dict:
+                    points: dict | None = None, source: str = "sessions") -> dict:
     """The /ideal-lap response (§7). Never raises for data reasons: a missing
-    fit or lap is `insufficient_data` with the reason."""
+    fit or lap is `insufficient_data` with the reason. `source`: the folder the
+    file is in ('sessions' | 'reference_laps'), for the session index."""
     from .ideal_store import Refusal, default_store
     from . import track_topography as tt
     path = Path(path)
@@ -340,7 +341,8 @@ def build_ideal_lap(path: str | Path, lap_number: int | None = None, store=None,
     red = store._reduction(path)
     from .session_index import file_entry
     try:
-        entry = file_entry(path, "sessions")
+        # PREVIOUSLY always "sessions" (review minor 9); the index caches per source
+        entry = file_entry(path, source)
     except Exception:
         entry = {}
     pub, check = public_block(red.car_model, red.car_class, entry.get("track_slug"), entry.get("layout_len_m"),

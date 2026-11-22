@@ -1256,4 +1256,4 @@ def get_ideal_lap(source: str, file: str, lap_number: int | None = None):
         points = {"lap_dist": dl.get("lap_dist") or [], "t": dl.get("t") or []}
     except Exception as e:                    # incl. a /trackmap 422: the ideal lap does not need positions
         print(f"[ideal-lap] trackmap points failed, using the 2 m grid: {type(e).__name__}: {e}")
-    return ideal_lap.build_ideal_lap(path, lap_number, store=_ideal_store(), points=points)
+    return ideal_lap.build_ideal_lap(path, lap_number, store=_ideal_store(), points=points, source=source)

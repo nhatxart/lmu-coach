@@ -101,6 +101,25 @@ def test_lap_omitted_is_the_lap_trackmap_picks(session, monkeypatch):
     assert len(d["trace"]["t"]) == len(tm["driven_line"]["lap_dist"])
 
 
+def test_a_reference_lap_is_indexed_under_its_own_source(tmp_path, monkeypatch):
+    """Review minor 9: the public-line lookup indexed every file as 'sessions'."""
+    from app import session_index
+    ref = tmp_path / "reference_laps"
+    ref.mkdir()
+    f = write_hilly_session(ref / "Synthetic Hill Ring-Synthetic Car #1-2026-11-02T10_00_00Z.duckdb",
+                            lap_offsets=(0.0, 1.0), slip_angles=True)
+    monkeypatch.setattr(main, "OWN_SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(main, "REFERENCE_LAPS_DIR", ref)
+    monkeypatch.setattr(main, "_ideal_store", lambda: FakeStore(_car(mu=(1.6, 1.7), power=0.6)))
+    ideal_lap._CACHE.clear()
+    seen = []
+    real = session_index.file_entry
+    monkeypatch.setattr(session_index, "file_entry", lambda p, source: seen.append(source) or real(p, source))
+    r = TestClient(main.app).get(f"/sessions/reference_laps/{quote(f.name)}/ideal-lap?lap_number=0")
+    assert r.status_code == 200 and r.json()["status"] == "ok"
+    assert seen and set(seen) == {"reference_laps"}
+
+
 def test_the_real_store_refuses_this_session_without_an_error(session):
     """No Susp Force on the ring: the store cannot fit a car, and says why."""
     d = _get(session, "ideal-lap", lap=1)
