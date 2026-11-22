@@ -61,6 +61,23 @@ def _trace_t(p_ld, p_t, ld, dt_ref, dt_i, ds) -> np.ndarray:
     return np.asarray(p_t, float) - np.interp(p_ld, ld_ext, cum_ref - cum_i)
 
 
+def _power_offset_diag(ln: dict) -> dict:
+    """§15.x 2 diagnostic of A1: the offset applied (g) on the flat-out points,
+    split at |gy_ref| 0.25. In corners it shows the engine curve's cornering-
+    cost term cc gy^2 being wrong (BMW M4 Fuji: median -0.03 g at 55-59 m/s,
+    |gy| ~0.5): A1 masks that term on the reference lap, it does not fix it."""
+    off = ln.get("p_off")
+    if off is None:
+        return {"applied": False}
+    gy = np.abs(ln["ks"] * ln["v"] ** 2 / G)
+    on = off != 0
+    stats = lambda m: ({"n": int(m.sum()), "median_g": round(float(np.median(off[m])), 4),   # noqa: E731
+                        "p10_g": round(float(np.percentile(off[m], 10)), 4),
+                        "p90_g": round(float(np.percentile(off[m], 90)), 4)} if m.any() else {"n": 0})
+    return {"applied": True, "flat_out_share": round(float(on.mean()), 4),
+            "straight": stats(on & (gy < 0.25)), "cornering": stats(on & (gy >= 0.25))}
+
+
 def _axle_fits(info: dict) -> list:
     names = {f.name for f in fields(AxleFit)}
     return [AxleFit(**{k: v for k, v in info["axles"][a].items() if k in names}) for a in AXLES]
@@ -117,16 +134,21 @@ def _window_mask(ld: np.ndarray, s0: float, s1: float, L: float) -> np.ndarray:
 
 def analyse_lap(car, info: dict, raw: dict, lap_time_s: float, beta: float | None = None,
                 track_name: str = "", lap_len: float | None = None, points: dict | None = None,
-                clamp: bool = True) -> dict:
+                clamp: bool = True, measured_power: bool = True) -> dict:
     """Everything of §5.4-5.6 for one lap with a fitted car. `info`: the store's
     fit info (axles with knee / saturation / v_sat, kappa statuses).
-    `points`: {lap_dist[], t[]} of /trackmap's driven line (None: the 2 m grid)."""
+    `points`: {lap_dist[], t[]} of /trackmap's driven line (None: the 2 m grid).
+    `measured_power`: the line carries the reference lap's measured power
+    (§15 V1, A1) for every solve; False only for the validation's V6b."""
     beta = info["beta"] if beta is None else beta
     st = lap_state(raw)
     axles = _axle_fits(info)
     sat, ax = (SV.saturated_ref(st, car, axles, per_axle=True) if clamp else (None, None))
     ln = SV.line_of(raw, sat_ref=sat, sat_axles=ax)
     ds = ln["ds"]
+    if measured_power:
+        ln["p_off"] = SV.power_offset(car, ln)
+    power_diag = _power_offset_diag(ln)
     lv = SV.levels(car, ln, beta)
     ceil = SV.solve(car, ln, "ceiling")
     conflict = SV.clamp_conflict(car, ln) if clamp else {a: {"n": 0, "conflicts": 0, "share": None} for a in AXLES}
@@ -236,7 +258,7 @@ def analyse_lap(car, info: dict, raw: dict, lap_time_s: float, beta: float | Non
         "trace": trace, "corners": corners,
         "diagnostics": {"t_ref_grid": t_ref, "gain_unclamped_s": lv["gain_unclamped"], "binding_share": shares,
                         "corner_source": wsrc, "extrapolated_gain_s": round(extrap_gain, 3),
-                        "grade_source": raw.get("grade_source")},
+                        "grade_source": raw.get("grade_source"), "power_offset": power_diag},
         "_levels": lv, "_line": ln, "_ceiling": ceil,
     }
 

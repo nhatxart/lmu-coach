@@ -124,6 +124,7 @@ def line_of(raw: dict, ds: float = DS, sat_ref: np.ndarray | None = None,
     sg = np.arange(0, s[-1], ds)
     f = lambda a: np.interp(sg, s, a)
     out = dict(s=sg, ks=f(ks), kv=f(kv), grade=f(gr), v=f(v), thr=f(raw["thr"]), brk=f(raw["brk"]),
+               tc=f(raw["tc"]) if raw.get("tc") is not None else np.zeros(len(sg)),
                ds=ds, time=float(raw["time"]))
     if raw.get("lapdist") is not None:
         # PREVIOUSLY the raw Lap Dist was interpolated onto the grid and unwrapped
@@ -139,6 +140,38 @@ def line_of(raw: dict, ds: float = DS, sat_ref: np.ndarray | None = None,
         sat = _to_grid(s, sat_ref, sg, ds)
         apply_clamp(out, sat, None if ax is None else ax & sat[None, :])
     return out
+
+
+P_OFF_SMOOTH = 5                            # grid points (10 m), circular
+FLAT_OUT_THR, FLAT_OUT_BRK = 98.0, 1.0      # %
+
+
+def power_offset(car, ln: dict) -> np.ndarray:
+    """Design §15 V1 (A1, "measured power"), with §15.x 2: per grid point the
+    driven acceleration minus the engine curve where the reference lap was flat
+    out (throttle > 98 %, brake < 1 %, TC not active), 0 elsewhere:
+        p_off = gx_ref + grade - power(v_ref, gy_ref),  gx_ref kinematic from the
+        line's v (the closing step wraps), 5-point circular moving average.
+    PREVIOUSLY the engine was only the MEDIAN full-throttle acceleration per
+    2.5 m/s bin (§4.7). The real acceleration at a speed varies by place and lap
+    (gear, draft, wind, ERS), so the driven lap out-accelerated the curve on half
+    of every straight: V5 (plain model at grip x 1.10 under driven by > 2 km/h)
+    was 13-15 % of the lap `power`-bound on BMW M4 Fuji / Imola, and the other
+    half of the straights gave phantom gain (0.06-0.35 s per lap). Fix: the
+    driven acceleration is the engine at that place (like the saturation clamp).
+    TC-active samples are excluded: they read ~0.22 g below the engine and would
+    hide traction binding. NOT scaled by the grip level."""
+    v, gr, ds = ln["v"], ln["grade"], ln["ds"]
+    gx = (np.roll(v, -1) ** 2 - v ** 2) / (2 * G * ds)
+    gy = ln["ks"] * v * v / G
+    tc = ln.get("tc")
+    full = (ln["thr"] > FLAT_OUT_THR) & (ln["brk"] < FLAT_OUT_BRK)
+    if tc is not None:
+        full &= np.asarray(tc, float) < 0.5
+    off = np.where(full, gx + gr - car.power(v, gy), 0.0)
+    h = P_OFF_SMOOTH // 2
+    off = np.convolve(np.pad(off, h, mode="wrap"), np.ones(P_OFF_SMOOTH) / P_OFF_SMOOTH, mode="valid")
+    return np.where(full, off, 0.0)
 
 
 def _lat_ok(car, mode, v, gxt, gy, gz, sc=1.0):
@@ -335,6 +368,8 @@ def solve(car, ln: dict, mode: str = "balanced", refine: bool = True, clamp: boo
         code = np.where(m, 5, code)
     vs = vc.copy()
     scs = _cap_scale(ln)
+    # measured power (A1): part of the line, at every level and in every mode
+    poff = np.asarray(ln["p_off"], float) if ln.get("p_off") is not None else np.zeros(n)
 
     def edge(v, gy, gz, t, step, sc):
         """Bisect from the last feasible grid demand t towards t + step.
@@ -360,7 +395,7 @@ def solve(car, ln: dict, mode: str = "balanced", refine: bool = True, clamp: boo
             if ok.any():
                 k = int(np.flatnonzero(ok)[-1])
                 t = GX_ALL[k] if (k == len(GX_ALL) - 1 or not refine) else edge(v, gy, gz, GX_ALL[k], GX_STEP, scs[i])
-        p, g = car.power(v, gy) - gr[i], t - car.drag(v) - gr[i]
+        p, g = car.power(v, gy) + poff[i] - gr[i], t - car.drag(v) - gr[i]
         return (p, 4) if p <= g else (g, 3)
 
     def brake(i, v):
