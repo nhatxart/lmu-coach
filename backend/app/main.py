@@ -792,8 +792,20 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
             if (coordinate_origin["kind"] == "track"
                     and (coordinate_origin["lat"], coordinate_origin["lon"]) == (ref_lat, ref_lon)
                     and "Pos X" in tables and "Pos Z" in tables):
-                wx0 = con.execute('SELECT value FROM "Pos X" ORDER BY rowid LIMIT 1').fetchone()
-                wz0 = con.execute('SELECT value FROM "Pos Z" ORDER BY rowid LIMIT 1').fetchone()
+                # PREVIOUSLY Pos row 0 was taken as GPS row 0's instant. True
+                # for a recording (its 10 Hz gate fires on the first row), not
+                # for a kept lap (keep laps): it starts at a 100 Hz row and its
+                # first 10 Hz (GPS) row is the next gate tick, up to 0.1 s later,
+                # so a kept lap was drawn 5.1 m off its original on Fuji WRT
+                # 10/19 (final review I1). Fix: Pos at GPS row 0's game time.
+                # A recording: k0 = 0, unchanged. The row-count guard keeps
+                # files whose Pos X is not on the 100 Hz clock at row 0.
+                tf0, ts0 = session_time_axes(con)
+                n_pos = con.execute('SELECT count(*) FROM "Pos X"').fetchone()[0]
+                k0 = (int(np.searchsorted(tf0, ts0[0]))
+                      if tf0 is not None and ts0 is not None and len(ts0) and n_pos == len(tf0) else 0)
+                wx0 = con.execute(f'SELECT value FROM "Pos X" ORDER BY rowid LIMIT 1 OFFSET {k0}').fetchone()
+                wz0 = con.execute(f'SELECT value FROM "Pos Z" ORDER BY rowid LIMIT 1 OFFSET {k0}').fetchone()
                 if wx0 and wz0:
                     gx0 = (lon_raw[0] - ref_lon) * R * cos_lat
                     gz0 = (lat_raw[0] - ref_lat) * R
