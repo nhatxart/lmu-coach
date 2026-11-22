@@ -330,3 +330,43 @@ def test_driven_line_time_follows_game_clock(tmp_path, monkeypatch):
     assert np.median(dt) == pytest.approx(0.1, abs=0.01)
     j = int(np.argmax(dt))
     assert d["driven_line"]["t"][j] == pytest.approx(10.0 - 0.1, abs=0.06)
+
+
+def _as_recorder_gps(path: Path):
+    """Rewrite the file's GPS the way recorder.py does (recorder.py ~l.828):
+    reference point + (mPos - the car's FIRST position of the recording), so
+    row 0 is exactly the reference point. write_hilly_session writes
+    reference + mPos, a frame the real recorder never produces."""
+    con = duckdb.connect(str(path))
+    try:
+        for name, ref in (("GPS Latitude", ORIGIN[0]), ("GPS Longitude", ORIGIN[1])):
+            con.execute(f'CREATE TABLE "__t" AS SELECT value - (SELECT value FROM "{name}" LIMIT 1) + {ref} '
+                        f'AS value FROM "{name}" ORDER BY rowid')
+            con.execute(f'DROP TABLE "{name}"')
+            con.execute(f'ALTER TABLE "__t" RENAME TO "{name}"')
+    finally:
+        con.close()
+
+
+def test_recorder_gps_origin_does_not_split_the_frame(tmp_path, monkeypatch, reference_dir):
+    """BUG (11/10/2026, user screenshot: COTA ghost from another file drawn
+    ~18 m off the road): the recorder's pseudo-GPS is relative to the car's
+    first position of each recording, so two files of one track whose
+    recordings began at different places had GPS frames shifted by that
+    distance, while both looked like the track's shared frame (GPS near
+    LMU_GPS_REF). Game world Pos X/Z is the same in both. /trackmap must put
+    the same lap distance at the same x/z whatever the first position was."""
+    _write_origin(reference_dir)
+    a = write_hilly_session(sess(tmp_path) / "Hill-first-a.duckdb")
+    b = write_hilly_session(sess(tmp_path) / "Hill-first-b.duckdb")
+    assert _drop_ticks(b, 0, 300) > 0                  # b's recording began ~3 s into the ring
+    for f in (a, b):
+        _as_recorder_gps(f)
+    pts = []
+    for f in (a, b):
+        d = _trackmap(f, monkeypatch, lap=1)
+        assert d["coordinate_origin"]["kind"] == "track"
+        dl = d["driven_line"]
+        i = int(np.argmin(np.abs(np.array(dl["lap_dist"]) - 600.0)))
+        pts.append((dl["x"][i], dl["z"][i]))
+    assert math.dist(*pts) < 0.5, pts

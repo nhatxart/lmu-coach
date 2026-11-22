@@ -122,3 +122,27 @@ def test_real_fuji_files_share_the_frame(monkeypatch):
     assert straight.sum() > 50
     near = [np.min(np.hypot(xb - x, zb - z)) for x, z in zip(xa[straight], za[straight])]
     assert np.median(near) < 3.0, np.median(near)
+
+
+COTA_FILES = ("Circuit of the Americas-Ferrari AF Corse 2026 _50_WEC-2026-10-27T23_21_49Z.duckdb",
+              "Circuit of the Americas-Ferrari AF Corse 2026 _50_WEC-2026-10-30T03_57_04Z.duckdb")
+
+
+def test_real_cota_files_share_the_world_frame(monkeypatch):
+    """BUG (11/10/2026): the recorder's pseudo-GPS is relative to each
+    recording's first car position (these two start 18 m apart), so the two
+    files' lines were that far apart in the compare tab. Same track, same
+    lap distance: the lines must coincide."""
+    paths = [FUJI_DIR / n for n in COTA_FILES]
+    if not all(p.exists() for p in paths):
+        pytest.skip("the two Ferrari COTA recordings of 10/27 and 10/30 are not here")
+    lines = []
+    for p in paths:
+        d = _trackmap(p, monkeypatch)
+        dl = d["driven_line"]
+        lines.append((np.array(dl["x"]), np.array(dl["z"]), np.array(dl["lap_dist"]), np.array(dl["speed"]), d["lap_len_m"]))
+    (xa, za, sa, va, len_a), (xb, zb, _, _, _) = lines
+    fast = va > 150                      # driven at speed: lines close together, whatever the corners
+    assert fast.sum() > 100
+    near = [np.min(np.hypot(xb - x, zb - z)) for x, z in zip(xa[fast], za[fast])]
+    assert np.median(near) < 3.0, np.median(near)
