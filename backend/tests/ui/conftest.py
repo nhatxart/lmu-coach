@@ -21,8 +21,8 @@ sys.path.insert(0, str(HERE.parent))        # synthetic_track / synthetic_sessio
 sys.path.insert(0, str(HERE))               # serve_for_ui (file names)
 
 from serve_for_ui import (CMP_A, CMP_B, CMP_HYPER, CMP_KEPT, CMP_LAYOUT, CMP_NOLD,  # noqa: E402
-                          CMP_V1, CMP_WAVE, FUJI_A, FUJI_B, FUJI_OTHER, HILLY, LEGACY, LIMITS, PARTIAL,
-                          SLIP)
+                          CMP_V1, CMP_WAVE, FUJI_A, FUJI_B, FUJI_OTHER, HILLY, KEEP_NATIVE, KEEP_ORIG,
+                          LEGACY, LIMITS, PARTIAL, SLIP)
 
 # SwiftShader: software WebGL, so the chase view renders without a GPU.
 # Verified with Chromium 156 headless (Playwright 1.5x) on Windows 11.
@@ -142,6 +142,45 @@ def server_no_origin(tmp_path_factory):
     _write_compare_files(sessions, None, gps_ref=(10.0, 20.0))
     proc, base = _start(sessions, ref)
     yield base
+    _stop(proc)
+
+
+@pytest.fixture
+def keep_server(tmp_path):
+    """A backend of its own per test, on WRITABLE tmp folders (keeping laps
+    writes into kept/, a delete removes a file from sessions/): KEEP_ORIG (a
+    recorder file, laps 0-2) and KEEP_NATIVE (the same without RecordedBy, as
+    an LMU export). Never the shared `server` folders, never the repo's data/."""
+    pytest.importorskip("uvicorn")
+    import duckdb
+    from synthetic_track import GPS_REF_LAT, GPS_REF_LON, write_hilly_session
+
+    sessions, ref, kept = tmp_path / "sessions", tmp_path / "ref", tmp_path / "kept"
+    for d in (sessions, ref / "sources", kept):
+        d.mkdir(parents=True)
+    (ref / "sources" / "synthetic_hill_ring.json").write_text(
+        json.dumps({"center": [GPS_REF_LAT, GPS_REF_LON]}), encoding="utf-8")
+    write_hilly_session(sessions / KEEP_ORIG, vehicle_class="LMGT3")
+    native = write_hilly_session(sessions / KEEP_NATIVE, vehicle_class="LMGT3")
+    con = duckdb.connect(str(native))
+    con.execute("DELETE FROM metadata WHERE key = 'RecordedBy'")
+    con.close()
+    proc, base = _start(sessions, ref, kept)
+
+    class K:
+        pass
+    k = K()
+    k.base, k.sessions, k.kept = base, sessions, kept
+
+    def keep(laps):
+        """POST /keep as the UI does (for tests that need a kept lap first)."""
+        req = urllib.request.Request(
+            f"{base}/sessions/sessions/{urllib.request.quote(KEEP_ORIG)}/keep",
+            data=json.dumps({"laps": laps}).encode(), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return json.loads(r.read())
+    k.keep = keep
+    yield k
     _stop(proc)
 
 
