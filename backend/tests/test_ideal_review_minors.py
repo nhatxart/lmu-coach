@@ -51,3 +51,26 @@ def test_line_lap_dist_is_monotonic_across_the_wraps(head):
     ld = ln["lap_dist"]
     assert (np.diff(ld) > 0).all()
     assert ld[-1] > 790.0                              # past the line, not a dip back towards 0
+
+
+# ── Minor 3: the trace's codes come from the NEAREST grid point ──────────────
+
+def test_trace_codes_take_the_nearest_grid_point():
+    from app.ideal_lap import _nearest_index
+    ld = np.arange(0.0, 20.0, 2.0)
+    np.testing.assert_array_equal(_nearest_index(np.array([0.4, 2.9, 3.1, 7.99, 25.0, -1.0]), ld),
+                                  [0, 1, 2, 4, 9, 0])
+
+
+# ── Minor 8: the trace's t ends at the ideal lap time ────────────────────────
+
+def test_trace_t_includes_the_closing_step():
+    from app.ideal_lap import _trace_t
+    ds, n = 2.0, 10                                     # a 20 m "lap": the driven 20 m/s, the ideal 25 m/s
+    ld = np.arange(n) * ds
+    dt_ref, dt_i = np.full(n, ds / 20.0), np.full(n, ds / 25.0)
+    p_ld = np.array([0.0, 5.0, 10.0, 20.0])             # the last point on the line
+    p_t = p_ld / 20.0
+    t = _trace_t(p_ld, p_t, ld, dt_ref, dt_i, ds)
+    np.testing.assert_allclose(t, p_ld / 25.0, atol=1e-9)
+    assert t[-1] == pytest.approx(dt_i.sum())           # = the ideal lap time on the grid

@@ -40,6 +40,27 @@ def _mono(ld: np.ndarray, L: float) -> np.ndarray:
     return SV.unwrap_lap_dist(ld, L)
 
 
+def _nearest_index(p_ld: np.ndarray, ld: np.ndarray) -> np.ndarray:
+    """Index of the grid point NEAREST to each lap distance.
+    PREVIOUSLY searchsorted took the next grid point, up to 2 m off, for the
+    trace's binding / saturated_ref (review minor 3)."""
+    k = np.rint(np.interp(p_ld, ld, np.arange(len(ld), dtype=float)))
+    return np.clip(k.astype(int), 0, len(ld) - 1)
+
+
+def _trace_t(p_ld, p_t, ld, dt_ref, dt_i, ds) -> np.ndarray:
+    """Ideal game-clock time at the driven line's points: the driven time minus
+    the gain accumulated up to there.
+    PREVIOUSLY the cumulative times stopped at the last grid point, so a point on
+    the line lost the last step's gain and t ended one 2 m step short of
+    ideal.time_s (review minor 8). Fix: the closing step is part of the cumulative
+    times (at the last grid point + ds)."""
+    ld_ext = np.append(ld, ld[-1] + ds)
+    cum_ref = np.concatenate([[0.0], np.cumsum(dt_ref)])
+    cum_i = np.concatenate([[0.0], np.cumsum(dt_i)])
+    return np.asarray(p_t, float) - np.interp(p_ld, ld_ext, cum_ref - cum_i)
+
+
 def _axle_fits(info: dict) -> list:
     names = {f.name for f in fields(AxleFit)}
     return [AxleFit(**{k: v for k, v in info["axles"][a].items() if k in names}) for a in AXLES]
@@ -184,7 +205,6 @@ def analyse_lap(car, info: dict, raw: dict, lap_time_s: float, beta: float | Non
 
     # trace at the driven line's points
     cum_ref = np.concatenate([[0.0], np.cumsum(dt_ref)])[:-1]
-    cum_i = np.concatenate([[0.0], np.cumsum(dt_i)])[:-1]
     if points and points.get("lap_dist"):
         p_ld = _mono(np.asarray(points["lap_dist"], float), L)
         p_t = np.asarray(points.get("t") or [], float)
@@ -193,8 +213,8 @@ def analyse_lap(car, info: dict, raw: dict, lap_time_s: float, beta: float | Non
     else:
         p_ld, p_t = ld, cum_ref
     at = lambda a: np.interp(p_ld, ld, a)                               # noqa: E731
-    t_trace = p_t - at(cum_ref - cum_i)
-    near = np.clip(np.searchsorted(ld, p_ld), 0, len(ld) - 1)
+    t_trace = _trace_t(p_ld, p_t, ld, dt_ref, dt_i, ds)
+    near = _nearest_index(p_ld, ld)
     ideal_time = shown(exp["env"]["time"])
     trace = {"lap_dist": [round(float(x), 2) for x in p_ld], "v_kmh": [round(float(x) * 3.6, 2) for x in at(v_i)],
              "v_ref_kmh": [round(float(x) * 3.6, 2) for x in at(v_ref)], "t": [round(float(x), 3) for x in t_trace],

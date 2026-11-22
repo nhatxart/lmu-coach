@@ -79,7 +79,8 @@ def test_ideal_lap_schema_and_trace_on_the_driven_line(session, monkeypatch):
     assert n > 10 and all(len(v) == n for v in d["trace"].values())
     t = np.asarray(d["trace"]["t"])
     assert (np.diff(t) > 0).all()
-    assert t[-1] == pytest.approx(d["ideal"]["time_s"], abs=0.15)      # the last point is just before the line
+    # §7: t ends at ideal.time_s (review minor 8: it ended one 2 m step short)
+    assert t[-1] == pytest.approx(d["ideal"]["time_s"], abs=0.005)
     i = d["ideal"]
     assert i["gain_min_s"] <= i["gain_s"] <= i["gain_max_s"]
     assert i["time_s"] <= d["lap_time_s"] + 1e-6                        # never slower than the lap
