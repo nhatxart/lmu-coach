@@ -20,7 +20,7 @@ from .ideal_state import G, GRID_HZ, State
 # Version of the fit code: part of every group's fingerprint (ideal_store), so
 # a profile fitted by older code is refitted. BUMP IT WITH ANY CHANGE THAT CAN
 # MOVE A FITTED NUMBER. 2: round 1 (continuous knee, k / c span rule).
-FIT_VERSION = 3                    # 3: validation round 1 (level at q 0.75, §15 V2)
+FIT_VERSION = 4                    # 3: level at q 0.75 (§15 V2); 4: lower_bound axles too (§15.y)
 LEVEL_Q = 0.75                     # grip level of an observed axle and the per-file trim (§15 V2, B1)
 FRONT, REAR = (0, 1), (2, 3)
 AXLES = ("front", "rear")
@@ -412,9 +412,16 @@ def fit_axles(d: dict, gxt: np.ndarray, slip: np.ndarray | None, gf: np.ndarray 
     driver "exceeded" the front limit on 41 % of hard samples while the rear
     never passed 0.93 (F1). Fix: every fit uses lam from the load model at the
     sample's own (v, gx, gy, gz), never the measured load.
-    Calibration (design §15 V2, B1): an `observed` axle at the 0.75 quantile of
-    observed / predicted on its saturated set, a `lower_bound` axle at the median
-    of its top-20 % set (a lower bound by definition).
+    Calibration (design §15 V2, B1, amended by §15.y decision 1): every axle at
+    the 0.75 quantile of observed / predicted on its set (the saturated set, or
+    for a `lower_bound` axle its top-20 % set).
+    PREVIOUSLY (B1 as first written) a `lower_bound` axle kept the median. Its
+    top-20 % set is selected like a saturated set (the most loaded samples sit
+    where the place field is high or low by chance), so the median read low as
+    well: T6 car A front 0.939 at the median vs 0.967 with q 0.75 (never above
+    the true car by more than 0.2 %), plain model -1.15 % vs -0.70 % mean. Real
+    lower_bound rears (Hypercars) move +1.0 to +2.8 % in mu1 and bind on 0 % of
+    the ideal laps. It stays a lower bound in the data.
     PREVIOUSLY the median for both. A limit driver is saturated where the local
     capacity dips (place x lap noise), so the median of the saturated set reads
     below the mean capacity: T6 synthetic, capacity 0.957 / 0.969 of true and the
@@ -446,7 +453,7 @@ def fit_axles(d: dict, gxt: np.ndarray, slip: np.ndarray | None, gf: np.ndarray 
         idx, _, _, how, knee = sets[j]
         P, Q, R = _pqr(lam[idx], v)
         shape = P[m] - k * Q[m] - c * R[m]
-        qx = q if q is not None else (LEVEL_Q if status == "observed" else 0.5)
+        qx = q if q is not None else LEVEL_Q        # every status (§15.y decision 1)
         mu = m1 * float(np.quantile(y_all[m] / (m1 * shape), qx))
         v3 = (v3_peaks or {}).get(AXLES[j])
         vs = None

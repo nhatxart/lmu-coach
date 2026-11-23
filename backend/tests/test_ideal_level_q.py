@@ -1,7 +1,7 @@
 """Ideal lap, design §15 V2 (B1): the grip level of an `observed` axle is the
 0.75 quantile of observed / predicted on its saturated set (a limit driver is
 saturated where the local capacity dips, so the median reads low under place
-noise); a `lower_bound` axle keeps the median of its top-20 % set; the per-file
+noise); a `lower_bound` axle uses the same 0.75 quantile on its top-20 % set (§15.y); the per-file
 trim uses the same 0.75 statistic. kb, kt and the engine stay at the median."""
 import numpy as np
 import pytest
@@ -35,17 +35,19 @@ def test_observed_level_at_the_075_quantile():
         assert got / true == pytest.approx(np.exp(0.6745 * sd), abs=0.012)
 
 
-def test_lower_bound_keeps_the_median():
+def test_lower_bound_at_the_075_quantile_too():
+    """§15.y decision 1: a lower_bound axle's top-20 % set is read with the same
+    0.75 statistic (it was the median in B1 as first written)."""
     rng = np.random.default_rng(22)
     d = _car_samples(rng, 4000, 100)
     fits = C.fit_axles(d, np.zeros(len(d["v"])), slip=d["slip"], gf=d["gf"])
     assert fits[1].status == "lower_bound"
-    # the top-20 % set's own median: the fit reproduces it (median of observed / predicted = 1)
+    # the top-20 % set's own 0.75 quantile of observed / predicted is 1
     base = (np.abs(d["gy"]) > 0.45 * np.percentile(np.abs(d["gy"]), 99)) & (d["v"] > 15)
     r = np.abs(d["gy"]) / d["lam"][[2, 3]].mean(0)
     m = base & (r >= np.quantile(r[base], 0.8))
     A = C.axle_capacity(d["lam"], d["v"], [f.mu1 for f in fits], [f.k for f in fits], [f.c for f in fits])[1]
-    assert np.median(np.abs(d["gy"])[m] / A[m]) == pytest.approx(1.0, abs=1e-6)
+    assert np.quantile(np.abs(d["gy"])[m] / A[m], 0.75) == pytest.approx(1.0, abs=1e-6)
 
 
 def test_trim_at_the_075_quantile():
