@@ -14,6 +14,7 @@ from build_check_common import reduction, spike_parity_fit
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 ap = argparse.ArgumentParser(); ap.add_argument("--spike-d2", type=float); ap.add_argument("--laps", type=int, default=3)
 ap.add_argument("--clamp", action="store_true", help="round 1 (R5): the app's clamped envelope, plain unclamped")
+ap.add_argument("--no-power", action="store_true", help="with --clamp: without the measured power (A1)")
 ap.add_argument("files", nargs="*")
 a = ap.parse_args()
 
@@ -35,7 +36,12 @@ def clamped(d):
         t0 = time.time()
         sat, ax = SV.saturated_ref(lap_state(r), car, axles, per_axle=True)
         ln = SV.line_of(r, sat_ref=sat, sat_axles=ax)
+        if not a.no_power:
+            ln["p_off"] = SV.power_offset(car, ln)            # §15 V1 (A1), as analyse_lap
         lv = SV.levels(car, ln, 0.02)
+        ceil = SV.solve(car, ln, "ceiling")
+        print("      ceiling %.3f s (gain %+.2f s) | A1 %s" % (r["time"] - (lv["t_ref_grid"] - ceil["time"]),
+                                                            lv["t_ref_grid"] - ceil["time"], not a.no_power))
         plain = [lv["t_ref_grid"] - SV.solve(car.scaled(x), ln, clamp=False)["time"] for x in (0.98, 1.0, 1.02)]
         ideal = r["time"] - lv["gain"]
         ideals.append(ideal)

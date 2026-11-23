@@ -175,23 +175,35 @@ def power_offset(car, ln: dict) -> np.ndarray:
 
 
 def _lat_ok(car, mode, v, gxt, gy, gz, sc=1.0):
-    """(feasible lateral, Af, Ar) for tyre demand gxt at this state; lam at the
-    kinematic gx = gxt - drag (il_core: grade is not taken out here)."""
+    """(feasible lateral, front room, rear room) for tyre demand gxt at this
+    state: the longitudinal g each axle has left; lam at the kinematic
+    gx = gxt - drag (il_core: grade is not taken out here).
+    Balanced: |gy| <= A_j, room_j = sqrt(A_j^2 - gy^2).
+    Ceiling (§5.3; §15 V3 and §15.x 5): |gy| <= tot = s_f A_f + s_r A_r, the
+    lateral force shared so that both axles reach the same usage u = |gy| / tot,
+    room_j = max(A_j sqrt(1 - u^2), the balanced room).
+    PREVIOUSLY (spike il_core.py:264-266) the ceiling gave each axle
+    max(A_j, tot) as its capacity, so the weaker axle braked and drove with the
+    combined capacity: a setup change does not make its tyres stronger
+    longitudinally. The max with the balanced room keeps ceiling >= balanced
+    where the stronger axle has more room on its own (A_r > tot: A_f 1.3,
+    A_r 1.5, gy 0.9 gives 1.149 vs 1.200). The ceiling bounds the lateral part."""
     Af, Ar = car.axles(v, gxt - car.drag(v), gy, gz)
     Af, Ar = Af * sc, Ar * sc
     ay = np.abs(gy)
+    rf = np.sqrt(np.maximum(Af ** 2 - gy * gy, 0))
+    rr = np.sqrt(np.maximum(Ar ** 2 - gy * gy, 0))
     if mode == "ceiling":
         tot = car.sf * Af + car.sr * Ar
-        return ay <= tot, np.maximum(Af, tot), np.maximum(Ar, tot)
-    return (ay <= Af) & (ay <= Ar), Af, Ar
+        share = np.sqrt(np.maximum(1.0 - (ay / np.maximum(tot, 1e-9)) ** 2, 0.0))
+        return ay <= tot, np.maximum(Af * share, rf), np.maximum(Ar * share, rr)
+    return (ay <= Af) & (ay <= Ar), rf, rr
 
 
 def _feasible(car, mode, v, gxt, gy, gz, sc=1.0):
     """Can the tyres supply gxt (drive +, brake -) while cornering at gy?
     `sc`: capacity scale per point (the line's `cap_scale`, synthetic tests only)."""
-    ok, Af, Ar = _lat_ok(car, mode, v, gxt, gy, gz, sc)
-    rf = np.sqrt(np.maximum(Af ** 2 - gy * gy, 0))
-    rr = np.sqrt(np.maximum(Ar ** 2 - gy * gy, 0))
+    ok, rf, rr = _lat_ok(car, mode, v, gxt, gy, gz, sc)
     return ok & np.where(gxt >= 0, gxt <= car.kt * car.sr * rr + 1e-9,
                          -gxt <= car.kb * (car.sf * rf + car.sr * rr) + 1e-9)
 

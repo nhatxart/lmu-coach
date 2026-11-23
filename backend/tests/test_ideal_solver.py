@@ -75,6 +75,42 @@ def test_solver_uses_the_fitted_kb_and_kt_not_the_demand_grid():
     np.testing.assert_allclose(gx[(gx < -0.1)][5:-5], -0.97 * 1.5, atol=0.002)
 
 
+@pytest.mark.parametrize("mu", [(1.3, 1.5), (1.55, 1.35)])          # rear-strong, front-strong
+def test_ceiling_lap_time_at_most_balanced(mu):
+    """§15 V3 / §15.x 5: the ceiling shares the lateral force so that both axles
+    reach the same usage u = |gy| / (s_f A_f + s_r A_r); an axle's longitudinal
+    room is the larger of A_j sqrt(1 - u^2) and its balanced room, so the
+    ceiling is never slower than the balanced lap, on a rear-strong car too."""
+    rng = np.random.default_rng(5)
+    ks = np.convolve(rng.normal(0, 0.03, 1500), np.ones(40) / 40, mode="same")
+    car = _car(mu=mu, sf=0.47, power=0.9)
+    ln = _line(ks)
+    bal, ceil = SV.solve(car, ln, "balanced"), SV.solve(car, ln, "ceiling")
+    assert ceil["time"] < bal["time"]
+    assert (ceil["v"] >= bal["v"] - 1e-9).all()
+
+
+def test_ceiling_rooms():
+    """The rooms per axle in ceiling mode: the shared-usage room A_j sqrt(1-u^2),
+    never below the balanced room (§15.x 5's case A_f 1.3, A_r 1.5, gy 0.9:
+    A_r sqrt(1-u^2) 1.149 < sqrt(A_r^2 - gy^2) 1.200)."""
+    car = _car(mu=(1.3, 1.5), sf=0.5)
+    v, gy, gz = np.array([30.0]), np.array([0.9]), np.zeros(1)
+    ok, rf, rr = SV._lat_ok(car, "ceiling", v, 0.0, gy, gz)
+    tot = 0.5 * 1.3 + 0.5 * 1.5
+    u = 0.9 / tot
+    assert ok[0]
+    assert rf[0] == pytest.approx(max(1.3 * np.sqrt(1 - u * u), np.sqrt(1.3 ** 2 - 0.81)))
+    assert rr[0] == pytest.approx(np.sqrt(1.5 ** 2 - 0.81))            # the balanced room wins: 1.200
+    # past the weaker axle's own limit the ceiling still holds the corner
+    ok, rf, rr = SV._lat_ok(car, "ceiling", v, 0.0, np.array([1.35]), gz)
+    u = 1.35 / tot
+    assert ok[0] and rf[0] == pytest.approx(1.3 * np.sqrt(1 - u * u))
+    # balanced mode: the rooms are sqrt(A^2 - gy^2)
+    ok, rf, rr = SV._lat_ok(car, "balanced", v, 0.0, gy, gz)
+    assert rf[0] == pytest.approx(np.sqrt(1.3 ** 2 - 0.81)) and rr[0] == pytest.approx(np.sqrt(1.5 ** 2 - 0.81))
+
+
 def test_ceiling_at_least_balanced_and_equal_when_axles_equal():
     rng = np.random.default_rng(3)
     ks = np.convolve(rng.normal(0, 0.02, 1500), np.ones(40) / 40, mode="same")
