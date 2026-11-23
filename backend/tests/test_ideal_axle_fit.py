@@ -50,7 +50,10 @@ def test_axle_level_recovered_by_grip_fraction_and_by_knee(use_gf):
     for j in (0, 1):
         assert fits[j].status == "observed"
         assert fits[j].saturation == ("grip_fraction" if use_gf else "knee")
-        assert fits[j].mu1 == pytest.approx(MU1[j], rel=0.02)
+        # §15 V2 (B1): the level is the 0.75 quantile of observed / predicted; with
+        # the 3 % gy noise here (|gy| x (1 + 0.03 N)) that is 1 + 0.03 x 0.6745 above
+        # the true mu1 (the median calibration recovered mu1 itself)
+        assert fits[j].mu1 / MU1[j] == pytest.approx(1 + 0.03 * 0.6745, abs=0.012)
     if not use_gf:
         assert fits[0].knee_deg == pytest.approx(KNEE, abs=0.5)
 

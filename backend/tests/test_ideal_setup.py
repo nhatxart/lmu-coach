@@ -74,7 +74,12 @@ def test_trim_recovers_each_files_level(files):
         for j in (0, 1):
             assert trims[j]["trim"] == "applied" and trims[j]["n"] >= 250
             assert 0 < trims[j]["w"] < 1
-            assert _level_vs_truth(trimmed, true, red.laps, j) == pytest.approx(1.0, abs=0.01)
+            # §15 V2 (B1, level and trim at q 0.75): within 1 % on an axle with its own
+            # fitted k, c; within 3 % (the noise-free bound of §15 V2) on an axle that
+            # borrows them, whose misfit spreads the saturated set and the 0.75
+            # quantile lifts by 0.67 sd of that spread (check-s15 3b)
+            tol = 0.01 if axles[j].terms == "fitted" else 0.03
+            assert _level_vs_truth(trimmed, true, red.laps, j) == pytest.approx(1.0, abs=tol)
         # untrimmed the pooled level is off for at least one axle of each file
         assert max(abs(_level_vs_truth(group_car, true, red.laps, j) - 1) for j in (0, 1)) > 0.01
 

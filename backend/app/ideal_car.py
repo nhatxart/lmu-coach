@@ -20,7 +20,8 @@ from .ideal_state import G, GRID_HZ, State
 # Version of the fit code: part of every group's fingerprint (ideal_store), so
 # a profile fitted by older code is refitted. BUMP IT WITH ANY CHANGE THAT CAN
 # MOVE A FITTED NUMBER. 2: round 1 (continuous knee, k / c span rule).
-FIT_VERSION = 2
+FIT_VERSION = 3                    # 3: validation round 1 (level at q 0.75, §15 V2)
+LEVEL_Q = 0.75                     # grip level of an observed axle and the per-file trim (§15 V2, B1)
 FRONT, REAR = (0, 1), (2, 3)
 AXLES = ("front", "rear")
 LAM_FLOOR = 0.02
@@ -402,7 +403,7 @@ def fit_share(d: dict, has_force: bool, statics: list) -> dict:
 
 
 def fit_axles(d: dict, gxt: np.ndarray, slip: np.ndarray | None, gf: np.ndarray | None,
-              v3_peaks: dict | None = None, q: float = 0.5) -> list:
+              v3_peaks: dict | None = None, q: float | None = None) -> list:
     """Design §4.2: [AxleFit front, AxleFit rear], fitted on d['lam'], the
     MODELLED load ratio.
     PREVIOUSLY (spike): grip was fitted against the MEASURED load ratio and the
@@ -411,8 +412,15 @@ def fit_axles(d: dict, gxt: np.ndarray, slip: np.ndarray | None, gf: np.ndarray 
     driver "exceeded" the front limit on 41 % of hard samples while the rear
     never passed 0.93 (F1). Fix: every fit uses lam from the load model at the
     sample's own (v, gx, gy, gz), never the measured load.
-    Calibration at the median (q 0.5): past the knee a tyre holds its peak
-    force, so a saturated sample IS the limit plus noise."""
+    Calibration (design §15 V2, B1): an `observed` axle at the 0.75 quantile of
+    observed / predicted on its saturated set, a `lower_bound` axle at the median
+    of its top-20 % set (a lower bound by definition).
+    PREVIOUSLY the median for both. A limit driver is saturated where the local
+    capacity dips (place x lap noise), so the median of the saturated set reads
+    below the mean capacity: T6 synthetic, capacity 0.957 / 0.969 of true and the
+    plain model 1.4 % slow (worst 1.9 %); q 0.75 gives 0.991 / 1.002 and -0.34 %
+    without overshooting (q 0.85: +1.2 %), and without noise every q gives the
+    same car. `q` given = that quantile for every axle (test-only spike parity)."""
     v, gy, yawacc, lam = d["v"], d["gy"], d["yawacc"], d["lam"]
     if gf is None and slip is None:
         raise InsufficientData("no slip angles and no Grip Fraction")
@@ -438,7 +446,8 @@ def fit_axles(d: dict, gxt: np.ndarray, slip: np.ndarray | None, gf: np.ndarray 
         idx, _, _, how, knee = sets[j]
         P, Q, R = _pqr(lam[idx], v)
         shape = P[m] - k * Q[m] - c * R[m]
-        mu = m1 * float(np.quantile(y_all[m] / (m1 * shape), q))
+        qx = q if q is not None else (LEVEL_Q if status == "observed" else 0.5)
+        mu = m1 * float(np.quantile(y_all[m] / (m1 * shape), qx))
         v3 = (v3_peaks or {}).get(AXLES[j])
         vs = None
         if v3 is not None and np.isfinite(knee):
@@ -537,7 +546,7 @@ def axle_trim(car: CarModel, axles: list, red) -> tuple[CarModel, list]:
         if n < TRIM_MIN_N:
             out.append({"trim": "none", "t": None, "w": 0.0, "n": n})
             continue
-        t = float(np.median(x))
+        t = float(np.quantile(x, LEVEL_Q))      # the level's own statistic (§15 V2, B1); was the median
         how = "applied"
         if abs(t) > TRIM_CAP:
             t, how = float(np.sign(t) * TRIM_CAP), "capped"
@@ -616,7 +625,7 @@ def fit_engine(d: dict, q: float = 0.5) -> dict:
 
 
 def fit_group(reductions: list, car_class: str, v3_peaks: dict | None = None,
-              q: float = 0.5) -> GroupFit:
+              q: float | None = None) -> GroupFit:
     """Design §4 on one fit group. `reductions`: ideal_state.FileReduction of the
     group's files (qualifying laps only). `v3_peaks`: tyre v3 peak slip per axle
     ({'front': deg, 'rear': deg}) for the knee cross-check only. `q`: test only."""
@@ -655,9 +664,10 @@ def fit_group(reductions: list, car_class: str, v3_peaks: dict | None = None,
     axles = fit_axles(d, gxt, d["slip"], gf, v3_peaks, q)
     mu1, kk, cc = [a.mu1 for a in axles], [a.k for a in axles], [a.c for a in axles]
     Af, Ar = axle_capacity(d["lam"], d["v"], mu1, kk, cc)
-    kb = fit_braking(d, gxt, Af, Ar, share["value"], gf, q)
-    kt = fit_traction(d, gxt, Ar, share["value"], q)
-    eng = fit_engine(d, q)
+    qm = 0.5 if q is None else q            # kb, kt and the engine stay at the median (§15 V2)
+    kb = fit_braking(d, gxt, Af, Ar, share["value"], gf, qm)
+    kt = fit_traction(d, gxt, Ar, share["value"], qm)
+    eng = fit_engine(d, qm)
 
     info = dict(has_forces=has_force, load_source=pooled_src,
                 n_laps=sum(len(r.laps) for r in reductions), n_files=len(reductions),
