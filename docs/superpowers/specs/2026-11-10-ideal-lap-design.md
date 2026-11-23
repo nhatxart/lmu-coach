@@ -1173,3 +1173,75 @@ Independent check (Sonnet, .superpowers/sdd/2026-11-11-ideal-lap/check-s15.md): 
 3. **Gate:** do NOT exclude low-confidence pairs from the gate (it would make V3 tautological and drop the Cadillac V5 failure); report them in their own row instead. The >= 3-fit-lap rule stays.
 4. **V6b:** run it first and report the measured spread; its limit is set from that run (not 0.5 % a priori).
 5. **Ceiling (D2):** the formula can be slower than balanced for traction when A_r > tot (e.g. A_f 1.3, A_r 1.5, gy 0.9: 1.149 vs 1.200). Use per point max(ceiling room, balanced room) so ceiling >= balanced holds everywhere; T5 asserts on lap time and includes a rear-strong car. §5.3: the ceiling bounds the lateral part only.
+### 15.y T6 limits and the lower_bound level (11/22/2026, answer to the builder's step-5 stop)
+
+Probes: `opus_p5_t6seeds.py` (T6 data, built code at f730f45, cars A/B, seeds 2026, 7, 99, 1-6:
+9 distinct seeds per car; the run lists seed 7 twice, so the summary has 10 rows and counts 7
+twice), `opus_p6_lowerbound.py` (real pairs with a `lower_bound` axle). Capacity = fitted / true
+mean car at gy 1.6, gx 0, gz 0, either at the FIXED speeds 25/40/55 m/s ("fix") or at three
+speeds spread over the axle's own `v_sat` [p02, p98] ("in").
+
+**Decision 1: q 0.75 for `lower_bound` axles too (B1 amended).** Reason: the `lower_bound` set
+(top 20 % of r on `base`) is selected the same way as a saturated set (the most loaded samples
+sit where the place field is high or low by chance), and "the capacity that was shown" is
+better read by the same statistic as every other level. It stays a lower bound in the data:
+car A front (lower_bound, 13 saturated samples, seen only at 64-71 m/s) reads 0.967 mean "fix"
+(0.940-1.002) and 0.929 "in" (0.888-0.984) with q 0.75, vs 0.939 / 0.901 at the median; it is
+never above the true car by more than 0.2 %. Real cars (`opus_p6`; every real `lower_bound` axle in
+the §9 run is a Hypercar rear, plus both axles of the 1-3-lap fits): rear `mu1` +1.0 to +2.8 %
+(Aston Road Atlanta 1.536 -> 1.552, BMW Hybrid Daytona 1.638 -> 1.655, Cadillac 1.494 -> 1.526,
+Genesis 1.451 -> 1.491). The expected gain moves +0.01 to +0.03 s (Genesis, a 1-lap fit:
++0.07/+0.12 s). These rear axles bind on 0 % of the ideal laps (`binding_share` rear 0.00). Builder:
+`qx = q if q is not None else LEVEL_Q` for every status.
+
+**Decision 2: car B seed 2026 is a tolerance problem, and the capacity check must be inside
+`v_sat`.** Car B's rear is `observed` but has BORROWED terms: it saturates only at the slow apexes
+(`v_sat` 25-35 m/s on every seed), so its k and c come from the front. The fixed-speed check at
+55 m/s is an extrapolation 20 m/s beyond anything the rear was seen at. That case is V13's
+`extrapolated` flag; T6 should not gate it. Inside `v_sat` the B rear reads 1.064 (seed 2026),
+mean 1.007, sd 0.040, range 0.963-1.064 over the seeds. The spread is real and expected: the
+rear level comes from a handful of slow apex PLACES, and each carries its own place noise (log sd
+0.035, 50 m correlation), which a model with one level per axle cannot know. Where it matters (those
+same apexes) the clamp holds the driven speed: B phantom gain is ≤ 0.14 % on every seed, and the B
+plain model is −0.38 to +0.73 % vs the true car. It is not a fit failure: the fitted level is
+unbiased (mean 1.007) and the plain model is unbiased (mean +0.16 %).
+
+Measured over the seeds ("in" capacity; plain = plain model vs true mean car, + = fitted faster):
+
+| quantity | car A (front lower_bound / borrowed, rear observed / fitted) | car B (front observed / fitted, rear observed / borrowed) |
+|---|---|---|
+| front cap. "in" | mean 0.929, sd 0.035, 0.888-0.984 | mean 1.012, sd 0.009, 1.000-1.027 |
+| rear cap. "in" | mean 0.995, sd 0.012, 0.981-1.014 | mean 1.007, sd 0.040, 0.963-1.064 |
+| plain vs true | mean −0.63 %, sd 0.39, −1.17..+0.13 % | mean +0.16 %, sd 0.42, −0.38..+0.73 % |
+| phantom gain | ≤ 0.085 % | ≤ 0.14 % |
+
+**T6 asserts (replace §15 V6; limits = about 2.5 sd of the seeds above, rounded out):**
+- Seeds: 2026, 7, 99, 1, 2, 3, 4, 5, 6 for the full run (the `slow` marker); the default test
+  run uses 2026, 7, 99 and checks the per-seed limits only. Means are asserted only in the full run.
+- Capacity is checked at three speeds over the axle's own `v_sat` [p02, p98] (gy 1.6, gx 0, gz 0),
+  never at fixed speeds.
+  - `observed` + `fitted` terms: per seed ±4 %, mean over the seeds ±2 % (A rear, B front:
+    0.981-1.027, sd ≤ 0.012).
+  - `observed` + `borrowed` terms: per seed ±10 %, mean ±3.5 % (B rear: sd 0.040; sd of the mean of
+    9 = 0.013).
+  - `lower_bound`: per seed within [0.85, 1.02] (it may read low; it must not read high), mean
+    ≤ 1.0 (A front 0.888-0.984, mean 0.929).
+- Plain model vs the true mean car:
+  - both axles `observed`: per seed ±1.2 %, mean ±0.6 % (B: −0.38..+0.73, mean +0.16).
+  - an axle `lower_bound`: per seed within [−1.8 %, +0.5 %], mean within [−1.0 %, +0.3 %]. It is
+    conservative by construction (A: −1.17..+0.13, mean −0.63).
+- Phantom `gain` (clamped, level 1) ≤ 0.5 % of the lap per seed (the §11 trigger; max 0.14 %).
+  `gain_min ≤ gain ≤ gain_max`.
+- Braking capacity ±4 % and traction capacity −12 % / +4 % as in §15 V6 (unchanged; at v 40, gy 0,
+  which lies inside both cars' `v_sat`).
+- Without noise (A and B): capacities "in" ±4 %, plain vs true ±0.3 %, phantom ≤ 0.1 % (as before).
+- Print per seed: status / terms / `v_sat` per axle, both capacities ("in" and "fix"), plain, phantom.
+
+**Builder instructions:**
+1. `ideal_car.fit_axles`: q 0.75 for every status (comment: §15.y decision 1, with the car-A and
+   real-rear numbers). Bump `FIT_VERSION`.
+2. T6 as above (`draft_test_ideal_perfect_driver_s15V6.py` -> the test). Capacities in `v_sat`,
+   limits per status/terms, the 9-seed full run under a `slow` marker, 3 seeds by default.
+   Remove the old xfails.
+3. Continue with §15 V7 steps 6-8 (incl. 15.x items 3-4). In the re-run report the expected
+   gain change of every pair with a `lower_bound` axle (expected +0.0..+0.12 s).
