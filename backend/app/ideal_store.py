@@ -37,6 +37,7 @@ LAYOUT_TOLERANCE = 0.03
 MIN_TRACK_LAPS, MIN_CAR_LAPS, HIGH_LAPS = 3, 6, 6
 BETA_TIGHT, BETA_TRACK, BETA_CAR = 0.02, 0.03, 0.05
 SELFCHECK_SHIFT, SELFCHECK_SD = 0.02, 0.075     # §9 V2 (odd/even) and V3
+SELFCHECK_SD_LOW = 0.075                         # §15 V4 C3: above it the fit is `low`, beta >= 0.05
 STAMP = re.compile(r"(\d{4}-\d{2}-\d{2}T[\d_]+Z)")
 
 
@@ -178,7 +179,10 @@ def selfcheck(reductions: list, car_class: str) -> dict | None:
     x = np.concatenate(ratios) if ratios else np.zeros(0)
     if len(x) < 50:
         return None
-    return {"shift": float(np.median(x)), "sd": float(np.std(x)), "n": int(len(x))}
+    # shift: the level's own statistic (q 0.75, §15 V2 / V5; the median of a q 0.75
+    # calibration sits ~0.67 sd below 0 by construction); the median is kept too
+    return {"shift": float(np.quantile(x, C.LEVEL_Q)), "median": float(np.median(x)),
+            "sd": float(np.std(x)), "n": int(len(x))}
 
 
 def beta_and_confidence(scope: str, n_laps: int, fit: C.GroupFit, sc: dict | None) -> tuple[float, str, list]:
@@ -207,6 +211,14 @@ def beta_and_confidence(scope: str, n_laps: int, fit: C.GroupFit, sc: dict | Non
     # `default` grip terms (§13 R2) lower it here; kappa and the drag prior are
     # notes, judged per lap.
     hard_weak = [w for w in weak if w.endswith("terms default")]
+    # §15 V4 C3 (data quality): a self-check spread above the V3 limit means the
+    # grip varies more than this model holds (v4 recordings: sd 0.076-0.167, no
+    # Pos Y, no Yaw Accel; HF1 0.030-0.071) and, with the level at q 0.75, lifts
+    # it by 0.67 sd: low confidence and a range of at least +-5 %.
+    if sc is not None and sc["sd"] > SELFCHECK_SD_LOW:
+        weak.append("grip varies more than usual in these recordings (older recorder files "
+                    "have no height or yaw-acceleration channels)")
+        return max(beta, BETA_CAR), "low", weak
     if hard_weak:
         conf = "low"
     elif n_laps >= HIGH_LAPS and both_observed and passes:
