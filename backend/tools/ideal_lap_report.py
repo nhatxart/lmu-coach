@@ -11,11 +11,16 @@ qualifying laps of the test set (--laps).
 
 Prints one line per test lap with the §9 metrics, then the pair's summary:
   V1  load model R2 per wheel (test file) and axle-mean lam bias in hard cornering
-  V2  level: median log(observed / predicted) on the held-out saturated samples (per axle, pooled)
+  GATE the pair's gate row (§15 V5, §15.x 3): main | low_confidence (still in the gate) |
+      excluded (LMGT3 with < 3 fit laps); the fit set's self-check (C3 gives `low` above sd 0.075)
+  V2  level: 0.75 quantile of log(observed / predicted) on the held-out saturated samples (per
+      axle, pooled; the calibration's own statistic, §15 V5), the median printed after it
   V3  spread: log sd of the same
   V4  V2 inside the fit's beta (per pair; the share over pairs is the summary's job)
   V5  plain model (unclamped) at level x 1.10: share of the lap > 2 km/h under driven, worst km/h
-  V6  unclamped envelope time over the test laps (spread %), clamped reported
+  V6  unclamped envelope time over the test laps (spread %), clamped reported; report only (§15 V5)
+  V6b fit on the even / odd / all laps of the fit set, plain model (no clamp, no measured power) on
+      the first test lap's line: spread % (report only; its limit comes from the first run, §15.x 4)
   V7  (file holdout) ideal time fitted without vs with the test file (%)
   V8  (no tyre forces) ideal time for drag d2 x 0.7 / x 1.3 (s)
   V9  gain for laps within 1 % of the file's best: 0..3 % of the lap, gain_min > 0
@@ -91,13 +96,20 @@ def level_stats(car, axles, states) -> dict:
             m = base & sat
             x.append(np.log(ay[m] / car.axles(s.v, s.gx, s.gy, s.gz)[j][m]))
         x = np.concatenate(x) if x else np.zeros(0)
-        out[name] = {"n": int(len(x)), "shift": float(np.median(x)) if len(x) else None,
-                     "sd": float(np.std(x)) if len(x) else None}
+        out[name] = _stat(x)
         pool.append(x)
-    x = np.concatenate(pool)
-    out["all"] = {"n": int(len(x)), "shift": float(np.median(x)) if len(x) else None,
-                  "sd": float(np.std(x)) if len(x) else None}
+    out["all"] = _stat(np.concatenate(pool))
     return out
+
+
+def _stat(x) -> dict:
+    """V2 shift = the 0.75 quantile, the level's own statistic (design §15 V5;
+    PREVIOUSLY the median, which a q 0.75 calibration puts ~0.67 sd below 0);
+    the median is reported next to it."""
+    if not len(x):
+        return {"n": 0, "shift": None, "median": None, "sd": None}
+    return {"n": int(len(x)), "shift": float(np.quantile(x, C.LEVEL_Q)), "median": float(np.median(x)),
+            "sd": float(np.std(x))}
 
 
 def lam_bias(lm, states) -> dict:
@@ -110,11 +122,14 @@ def lam_bias(lm, states) -> dict:
     return {"front": f(mod, [0, 1]) / f(meas, [0, 1]) - 1, "rear": f(mod, [2, 3]) / f(meas, [2, 3]) - 1}
 
 
-def fit_info(g, n_laps: int, scope: str = "track") -> dict:
-    beta, conf, weak = ST.beta_and_confidence(scope, n_laps, g, None)
+def fit_info(g, n_laps: int, scope: str = "track", sc: dict | None = None) -> dict:
+    """As the store: with the self-check `sc` (ST.selfcheck of the fit set) the
+    C3 rule applies (sd > 0.075 -> low, beta >= 0.05)."""
+    beta, conf, weak = ST.beta_and_confidence(scope, n_laps, g, sc)
     i = g.info
     return {"scope": scope, "n_laps": n_laps, "n_files": i["n_files"], "load_source": i["load_source"],
-            "confidence": conf, "beta": beta, "notes": list(weak), "axles": i["axles"], "s_front": i["s_front"],
+            "confidence": conf, "beta": beta, "notes": list(weak), "selfcheck": sc,
+            "axles": i["axles"], "s_front": i["s_front"],
             "kappa_brake": i["kappa_brake"], "kappa_trac": i["kappa_trac"], "drag": i["drag"]}
 
 
@@ -126,6 +141,36 @@ def car_with(g, lm) -> C.CarModel:
 
 def subset(red: FileReduction, laps) -> FileReduction:
     return FileReduction(**{**red.__dict__, "laps": list(laps)})
+
+
+def gate_row(car_class: str, n_fit: int, confidence: str) -> dict:
+    """Design §15 V5 with §15.x 3: the gate takes every Hypercar pair and every
+    LMGT3 pair whose fit set has >= 3 qualifying laps. Low-confidence pairs
+    (C3 or default terms) stay IN the gate (excluding them would make V3
+    tautological) and are reported in their own row."""
+    gated = car_class != "LMGT3" or n_fit >= 3
+    return {"gated": gated, "row": ("low_confidence" if confidence == "low" else "main") if gated else "excluded",
+            "reason": None if gated else f"{n_fit} fit laps (< 3, LMGT3)"}
+
+
+def v6b(fit_reds: list, car_class: str, lm, raw_line: dict) -> dict:
+    """Design §15 V4 C2 / §15.x 4 (report only, no limit yet): the fit on the
+    even / odd / all laps of the fit set, each car's plain model (no clamp, no
+    measured power) on the first test lap's line; spread = (max - min) / mean."""
+    out = {}
+    for name, sl in (("even", slice(0, None, 2)), ("odd", slice(1, None, 2)), ("all", slice(None))):
+        reds = [subset(r, sorted(r.laps, key=lambda s: s.lap_number)[sl]) for r in fit_reds]
+        reds = [r for r in reds if r.laps]
+        try:
+            g = C.fit_group(reds, car_class)
+        except (C.InsufficientData, ValueError, IndexError, np.linalg.LinAlgError) as e:
+            out[name] = None
+            out.setdefault("errors", {})[name] = str(e)
+            continue
+        out[name] = SV.solve(car_with(g, lm), raw_line, clamp=False)["time"]
+    ts = [out[k] for k in ("even", "odd", "all") if out.get(k) is not None]
+    out["spread_pct"] = 100 * (max(ts) - min(ts)) / float(np.mean(ts)) if len(ts) >= 2 else None
+    return out
 
 
 def main() -> int:
@@ -168,12 +213,19 @@ def main() -> int:
     n_fit = sum(len(r.laps) for r in fit_reds)
     lm = g.load_models.get(sim.name) if holdout == "odd" else C.fit_load_model(q, sim_red.load_source)
     car = car_with(g, lm)
-    info = fit_info(g, n_fit)
+    sc = ST.selfcheck(fit_reds, sim_red.car_class)
+    info = fit_info(g, n_fit, sc=sc)
+    gate = gate_row(sim_red.car_class, n_fit, info["confidence"])
     axles = [g.axle(0), g.axle(1)]
     cross_track = any(r.track != sim_red.track for r in fit_reds)
     print(f"PAIR {holdout}{' cross-track' if cross_track else ''} | fit {[r.file[-31:-7] for r in fit_reds]} "
           f"({n_fit} laps) | test {sim.name[-31:-7]} | {sim_red.car_model} ({sim_red.car_class}) | "
           f"beta {info['beta']:.2f} conf {info['confidence']} | load {time.time() - t0:.0f} s")
+    print(f"  GATE {gate['row']}" + (f" ({gate['reason']})" if gate["reason"] else "")
+          + " | selfcheck " + ("n/a" if sc is None else f"q75 {sc['shift']:+.3f} median {sc['median']:+.3f} "
+                                                        f"sd {sc['sd']:.3f} (n {sc['n']})")
+          + (f" | notes {info['notes']}" if info["notes"] else ""))
+    v6b_out = None
 
     lv2 = level_stats(car, axles, test_states)                      # V2 / V3
     v1 = {"r2": [round(x, 3) for x in lm.r2], "bias": lam_bias(lm, test_states)}
@@ -212,6 +264,8 @@ def main() -> int:
         v12 = time.time() - t1
         ln, lv = res["_line"], res["_levels"]
         T = lap.lap_time_s
+        if v6b_out is None:                                              # V6b: first test lap's line
+            v6b_out = v6b(fit_reds, sim_red.car_class, lm, SV.line_of(raw))
         p110 = SV.solve(car.scaled(1.10), ln, clamp=False)                # V5
         under = ln["v"] - p110["v"]
         r = {"lap": int(lap.lap_number), "lap_time": T, "ideal": res["ideal"], "model_only": res["model_only"],
@@ -248,7 +302,7 @@ def main() -> int:
         print(f"  L{r['lap']:<3d} {T:8.3f} ideal {i['time_s']:8.3f} gain {gains} s | model_only {res['model_only']['time_s']:.2f} "
               f"| V5 {100 * r['v5']['share']:.1f}% {r['v5']['worst_kmh']:.0f}km/h | V9 {'ok' if r['v9_ok'] else 'FAIL'} "
               f"| V13 clamp {100 * lv['clamped_share']:.0f}% unclamped {lv['gain_unclamped']:+.2f} s extrap "
-              f"{r['v13']['extrapolated_gain_s']:+.2f} s"
+              f"{r['v13']['extrapolated_gain_s']:+.2f} s ceiling {res['ceiling']['time_s']:.2f}"
               + (f" | V7 {r['v7_pct']:+.2f}%" if "v7_pct" in r else "")
               + (f" | V8 {r['v8_s'][0]:+.2f}/{r['v8_s'][1]:+.2f} s" if "v8_s" in r else "")
               + (f" | V15 {pub['driven_pct']:.1f}%/{pub['ideal_pct']:.1f}% {chk}" if pub else " | V15 -")
@@ -260,11 +314,18 @@ def main() -> int:
         v6 = {"unclamped_pct": 100 * (max(un) - min(un)) / mean_t, "clamped_pct": 100 * (max(cl) - min(cl)) / mean_t}
     else:
         v6 = None
-    fmt = lambda d: "n/a" if d["shift"] is None else f"{d['shift']:+.3f} sd {d['sd']:.3f} (n {d['n']})"  # noqa: E731
+    # V2 = the 0.75 quantile (the shape tally.py parses: "<q75> sd <sd> (n N)"), median after it
+    fmt = lambda d: ("n/a" if d["shift"] is None else                                      # noqa: E731
+                     f"{d['shift']:+.3f} sd {d['sd']:.3f} (n {d['n']}) med {d['median']:+.3f}")
+    b = v6b_out or {}
+    v6b_txt = ("n/a" if b.get("spread_pct") is None else
+               f"{b['spread_pct']:.2f}% (even/odd/all " + "/".join("-" if b.get(k) is None else f"{b[k]:.2f}"
+                                                               for k in ("even", "odd", "all")) + " s)")
     print(f"  V1 R2 {v1['r2']} lam bias F {100 * v1['bias']['front']:+.1f}% R {100 * v1['bias']['rear']:+.1f}%"
           f" | V2/V3 F {fmt(lv2['front'])} R {fmt(lv2['rear'])} all {fmt(lv2['all'])}"
           f" | V4 in beta {rows[0]['v4_in_beta'] if rows else None}"
-          + (f" | V6 unclamped {v6['unclamped_pct']:.2f}% clamped {v6['clamped_pct']:.2f}%" if v6 else ""))
+          + (f" | V6 unclamped {v6['unclamped_pct']:.2f}% clamped {v6['clamped_pct']:.2f}% (report only)" if v6 else "")
+          + f" | V6b {v6b_txt} (report only, no limit yet)")
     print(f"  V10 status {[x.status for x in axles]} terms {[x.terms for x in axles]} knee {[x.knee_deg for x in axles]} "
           f"knee_vs_v3 {[x.knee_vs_v3 for x in axles]} binding {rows[0]['v10']['binding'] if rows else None}")
     if v14:
@@ -275,8 +336,10 @@ def main() -> int:
         a.json.write_text(json.dumps(C._jsonable({"pair": {"holdout": holdout, "cross_track": cross_track,
                                                             "fit": [r.file for r in fit_reds], "sim": sim.name,
                                                             "car_model": sim_red.car_model, "car_class": sim_red.car_class,
-                                                            "beta": info["beta"], "confidence": info["confidence"]},
-                                                   "laps": rows, "v6": v6, "v14": v14}), indent=1))
+                                                            "beta": info["beta"], "confidence": info["confidence"],
+                                                            "n_fit_laps": n_fit, "selfcheck": sc, "gate": gate,
+                                                            "notes": info["notes"]},
+                                                   "laps": rows, "v6": v6, "v6b": v6b_out, "v14": v14}), indent=1))
         print(f"  JSON: {a.json}")
     return 0
 
