@@ -1245,3 +1245,58 @@ Measured over the seeds ("in" capacity; plain = plain model vs true mean car, + 
    Remove the old xfails.
 3. Continue with §15 V7 steps 6-8 (incl. 15.x items 3-4). In the re-run report the expected
    gain change of every pair with a `lower_bound` axle (expected +0.0..+0.12 s).
+
+### 15.z Braking and traction efficiencies against the q 0.75 capacities (11/23/2026)
+
+Probe `opus_p7_kbkt.py` (T6 cars A/B, 9 noisy seeds 2026, 7, 99, 1-6 + noise-free; built code at
+9504f1a; capacities = fitted / true at v 40 m/s, gy 0: braking `kb (s_f A_f + s_r A_r)`,
+traction `kt s_r A_r`; also traction at 25 m/s). Variants: `built` (axles q 0.75, kb/kt median),
+`ax50` (axles median, kb/kt median), `kq75` (axles q 0.75, kb/kt q 0.75). Selection = mean log
+capacity scale of the noise field at the points where the TRUE solve is traction / brake bound.
+
+| car, noisy seeds | braking built / ax50 / kq75 (mean, min-max) | traction 40 m/s built / ax50 / kq75 (mean, min-max) |
+|---|---|---|
+| A | 1.008 / 1.008 / 1.040 (0.977-1.043 built; 1.014-1.083 kq75) | 0.949 / 0.970 / 0.992 (0.902-0.991 built; 0.941-1.052 kq75) |
+| B | 0.970 / 0.970 / 1.004 (0.939-0.998 built; 0.960-1.039 kq75) | 0.936 / 0.962 / 0.981 (0.863-0.981 built; 0.898-1.049 kq75) |
+| noise-free A / B | 1.000 / 0.980 at every variant | 1.003 / 0.996 built, 1.006 / 1.007 kq75 |
+
+Selection at the bound points: traction −0.017..+0.002, braking −0.015..+0.020 (log scale; at
+most ~1.7 %, mostly < 1 %).
+
+**Braking: not a consistency error, kb stays at the median.** The braking capacity is identical
+with the axles at the median or at q 0.75 (A 1.008 / 1.008, B 0.970 / 0.970, every seed equal to
+0.001): kb is a ratio to `S` on near-straight samples (|gy| < 0.3), where `S` scales with the
+level, so kb drops by exactly the factor the level rose and the product does not move. At the
+median it is unbiased (means 1.008 / 0.970; noise-free 1.000 / 0.980); at q 0.75 it would
+overshoot (A 1.040, up to 1.083). The builder's widened braking limits are confirmed: per seed
+±7 %, mean over the seeds ±4 %.
+
+**Traction: a real low bias, kt moves to q 0.75 (`LEVEL_Q`).** Two parts:
+- the capacity change costs 2.1-2.6 % (built vs ax50). The traction room `sqrt(A_r^2 − gy^2)`
+  of the limit samples (|gy| up to 0.8 A_r) does not scale with A_r, so raising A_r raises the
+  room more than proportionally and the median ratio kt falls more than A_r rose;
+- the remaining 3-4 % (ax50 0.970 / 0.962, noise-free 1.003 / 0.996) is not place selection (the
+  traction-bound points sit at −0.6 % of the mean capacity on average). It is the room's
+  sensitivity: with gy near the limit, a 5 % capacity draw moves the room by up to
+  1 / (1 − (gy/A_r)^2) ≈ 2.8× as much, and the TC-active samples are the ones where that lap's room
+  ran out. The same kind of bias as the lateral level (review I2), on a steeper function.
+At q 0.75 the traction capacity is unbiased (means 0.992 / 0.981; noise-free 1.006 / 1.007).
+Real effect: traction binds on 1-5 % of the ideal laps (§9 V10 shares), so `kt` up ~4-6 % moves the
+gains by a few hundredths of a second, upwards, at slow-corner exits only.
+
+T6 traction limits (kq75, about 2.5 sd of the seeds, rounded out): per seed ±12 % (0.898-1.052,
+sd 0.036 / 0.048), mean over the seeds ±4 %; noise-free ±3 %. Braking as confirmed above;
+noise-free ±3 %. The builder's −16 / +4 % traction limits are withdrawn.
+
+**Builder steps:**
+1. `ideal_car.fit_group`: `kt = fit_traction(..., LEVEL_Q if q is None else q)`; kb and the engine
+   stay at `qm` (median). Comment: §15.z, with this table. Bump `FIT_VERSION` and
+   `ideal_store.VERSION` (profiles refit).
+2. T6: braking per seed ±7 %, mean ±4 %; traction per seed ±12 %, mean ±4 %; noise-free both ±3 %.
+3. Selfcheck/report: nothing else changes (kt is not in V2/V3).
+
+**Running validation (Sonnet, on 9504f1a): let it finish; it is not void.** kt only acts where
+traction binds (1-5 % of a lap), so V1-V3 (no kt), V7, V9 and the gate verdict stand. After step 1,
+re-run the pairs where traction binds on more than 3 % of the ideal lap (from that run's V10
+binding shares) and report gain, V5 and V6b for them; a full re-run is needed only if one of those
+changes a gate result.
