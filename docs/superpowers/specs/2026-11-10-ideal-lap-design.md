@@ -1300,3 +1300,60 @@ traction binds (1-5 % of a lap), so V1-V3 (no kt), V7, V9 and the gate verdict s
 re-run the pairs where traction binds on more than 3 % of the ideal lap (from that run's V10
 binding shares) and report gain, V5 and V6b for them; a full re-run is needed only if one of those
 changes a gate result.
+
+### 15.z2 kt at q 0.75 on real data: confirmed (11/23/2026)
+
+Question (builder, 5958bfb): on real data kt rose more than §15.z predicted (Porsche COTA
+0.865 -> 0.940, +8.7 %; Ferrari COTA 0.896 -> 0.982, +9.6 %; T6 4-6 %). Is q 0.75 over-optimistic?
+Probe `opus_p8_trac.py` (this worktree's code, same-file fit as R5, recordings read-only).
+
+(a) **Observed drive envelope.** Over all samples of all fit laps with throttle > 30 %,
+gxt > 0.2 g, v < 45 m/s, |gy| < 0.8 A_r, binned by v (5 m/s) x |gy| (0.3 g): in every bin where
+TC is active on at least 20 % of the samples, the model's traction limit `kt s_r sqrt(A_r^2 - gy^2)`
+at q 0.75 stays BELOW what the car actually achieved:
+
+| car | kt75 / achieved p99 (median, max over TC bins) | kt75 / achieved max (median, max) | kt50 / p99 (median) |
+|---|---|---|---|
+| Porsche 911 GT3 R, 20 laps | 0.836, 0.975 | 0.811, 0.973 | 0.770 |
+| Ferrari 499P, 6 laps | 0.876, 0.974 | 0.849, 0.957 | 0.799 |
+
+The bins marked "over max" are all bins with TC at 0-6 % and v >= 20 m/s at low |gy|. There the
+drive is engine-limited (power binds), and the traction limit never binds. So q 0.75 does not
+claim more traction than the car showed; at the median it claimed 20-23 % less than the car's p99.
+
+(b) **Where the effect sits** (fastest lap, A1 and clamp on; kt median -> q 0.75):
+
+| car | expected gain | gain_min | ideal traction-bound share | plain gain | plain traction-bound | ceiling gain |
+|---|---|---|---|---|---|---|
+| Porsche L9 | 1.119 -> 1.192 s | 0.823 -> 0.852 | 1.8 -> 2.8 % | 1.285 -> 1.649 | 15.5 -> 13.7 % | 1.831 -> 2.220 |
+| Ferrari L11 | 1.098 -> 1.216 s | 0.898 -> 0.988 | 3.1 -> 3.3 % | 1.127 -> 1.709 | 22.0 -> 17.8 % | 1.950 -> 2.598 |
+
+The whole change of the expected gain sits in the corner and straight windows after slow corner
+exits (Porsche: +0.14 s on one straight, +0.04 s in C4; Ferrari: three straights +0.07 / +0.06 /
++0.03 s, C3 +0.04 s). The plain model and the ceiling move more because they are traction-bound
+on 14-22 % of the lap (the envelope takes the driven lap at most of those points).
+
+(c) **Why the shift is larger than T6's.** The real TC-active ratio `gxt / (s_r room)` is much wider:
+log sd 0.172 (Porsche) and 0.193 (Ferrari). TC fires at part throttle (throttle p10 68 % and
+80 %), and 89-96 % of the TC samples sit at |gy|/A_r > 0.5, where the room is steepest. T6's
+perfect driver is flat out when TC binds, and its spread comes only from the capacity noise. A wider
+distribution separates q 0.75 from the median more (x1.087 / x1.096). The median is pulled down by
+the part-throttle TC samples, which do not show the traction limit.
+
+**Decision: §15.z stands (kt at q 0.75).** It moves the traction limit towards, and still below,
+the observed envelope. No cap is needed, because no TC bin is exceeded. Add a guard so this stays
+true on other cars:
+1. `ideal_car.fit_traction`: also return `envelope_ratio` = the median over bins (v 5 m/s x
+   |gy| 0.3 g, >= 40 samples, TC share >= 20 %) of (model limit at the fitted kt) / (achieved p99
+   of gxt among drive samples in the bin). Store it in `kappa_trac`. If it is > 1.0, cap kt at
+   kt / envelope_ratio and set `status: "capped_by_envelope"` (note in the fit). No bins: `null`,
+   no cap.
+2. Test (synthetic): a drive data set whose q 0.75 limit exceeds its own p99 in the TC bins gets
+   capped, and the ratio is reported; T6 cars report a ratio < 1 and are not capped.
+3. `ideal_lap_report`: print `envelope_ratio` per pair (V10 row).
+The traction-bound re-run of §15.z proceeds as written.
+
+User-visible: the headline changes little (expected gain +0.07 / +0.12 s, "at least"
++0.03 / +0.09 s), but "setup potential" (the ceiling) grows by 0.39 / 0.65 s. These numbers come
+from the user's own laps: the car accelerated out of slow corners harder than the median-calibrated
+model allowed.

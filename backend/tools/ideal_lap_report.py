@@ -326,8 +326,11 @@ def main() -> int:
           f" | V4 in beta {rows[0]['v4_in_beta'] if rows else None}"
           + (f" | V6 unclamped {v6['unclamped_pct']:.2f}% clamped {v6['clamped_pct']:.2f}% (report only)" if v6 else "")
           + f" | V6b {v6b_txt} (report only, no limit yet)")
+    ktf = info["kappa_trac"]                                           # §15.z2 guard
     print(f"  V10 status {[x.status for x in axles]} terms {[x.terms for x in axles]} knee {[x.knee_deg for x in axles]} "
-          f"knee_vs_v3 {[x.knee_vs_v3 for x in axles]} binding {rows[0]['v10']['binding'] if rows else None}")
+          f"knee_vs_v3 {[x.knee_vs_v3 for x in axles]} binding {rows[0]['v10']['binding'] if rows else None}"
+          f" | kt {ktf['value']:.3f} {ktf['status']} envelope_ratio "
+          + ("n/a" if ktf.get("envelope_ratio") is None else f"{ktf['envelope_ratio']:.3f}"))
     if v14:
         print(f"  V14 setup_differs {v14['setup_differs']} | trims {[(t['trim'], t['t'] and round(t['t'], 3)) for t in v14['trims']]}"
               f" | V2 F without {fmt(v14['without']['front'])} with {fmt(v14['with']['front'])}"
@@ -336,7 +339,7 @@ def main() -> int:
         a.json.write_text(json.dumps(C._jsonable({"pair": {"holdout": holdout, "cross_track": cross_track,
                                                             "fit": [r.file for r in fit_reds], "sim": sim.name,
                                                             "car_model": sim_red.car_model, "car_class": sim_red.car_class,
-                                                            "beta": info["beta"], "confidence": info["confidence"],
+                                                            "beta": info["beta"], "confidence": info["confidence"], "kappa_trac": info["kappa_trac"],
                                                             "n_fit_laps": n_fit, "selfcheck": sc, "gate": gate,
                                                             "notes": info["notes"]},
                                                    "laps": rows, "v6": v6, "v6b": v6b_out, "v14": v14}), indent=1))

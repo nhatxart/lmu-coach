@@ -20,7 +20,7 @@ from .ideal_state import G, GRID_HZ, State
 # Version of the fit code: part of every group's fingerprint (ideal_store), so
 # a profile fitted by older code is refitted. BUMP IT WITH ANY CHANGE THAT CAN
 # MOVE A FITTED NUMBER. 2: round 1 (continuous knee, k / c span rule).
-FIT_VERSION = 5                    # 3: level at q 0.75 (§15 V2); 4: lower_bound axles too (§15.y); 5: kt at q 0.75 (§15.z)
+FIT_VERSION = 6                    # 3: level at q 0.75 (§15 V2); 4: lower_bound axles too (§15.y); 5: kt at q 0.75 (§15.z); 6: kt envelope cap (§15.z2)
 LEVEL_Q = 0.75                     # grip level of an observed axle and the per-file trim (§15 V2, B1)
 FRONT, REAR = (0, 1), (2, 3)
 AXLES = ("front", "rear")
@@ -598,9 +598,40 @@ def fit_traction(d: dict, gxt: np.ndarray, Ar, s_front: float, q: float = 0.5) -
     if trl.sum() < 100:
         trl, rule = (thr > 95) & (v < 40) & rest, "full throttle below 144 km/h"
     if trl.sum() >= 30:
-        return dict(value=float(np.quantile(gxt[trl] / ((1 - s_front) * room[trl]), q)), rule=rule,
-                    n=int(trl.sum()), status="fitted")
-    return dict(value=1.0, rule=rule, n=int(trl.sum()), status="assumed")
+        kt = float(np.quantile(gxt[trl] / ((1 - s_front) * room[trl]), q))
+        env = traction_envelope(d, gxt, Ar, s_front, kt)
+        out = dict(value=kt, uncapped=kt, envelope_ratio=env, rule=rule, n=int(trl.sum()), status="fitted")
+        if env is not None and env > 1.0:
+            out.update(value=kt / env, status="capped_by_envelope")
+        return out
+    return dict(value=1.0, uncapped=1.0, envelope_ratio=None, rule=rule, n=int(trl.sum()), status="assumed")
+
+
+ENV_V_BIN, ENV_GY_BIN, ENV_MIN_N, ENV_MIN_TC = 5.0, 0.3, 40, 0.2
+
+
+def traction_envelope(d: dict, gxt: np.ndarray, Ar, s_front: float, kt: float) -> float | None:
+    """Design §15.z2 guard: does the fitted traction limit claim more than the car
+    showed? Drive samples (throttle > 30 %, gxt > 0.2 g, v < 45 m/s,
+    |gy| < 0.8 A_r) binned by v (5 m/s) x |gy| (0.3 g); in every bin with >= 40
+    samples and TC active on >= 20 % of them: (median over the bin of the model
+    limit kt s_r sqrt(A_r^2 - gy^2)) / (p99 of the achieved gxt). Returns the
+    median over those bins, None without such bins. Real COTA (kt at q 0.75):
+    Porsche 0.836, Ferrari 0.876 (probe opus_p8_trac); > 1 means kt is capped."""
+    v, gy = d["v"], d["gy"]
+    room = np.sqrt(np.maximum(Ar ** 2 - gy ** 2, 1e-4))
+    drive = (d["thr"] > 30) & (v < 45) & (gxt > 0.2) & (np.abs(gy) < 0.8 * Ar)
+    if not drive.any():
+        return None
+    vb = np.floor(v[drive] / ENV_V_BIN).astype(int)
+    yb = np.floor(np.abs(gy[drive]) / ENV_GY_BIN).astype(int)
+    a, lim, tc = gxt[drive], kt * (1 - s_front) * room[drive], d["tc"][drive] > 0.5
+    ratios = []
+    for key in set(zip(vb.tolist(), yb.tolist())):
+        m = (vb == key[0]) & (yb == key[1])
+        if m.sum() >= ENV_MIN_N and tc[m].mean() >= ENV_MIN_TC:
+            ratios.append(float(np.median(lim[m])) / float(np.percentile(a[m], 99)))
+    return float(np.median(ratios)) if ratios else None
 
 
 def fit_engine(d: dict, q: float = 0.5) -> dict:
@@ -684,6 +715,9 @@ def fit_group(reductions: list, car_class: str, v3_peaks: dict | None = None,
     # near-straight samples, which scales with the level, so its product is
     # unchanged by the level (A 1.008, B 0.970) and q 0.75 would overshoot (1.040).
     kt = fit_traction(d, gxt, Ar, share["value"], LEVEL_Q if q is None else q)
+    if kt["status"] == "capped_by_envelope":
+        notes.append(f"kappa_trac capped by the drive envelope: {kt['uncapped']:.3f} -> {kt['value']:.3f} "
+                     f"(model / achieved p99 {kt['envelope_ratio']:.3f}, §15.z2)")
     eng = fit_engine(d, qm)
 
     info = dict(has_forces=has_force, load_source=pooled_src,

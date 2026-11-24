@@ -31,6 +31,8 @@ def clamped(d):
     print("%s | R5 clamped | mu1 %s k %s c %s terms %s knee %s kb %.3f kt %.3f" % (
         d["model"], np.round(car.mu1, 3), np.round(car.k, 3), np.round(car.c, 3), [x.terms for x in axles],
         [None if x.knee_deg is None else round(x.knee_deg, 2) for x in axles], car.kb, car.kt))
+    ktf = gfit.info["kappa_trac"]
+    print("      kt %s, envelope_ratio %s (§15.z2)" % (ktf["status"], ktf.get("envelope_ratio")))
     ideals = []
     for r in sorted(d["raws"], key=lambda r: r["time"])[: a.laps]:
         t0 = time.time()
