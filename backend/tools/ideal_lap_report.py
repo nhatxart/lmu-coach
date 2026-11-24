@@ -12,7 +12,7 @@ qualifying laps of the test set (--laps).
 Prints one line per test lap with the §9 metrics, then the pair's summary:
   V1  load model R2 per wheel (test file) and axle-mean lam bias in hard cornering
   GATE the pair's gate row (§15 V5, §15.x 3): main | low_confidence (still in the gate) |
-      excluded (LMGT3 with < 3 fit laps); the fit set's self-check (C3 gives `low` above sd 0.075)
+      excluded_few_laps (any class with < 3 fit laps); the fit set's self-check (C3 gives `low` above sd 0.075)
   V2  level: 0.75 quantile of log(observed / predicted) on the held-out saturated samples (per
       axle, pooled; the calibration's own statistic, §15 V5), the median printed after it
   V3  spread: log sd of the same
@@ -144,13 +144,18 @@ def subset(red: FileReduction, laps) -> FileReduction:
 
 
 def gate_row(car_class: str, n_fit: int, confidence: str) -> dict:
-    """Design §15 V5 with §15.x 3: the gate takes every Hypercar pair and every
-    LMGT3 pair whose fit set has >= 3 qualifying laps. Low-confidence pairs
+    """Design §15 V5 with §15.x 3: the gate takes every pair (Hypercar and
+    LMGT3) whose fit set has >= 3 qualifying laps. Low-confidence pairs
     (C3 or default terms) stay IN the gate (excluding them would make V3
-    tautological) and are reported in their own row."""
-    gated = car_class != "LMGT3" or n_fit >= 3
-    return {"gated": gated, "row": ("low_confidence" if confidence == "low" else "main") if gated else "excluded",
-            "reason": None if gated else f"{n_fit} fit laps (< 3, LMGT3)"}
+    tautological) and are reported in their own row.
+    BUG FIX (validation r2): the >= 3 rule was applied to LMGT3 only, so the
+    1-2-lap Hypercar fits (Genesis Sarthe, Ferrari Road Atlanta, Valkyrie,
+    Aston 2to1) were labelled main / low_confidence and counted in the gate.
+    Fix: they are `excluded_few_laps`, whatever the class."""
+    gated = n_fit >= 3
+    row = ("low_confidence" if confidence == "low" else "main") if gated else "excluded_few_laps"
+    return {"gated": gated, "row": row,
+            "reason": None if gated else f"{n_fit} fit laps (< 3, {car_class})"}
 
 
 def v6b(fit_reds: list, car_class: str, lm, raw_line: dict) -> dict:

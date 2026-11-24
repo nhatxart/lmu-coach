@@ -13,12 +13,17 @@ _spec.loader.exec_module(R)
 
 
 def test_gate_rows():
-    assert R.gate_row("Hypercar", 2, "medium") == {"gated": True, "row": "main", "reason": None}
+    assert R.gate_row("Hypercar", 3, "medium") == {"gated": True, "row": "main", "reason": None}
     # low confidence stays in the gate, in its own row (§15.x 3)
     assert R.gate_row("LMGT3", 6, "low") == {"gated": True, "row": "low_confidence", "reason": None}
-    assert R.gate_row("Hypercar", 1, "low")["row"] == "low_confidence"
-    out = R.gate_row("LMGT3", 2, "medium")
-    assert not out["gated"] and out["row"] == "excluded" and "< 3" in out["reason"]
+    assert R.gate_row("Hypercar", 4, "low")["row"] == "low_confidence"
+
+
+@pytest.mark.parametrize("cls,n,conf", [("LMGT3", 2, "medium"), ("Hypercar", 2, "medium"),   # Genesis Sarthe
+                                        ("Hypercar", 1, "low"), ("Hypercar", 0, "medium")])
+def test_fewer_than_three_fit_laps_are_excluded_in_every_class(cls, n, conf):
+    out = R.gate_row(cls, n, conf)
+    assert not out["gated"] and out["row"] == "excluded_few_laps" and "< 3" in out["reason"]
 
 
 def test_v2_statistic_is_the_075_quantile():
