@@ -143,7 +143,18 @@ def subset(red: FileReduction, laps) -> FileReduction:
     return FileReduction(**{**red.__dict__, "laps": list(laps)})
 
 
-def gate_row(car_class: str, n_fit: int, confidence: str) -> dict:
+HF1 = "lmu-coach-recorder hf1"
+
+
+def legacy_recorder(meta: dict) -> bool:
+    """True for a recording made before the HF1 recorder (10/19/2026): its
+    metadata RecordedBy is not 'lmu-coach-recorder hf1' (v4, v3, the first
+    shared-memory recorder, or none at all). Kept files copy the original's
+    metadata, so they count as what they were cut from."""
+    return not str((meta or {}).get("RecordedBy") or "").startswith(HF1)
+
+
+def gate_row(car_class: str, n_fit: int, confidence: str, legacy: bool = False) -> dict:
     """Design §15 V5 with §15.x 3: the gate takes every pair (Hypercar and
     LMGT3) whose fit set has >= 3 qualifying laps. Low-confidence pairs
     (C3 or default terms) stay IN the gate (excluding them would make V3
@@ -151,7 +162,13 @@ def gate_row(car_class: str, n_fit: int, confidence: str) -> dict:
     BUG FIX (validation r2): the >= 3 rule was applied to LMGT3 only, so the
     1-2-lap Hypercar fits (Genesis Sarthe, Ferrari Road Atlanta, Valkyrie,
     Aston 2to1) were labelled main / low_confidence and counted in the gate.
-    Fix: they are `excluded_few_laps`, whatever the class."""
+    Fix: they are `excluded_few_laps`, whatever the class.
+    Gate decision 11/23/2026 (design §16): a pair with any file from the old
+    recorder (`legacy`, see legacy_recorder) is `excluded_legacy_recorder`; such
+    files stay low confidence in the app (the C3 rule), they are not gated."""
+    if legacy:
+        return {"gated": False, "row": "excluded_legacy_recorder",
+                "reason": "a file of the pair is from the old recorder (RecordedBy not hf1)"}
     gated = n_fit >= 3
     row = ("low_confidence" if confidence == "low" else "main") if gated else "excluded_few_laps"
     return {"gated": gated, "row": row,
@@ -220,7 +237,8 @@ def main() -> int:
     car = car_with(g, lm)
     sc = ST.selfcheck(fit_reds, sim_red.car_class)
     info = fit_info(g, n_fit, sc=sc)
-    gate = gate_row(sim_red.car_class, n_fit, info["confidence"])
+    legacy = any(legacy_recorder(r.meta) for r in [*fit_reds, sim_red])
+    gate = gate_row(sim_red.car_class, n_fit, info["confidence"], legacy=legacy)
     axles = [g.axle(0), g.axle(1)]
     cross_track = any(r.track != sim_red.track for r in fit_reds)
     print(f"PAIR {holdout}{' cross-track' if cross_track else ''} | fit {[r.file[-31:-7] for r in fit_reds]} "

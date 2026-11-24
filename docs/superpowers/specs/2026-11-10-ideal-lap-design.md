@@ -1357,3 +1357,34 @@ User-visible: the headline changes little (expected gain +0.07 / +0.12 s, "at le
 +0.03 / +0.09 s), but "setup potential" (the ceiling) grows by 0.39 / 0.65 s. These numbers come
 from the user's own laps: the car accelerated out of slow corners harder than the median-calibrated
 model allowed.
+
+## 16. Gate decision (11/23/2026)
+
+The validation gate (§15 V5, §15.x 3) failed on validation round 3
+(`.superpowers/sdd/2026-11-11-ideal-lap/validation-report-r3.md`, HEAD b0abb9c; r2 for the pairs
+not re-run). 28 pairs have >= 3 fit laps: Hypercar n = 8, V2 7 pass / 1 fail, V3 4 / 4, V5 7 / 1;
+LMGT3 n = 20, V2 19 pass, V3 19 pass, V5 19 / 1. No gate result flipped between r2 and r3.
+The failures:
+
+- **Old v4 recorder** (Oct 2-4, metadata `RecordedBy` "lmu-coach-recorder v4"): the Cadillac and
+  Aston Martin Road Atlanta pairs. V3 (scatter, held-out log sd, limit 0.075): Cadillac 2to1 0.165, 1to2 0.119;
+  Aston 3to0 0.095, 1to2 0.085 (Aston 0to3 0.072 passes); V5 on
+  Cadillac 1to2: 15.3 % of the lap / 16 km/h under the driven lap (L20; 11.5-14.0 % on L18/L16).
+  These files have no height, no yaw-acceleration and no pose channels, and the grip scatter
+  shows it (C3 already marks them low confidence).
+- **Two borderline results** on HF1 recordings: BMW M Hybrid V8 Daytona odd/even V2 -0.024
+  (limit +-0.02; rear -0.059, median -0.064); BMW M4 LMGT3 Fuji 15to14 V5 5.2 % of the lap at
+  5 km/h on L5 (2.8 % / 4.3 % on L11 / L12; limit: > 2 km/h on at most 4 % of the lap).
+
+**User decision (11/23/2026): build the UI now.**
+1. Old-recorder files stay in the app at low confidence: the C3 rule (self-check sd > 0.075 ->
+   `low`, beta >= 0.05, range at least +-5 %) already applies to them; nothing else changes.
+2. The gate excludes old-recorder recordings: `ideal_lap_report.gate_row(..., legacy=True)` labels
+   a pair `excluded_legacy_recorder` when any of its files has `RecordedBy` other than
+   "lmu-coach-recorder hf1" (v4, v3, the first shared-memory recorder, or none; kept files copy the
+   original's metadata). Test `test_ideal_report_rows.py`.
+3. The two borderline results are known limits (DevNotes 11/23/2026), not fixed: the Daytona
+   Hypercar rear grip level reads about 2.4 % low on that session (its own range covers it,
+   beta 0.03), and on the Fuji BMW M4 about 4-5 % of a lap from another session runs up to 5 km/h
+   under the driven speed in the model-only solve (the envelope takes the driven lap there, so
+   the ideal lap is not slower than the lap; `model_only` is).

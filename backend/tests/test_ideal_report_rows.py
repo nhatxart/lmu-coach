@@ -26,6 +26,20 @@ def test_fewer_than_three_fit_laps_are_excluded_in_every_class(cls, n, conf):
     assert not out["gated"] and out["row"] == "excluded_few_laps" and "< 3" in out["reason"]
 
 
+@pytest.mark.parametrize("by,legacy", [("lmu-coach-recorder hf1", False), ("lmu-coach-recorder v4", True),
+                                       ("lmu-coach-recorder v3 (full-session)", True),
+                                       ("lmu-coach-recorder (shared memory)", True), (None, True)])
+def test_legacy_recorder_from_recorded_by(by, legacy):
+    assert R.legacy_recorder({} if by is None else {"RecordedBy": by}) is legacy
+
+
+def test_old_recorder_pairs_are_excluded_with_their_reason():
+    """Gate decision 11/23/2026 (§16): old-recorder pairs are out of the gate."""
+    out = R.gate_row("Hypercar", 8, "low", legacy=True)
+    assert out["gated"] is False and out["row"] == "excluded_legacy_recorder" and "old recorder" in out["reason"]
+    assert R.gate_row("Hypercar", 8, "low", legacy=False)["row"] == "low_confidence"
+
+
 def test_v2_statistic_is_the_075_quantile():
     x = np.random.default_rng(3).normal(0.0, 0.05, 4000)
     s = R._stat(x)
