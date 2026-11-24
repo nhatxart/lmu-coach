@@ -78,11 +78,24 @@ def install_fake_ideal_store(main_mod) -> None:
         d.update(kw)
         return d
 
-    # The synthetic ring is driven at a high, nearly constant speed: a car with
-    # ordinary grip (mu 1.6) is slower everywhere, the envelope is your own lap
-    # and every gain is 0.00. This one gains ~4 s (probe, 11/24/2026), so the
-    # headline and the table have non-zero numbers to check.
-    car = _car(mu=(5.0, 5.2), power=3.0)
+    # PREVIOUSLY mu 5.0 / 5.2: at the ring's default 40 m/s the bends are 2.6 g,
+    # so a car with ordinary grip was slower everywhere and every gain read 0.00.
+    # Now the ideal files are driven at speed_scale 0.6 (24 m/s, ~0.9 g in the
+    # bends, below this car's limit) and a realistic car gains ~1.6 s of 50 s
+    # (probe, 11/24/2026).
+    car = _car(mu=(1.5, 1.6), power=0.6)
+
+    # Named corners for the ring, as the map shows them (track_db ref_points in
+    # game Lap Dist): T1 and T2 in the first bend (400-600 m), T3 in the second
+    # (1000-1200 m). The ideal-lap table must use the same names.
+    from app import track_db
+    track_db.TRACK_REGISTRY["Synthetic Hill Ring"] = {
+        "display_name": "Synthetic Hill Ring", "aliases": [], "country": "Nowhere",
+        "layouts": {"Default": {"aliases": [], "ref_points": [
+            {"dist": 0, "alt": 0.0, "corner": "Start/Finish Line"},
+            {"dist": 470, "alt": 0.0, "corner": "T1 Apex (North)"},
+            {"dist": 540, "alt": 0.0, "corner": "T2 Apex"},
+            {"dist": 1100, "alt": 0.0, "corner": "T3 Apex (Hairpin)"}]}}}
 
     class FakeStore:
         def car_for_lap(self, path, lap_number=None):

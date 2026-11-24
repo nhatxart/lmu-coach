@@ -421,22 +421,43 @@ canvas.cmp-tr.grabbing{cursor:grabbing;}
 .ideal-notes{margin:6px 0 0;padding-left:18px;font-size:var(--fs-xs);color:var(--text-2);}
 .ideal-notes li.warn{color:var(--warn);}
 .ideal-note{margin-top:6px;font-size:var(--fs-xs);color:var(--text-3);}
-/* max-width + min-width:0: the wrap scrolls the table sideways instead of
-   growing past the card (a flex child's min-width is auto) */
+/* The table fits the card at every docked width (PanelSize 300 px and up):
+   fixed layout, three columns that wrap, grip/load on a full-width detail
+   row. overflow-x stays only as a guard (a huge font scale). min-width:0: a
+   flex child's min-width is auto and would grow past the card. */
 .ideal-tbl-wrap{margin-top:10px;overflow-x:auto;max-width:100%;min-width:0;}
 #cmp-ideal{min-width:0;}
 #ideal-cancel[hidden]{display:none;}
-.ideal-tbl{width:100%;border-collapse:collapse;font-size:var(--fs-xs);font-variant-numeric:tabular-nums;}
+.ideal-tbl{width:100%;table-layout:fixed;border-collapse:collapse;font-size:var(--fs-xs);font-variant-numeric:tabular-nums;}
+.ideal-tbl col.c-name{width:36%;} .ideal-tbl col.c-time{width:24%;} .ideal-tbl col.c-lim{width:40%;}
 .ideal-tbl caption{text-align:left;color:var(--text-3);padding-bottom:4px;}
-.ideal-tbl th,.ideal-tbl td{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;}
+.ideal-tbl th,.ideal-tbl td{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;overflow-wrap:anywhere;}
 .ideal-tbl thead th{font-weight:600;color:var(--text-2);}
-.ideal-tbl thead th span{font-weight:400;color:var(--text-3);}
-.ideal-tbl td.num{font-family:var(--font-data);white-space:nowrap;}
-.ideal-tbl .sub{color:var(--text-3);white-space:nowrap;}
+.ideal-tbl thead th span{display:block;font-weight:400;color:var(--text-3);}
+.ideal-tbl td.num{font-family:var(--font-data);}
+.ideal-tbl td.num b{font-weight:600;color:var(--text);}
+.ideal-tbl .sub{color:var(--text-3);}
+/* a corner and its detail row read as one block: the line goes under the detail */
+.ideal-tbl tr[data-kind="corner"] th,.ideal-tbl tr[data-kind="corner"] td{border-bottom:none;padding-bottom:2px;}
+.ideal-tbl tr.ideal-detail td{padding-top:0;color:var(--text-2);font-family:var(--font-data);font-size:12px;}
+.ideal-tbl .over{color:var(--info);font-weight:600;cursor:help;}
 .ideal-tbl tr.straight th,.ideal-tbl tr.straight td{color:var(--text-3);}
 .ideal-tbl .atlim{color:var(--text-3);}
 .ideal-tbl .xtra{color:var(--warn);cursor:help;}
-.ideal-zoom{min-height:32px;padding:0 8px;font-weight:600;}
+.ideal-zoom{min-height:32px;padding:0 6px;font-weight:600;white-space:normal;text-align:left;overflow-wrap:anywhere;max-width:100%;}
+.ideal-legend{margin:8px 0 0;font-size:12px;line-height:1.45;color:var(--text-3);}
+.ideal-legend b{color:var(--text-2);font-weight:600;}
+/* narrow docked panel: tighter cells; wide: the name column needs less */
+.ideal-tbl thead th{overflow-wrap:normal;}   /* headers break between words, never inside one */
+@container panel (max-width: 360px){
+  .ideal-tbl col.c-name{width:31%;} .ideal-tbl col.c-time{width:31%;} .ideal-tbl col.c-lim{width:38%;}
+  .ideal-tbl th,.ideal-tbl td{padding:4px 3px;}
+  .ideal-zoom{padding:0 4px;}
+}
+@container panel (min-width: 620px){
+  .ideal-tbl col.c-name{width:28%;} .ideal-tbl col.c-time{width:20%;} .ideal-tbl col.c-lim{width:52%;}
+  .ideal-tbl th,.ideal-tbl td{padding:6px 10px;}
+}
 .panel-body{flex:1;overflow-y:auto;padding:var(--sp-4);display:flex;flex-direction:column;gap:var(--sp-4);container-type:inline-size;container-name:panel;}
 .panel-body.hidden{display:none;}
 .card{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--sp-3) var(--sp-3) var(--sp-3);
@@ -1824,8 +1845,9 @@ function drawMap(){
       const[cx,cz]=toScreen(c.x,c.z);
       // Only draw if on screen
       if(cx<-20||cx>W+20||cz<-20||cz>H+20)return;
-      // Short label: take first part before space
-      const shortLabel=c.label.replace(/^(T\d+)\s.*$/,'$1').substring(0,8);
+      // Short label: take first part before space (shortCornerLabel: the
+      // ideal-lap table names its corners with the same text)
+      const shortLabel=shortCornerLabel(c.label);
       // Dot
       mapCtx.beginPath();mapCtx.arc(cx,cz,3.5,0,Math.PI*2);
       mapCtx.fillStyle='rgba(251,191,36,0.9)';mapCtx.fill();
@@ -3076,6 +3098,10 @@ async function sendFollowup(e){
   }catch(err){pending()?.remove();out.innerHTML+=`<p style="color:var(--warn)">${String(err.message).replace(/</g,'&lt;')}</p>`;}
 }
 
+// A map corner label as the map draws it ("T11 Apex (Hairpin)" -> "T11");
+// the ideal-lap table (CMP) names its corners with the same text.
+function shortCornerLabel(label){return String(label||'').replace(/^(T\d+)\s.*$/,'$1').substring(0,8);}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Resize + Boot
 // ════════════════════════════════════════════════════════════════════════════
@@ -3814,8 +3840,42 @@ function refit(list,draw){
 // another t and speed: no new geometry, and the finish anchor of attach
 // works. The request takes ~7 s warm, up to ~15 s cold; it runs in the
 // background, can be cancelled, and is dropped on a lap change (onMainLap).
-const IDEAL_LIMIT={front:'Front',rear:'Rear',brake:'Brakes',traction:'Traction',power:'Power',
-  measured:'Your limit',driven:'Your lap'};
+// PREVIOUSLY "Your limit" / "Your lap" for measured / driven: unclear (UX
+// round 11/24/2026). Plain words now; the legend under the table explains them.
+const IDEAL_LIMIT={front:'Front grip',rear:'Rear grip',brake:'Brakes',traction:'Traction',power:'Power',
+  measured:'At the limit already (kept your speed)',driven:'Your lap is faster here'};
+// Where in the corner the time is (the third of the window that gains most).
+// PREVIOUSLY the row showed "min speed 71 → 71 km/h", which read as "nothing
+// to gain" next to 0.2 s gained: the time came from entry or exit, not the
+// apex. The phase says where to look.
+const IDEAL_PHASE={entry:'entry (braking)',mid:'mid-corner',exit:'exit'};
+// Grip used is your measured use against the MODEL's capacity. Over 100 %
+// means you went past the model there (the ideal keeps your speed), not a
+// tyre at 128 %: shown capped as "≥ 100 %" with a marker, explained in the legend.
+const gripTxt=u=>u==null?'—':u>=0.995?'≥ 100 %':`${Math.round(100*u)} %`;
+const gripHtml=u=>u!=null&&u>=0.995?`<span class="over" title="At or past the model's grip here: the ideal keeps your speed">≥ 100 %</span>`:gripTxt(u);
+// A corner row's name = the map's labels inside its window (same text as the
+// map pills: shortCornerLabel), e.g. "T11", "T7/T8", "T3–T6"; a label up to
+// 50 m outside the window when none is inside; else the server's name (the
+// track reference's, or C# when the track has no reference).
+function idealCornerName(c){
+  const labs=((S.mapData&&S.mapData.corner_labels)||[])
+    .filter(l=>!/start|finish/i.test(l.label)).map(l=>({d:+l.dist,t:shortCornerLabel(l.label)}));
+  if(!labs.length||c.kind!=='corner')return c.name;
+  const L=lapLen()||Infinity;
+  // windows may run past the line (s0 < 0 or s1 > lap length) or wrap (s1 < s0)
+  const inWin=d=>c.s1>=c.s0?(d>=c.s0&&d<=c.s1)||(c.s1>L&&d<=c.s1-L)||(c.s0<0&&d>=L+c.s0):(d>=c.s0||d<=c.s1);
+  let hit=labs.filter(l=>inWin(l.d));
+  if(!hit.length){
+    const gap=l=>Math.min(Math.abs(l.d-c.s0),Math.abs(l.d-c.s1));
+    const near=labs.slice().sort((a,b)=>gap(a)-gap(b))[0];
+    if(near&&gap(near)<=50)hit=[near];
+  }
+  if(!hit.length)return c.name;
+  const ts=[...new Set(hit.sort((a,b)=>a.d-b.d).map(l=>l.t))];
+  if(ts.length>2&&ts.every(t=>/^T\d+$/.test(t)))return `${ts[0]}–${ts[ts.length-1]}`;
+  return ts.join('/');
+}
 const IDEAL_LIMIT_WHY={front:'The front axle is at its grip limit at the ideal\'s slowest point',
   rear:'The rear axle is at its grip limit at the ideal\'s slowest point',
   brake:'Braking limit', traction:'Traction limit (wheelspin)', power:'Engine power',
@@ -3823,7 +3883,6 @@ const IDEAL_LIMIT_WHY={front:'The front axle is at its grip limit at the ideal\'
   driven:'The model is slower than you here: the ideal keeps your lap'};
 // PREVIOUSLY the sign threshold was 0.0005 while 2 decimals are shown: 0.004 read "−0.00". Fix: 0.005.
 const fmtGain=v=>(v>=0.005?'-':v<=-0.005?'+':'±')+Math.abs(v).toFixed(2);   // a gain is time off your lap
-const pct=u=>u==null?'—':`${Math.round(100*u)} %`;
 function endIdealReq(abort){
   const r=st.idealReq;if(!r)return;
   st.idealReq=null;clearInterval(r.timer);
@@ -3915,7 +3974,7 @@ function renderIdeal(keepMsg){
     if(Math.round(100*c)>=1)notes.push(   // under 0.5 % would read "at 0 %"
       ['',`${a==='front'?'Front':'Rear'}: the model disagrees with your measured limit at ${Math.round(100*c)} % of the points held to your speed`]);});
   const xc=(r.corners||[]).filter(c=>c.extrapolated);
-  if(xc.length)notes.push(['warn',`${xc.map(c=>c.name).join(', ')}: faster than this car was ever seen at its limit (marked *): an extrapolation`]);
+  if(xc.length)notes.push(['warn',`${xc.map(idealCornerName).join(', ')}: faster than this car was ever seen at its limit (marked *): an extrapolation`]);
   if(r.public_check==='faster_than_public_best')notes.push(['warn','Faster than the public best for this car: almost surely a model error']);
   (f.notes||[]).forEach(t=>{if(!/^transferred/.test(t))notes.push([/differs|varies|capped|assumed|default/.test(t)?'warn':'',t]);});
   const confTxt=conf==='low'?'Low confidence':conf==='high'?'High confidence':'Medium confidence';
@@ -3933,28 +3992,37 @@ function renderIdeal(keepMsg){
   if(r.note)h+=`<div class="ideal-note">${escHtml(r.note)}</div>`;
   // per-corner table (§12 Q3): time available at least / expected, what
   // limits there, the grip you used per axle (Q5) with each tyre's load share
+  // PREVIOUSLY four columns (time, limit + min speed, grip used + load): at the
+  // docked width (~360 px of card) the grip column was cut off and the caption
+  // scrolled with the table (UX round 11/24/2026). Now three fixed-width
+  // columns that wrap, and the grip / load numbers on a full-width detail row
+  // under each corner; nothing scrolls sideways down to the 300 px panel.
   const L=lapLen()||1;
-  const rows=(r.corners||[]).map(c=>{
+  const rows=(r.corners||[]).map((c,k)=>{
     const s0=Math.max(0,c.s0),s1=c.s1>=c.s0?Math.min(L,c.s1):L;
-    const nm=c.kind==='corner'?c.name:'Straight';
+    const nm=c.kind==='corner'?idealCornerName(c):'Straight';
     const zoom=`<button type="button" class="ideal-zoom ghost" data-s0="${s0.toFixed(1)}" data-s1="${s1.toFixed(1)}" onclick="CMP.zoomTo(${s0.toFixed(1)},${s1.toFixed(1)})" aria-label="Show ${escHtml(nm)} on the graphs (${Math.round(s0)} to ${Math.round(s1)} m)">${escHtml(nm)}</button>`;
-    const t=`${fmtGain(c.gain_min_s)} / ${fmtGain(c.gain_s)}`;
+    const t=`<b>${fmtGain(c.gain_s)}</b><div class="sub">${fmtGain(c.gain_min_s)}</div>`;
     if(c.kind!=='corner')
-      return`<tr class="straight" data-kind="straight"><th scope="row">${zoom}</th><td class="num">${t}</td><td colspan="2"></td></tr>`;
-    const lim=IDEAL_LIMIT[c.binding]||escHtml(c.binding||'—');
+      return`<tr class="straight" data-kind="straight"><th scope="row">${zoom}</th><td class="num">${t}</td><td></td></tr>`;
+    const lim=escHtml(IDEAL_LIMIT[c.binding]||c.binding||'—');
     const x=c.extrapolated?` <span class="xtra" title="Faster than this car was ever seen at its limit: an extrapolation">*<span class="sr-only"> (extrapolated)</span></span>`:'';
-    const where=c.verdict==='at_limit'?'<span class="atlim">at the limit</span>':escHtml(c.where||'');
-    const ls=c.load_share,lsTxt=ls?`FL ${Math.round(100*ls.front[0])} · FR ${Math.round(100*ls.front[1])} · RL ${Math.round(100*ls.rear[0])} · RR ${Math.round(100*ls.rear[1])} %`:'';
-    return`<tr data-kind="corner"><th scope="row">${zoom}<div class="sub">${where}</div></th>`+
+    const where=c.verdict==='at_limit'?'<span class="atlim">at the limit</span>':escHtml(IDEAL_PHASE[c.where]||c.where||'');
+    const ls=c.load_share,lsTxt=ls?` · load FL ${Math.round(100*ls.front[0])} FR ${Math.round(100*ls.front[1])} · RL ${Math.round(100*ls.rear[0])} RR ${Math.round(100*ls.rear[1])} %`:'';
+    const id=`ideal-c${k}`;
+    return`<tr data-kind="corner"><th scope="row" id="${id}">${zoom}<div class="sub">${where}</div></th>`+
       `<td class="num">${t}</td>`+
-      `<td><span title="${escHtml(IDEAL_LIMIT_WHY[c.binding]||'')}">${lim}</span>${x}<div class="sub">${Math.round(c.vmin_ref_kmh)} → ${Math.round(c.vmin_ideal_kmh)} km/h</div></td>`+
-      // over 100 %: you used more grip there than the model's level; the ideal keeps your speed
-      `<td class="num"${Math.max(c.u_front_ref||0,c.u_rear_ref||0)>1.005?' title="Over 100 %: you used more grip here than the fitted level; the ideal keeps your speed here"':''}>F ${pct(c.u_front_ref)} · R ${pct(c.u_rear_ref)}<div class="sub" title="Each tyre's share of its axle's load at the ideal's slowest point">${lsTxt}</div></td></tr>`;
+      `<td><span title="${escHtml(IDEAL_LIMIT_WHY[c.binding]||'')}">${lim}</span>${x}</td></tr>`+
+      `<tr class="ideal-detail"><td colspan="3" headers="${id}">Grip used F ${gripHtml(c.u_front_ref)} · R ${gripHtml(c.u_rear_ref)}<span title="Each tyre's share of its axle's load at the ideal's slowest point">${lsTxt}</span></td></tr>`;
   }).join('');
-  h+=`<div class="ideal-tbl-wrap" tabindex="0" role="region" aria-label="Ideal lap per corner"><table class="ideal-tbl" id="ideal-table">`+
-    `<caption>Per corner, in seconds off your lap. Grip used: the most you used of each axle's grip; load: each tyre's share of its axle.</caption>`+
-    `<thead><tr><th scope="col">Corner</th><th scope="col">Time available <span>at least / expected</span></th><th scope="col">Limit <span>min speed you → ideal</span></th><th scope="col">Grip used by you <span>front / rear, load</span></th></tr></thead>`+
-    `<tbody>${rows}</tbody></table></div>`;
+  h+=`<div class="ideal-tbl-wrap" role="region" aria-label="Ideal lap per corner"><table class="ideal-tbl" id="ideal-table">`+
+    `<caption>Time off your lap per corner, in seconds</caption>`+
+    `<colgroup><col class="c-name"><col class="c-time"><col class="c-lim"></colgroup>`+
+    `<thead><tr><th scope="col">Corner <span>most time at</span></th><th scope="col">Time <span>expected / at least</span></th><th scope="col">Limit</th></tr></thead>`+
+    `<tbody>${rows}</tbody></table></div>`+
+    `<p class="ideal-legend" id="ideal-legend"><b>Limit</b>: what stops the ideal going faster there: front or rear grip, brakes, traction, power; ` +
+    `"at the limit already" = your tyres were at their limit, the ideal keeps your speed; "your lap is faster here" = the model is slower than you, it keeps your lap. ` +
+    `<b>Grip used</b>: the most of each axle's modelled grip you used; ≥ 100 % = at or past the model there. <b>Load</b>: each tyre's share of its axle.</p>`;
   body.innerHTML=h;
 }
 // A corner window on every trace (the table's corner buttons), 30 m either side.
@@ -3968,7 +4036,7 @@ return{
   // the ideal lap (button "Ideal lap (this car, this line)"): add, cancel the
   // request in flight, zoom the traces to a corner; `ideal` is the last
   // response on screen (null when none), for tests
-  addIdeal,cancelIdeal,zoomTo,get ideal(){return st.ideal&&st.ideal.res||null;},
+  addIdeal,cancelIdeal,zoomTo,_gripTxt:gripTxt,_gripHtml:gripHtml,get ideal(){return st.ideal&&st.ideal.res||null;},
   get align(){return st.align;},
   get view(){return{s0:st.view.s0,s1:st.view.s1};},          // metres of your lap distance
   setView:(s0,s1)=>setView(+s0,+s1),

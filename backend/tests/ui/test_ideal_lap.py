@@ -21,6 +21,9 @@ from serve_for_ui import (CMP_B, IDEAL_DELAY_S, IDEAL_LOW, IDEAL_OK, IDEAL_REFUS
 LOADED = "() => S.mapData && document.getElementById('map-overlay').classList.contains('hidden')"
 IDEAL_COL = "#FDE047"
 HAS_IDEAL = "() => CMP.ghosts.some(g => g.ideal)"
+LIMIT_WORDS = {"front": "Front grip", "rear": "Rear grip", "brake": "Brakes", "traction": "Traction",
+               "power": "Power", "measured": "At the limit already (kept your speed)",
+               "driven": "Your lap is faster here"}
 
 
 def _open(page, base, file, lap=None):
@@ -70,30 +73,82 @@ def test_button_adds_the_ideal_ghost_and_the_corner_table(page, ideal_server):
     page.evaluate("() => { setScrub(1000); onScrub('1000'); }")
     dl = page.evaluate("CMP.deltaAt(CMP.ghosts.find(g => g.ideal))")
     assert dl == pytest.approx(d["lap_time_s"] - d["ideal"]["time_s"], abs=0.02)
-    # the table: one row per corner and straight, corners first column a button
-    rows = page.locator("#ideal-table tbody tr")
+    # the table: one row per corner and straight (a corner's grip/load line is
+    # its own detail row), corners first column a button
+    rows = page.locator("#ideal-table tbody tr[data-kind]")
     assert rows.count() == len(d["corners"])
     corner = page.locator("#ideal-table tbody tr[data-kind='corner']").first
     c0 = next(c for c in d["corners"] if c["kind"] == "corner")
-    txt = corner.inner_text()
-    assert c0["name"] in txt
+    txt = corner.inner_text() + "\n" + page.locator("#ideal-table tbody tr.ideal-detail").first.inner_text()
     assert f"{c0['gain_min_s']:.2f}" in txt.replace("−", "-") and f"{c0['gain_s']:.2f}" in txt.replace("−", "-")
-    lim = {"front": "Front", "rear": "Rear", "brake": "Brakes", "traction": "Traction", "power": "Power",
-           "measured": "Your limit", "driven": "Your lap"}[c0["binding"]]
-    assert lim in txt
-    assert f"{round(100 * c0['u_front_ref'])} %" in txt and f"{round(100 * c0['u_rear_ref'])} %" in txt
+    assert LIMIT_WORDS[c0["binding"]] in txt
+    for u in (c0["u_front_ref"], c0["u_rear_ref"]):
+        assert (f"{round(100 * u)} %" if u < 0.995 else "≥ 100 %") in txt
+    # where the time comes from (the phase that gains most), not a min speed
+    assert re.search(r"entry \(braking\)|mid-corner|exit|at the limit", txt) and "km/h" not in txt
     # Q5: each tyre's load share on the row
     fl = round(100 * c0["load_share"]["front"][0])
     assert re.search(rf"FL {fl}\b", txt)
+    # a legend under the table says what the words mean
+    leg = page.inner_text("#ideal-legend")
+    assert "Limit" in leg and "Grip used" in leg and "≥ 100 %" in leg
     # no public times here (no public_laptimes.json): the line is hidden (Q11)
     assert page.locator("#ideal-public").is_hidden()
     assert page.errors == []
+
+
+def test_corner_names_are_the_maps_labels(page, ideal_server):
+    """The synthetic ring has track_db labels in this server (serve_for_ui):
+    T1 and T2 in the first bend, T3 in the second. The table names a corner
+    window by the map's short labels inside it."""
+    _open(page, ideal_server, IDEAL_OK, 1)
+    _add_ideal(page)
+    labels = page.evaluate("S.mapData.corner_labels.map(c => [c.dist, c.label])")
+    assert len(labels) >= 3                       # the map shows them
+    names = page.eval_on_selector_all("#ideal-table tbody tr[data-kind='corner'] th button",
+                                      "bs => bs.map(b => b.textContent.trim())")
+    assert names == ["T1/T2", "T3"]
+    assert not any(re.fullmatch(r"C\d+", n) for n in names)
+    assert page.errors == []
+
+
+@pytest.mark.parametrize("width", ["min", "default", "max"])
+def test_table_fits_the_docked_panel(page, ideal_server, width, shot_dir):
+    page.set_viewport_size({"width": 1680, "height": 1050})
+    _open(page, ideal_server, IDEAL_OK, 1)
+    page.evaluate("PanelSize.reset()")
+    if width == "min":
+        page.evaluate("PanelSize.setWidth(0, false)")
+    elif width == "max":
+        page.evaluate("PanelSize.setWidth(5000, false)")
+    _add_ideal(page)
+    page.wait_for_timeout(200)
+    m = page.evaluate("""(() => { const w = document.querySelector('.ideal-tbl-wrap'),
+        t = document.getElementById('ideal-table'), c = t.querySelector('caption');
+        return {ww: w.clientWidth, sw: w.scrollWidth, tw: t.getBoundingClientRect().width,
+                cw: c.getBoundingClientRect().width, card: document.getElementById('cmp-ideal').clientWidth}; })()""")
+    # nothing scrolls sideways: the table and its caption fit the card
+    assert m["sw"] <= m["ww"] + 1, m
+    assert m["tw"] <= m["ww"] + 1 and m["cw"] <= m["ww"] + 1, m
+    if shot_dir:
+        page.locator("#cmp-ideal").screenshot(path=str(shot_dir / f"ideal-table-{width}.png"))
+    assert page.errors == []
+
+
+def test_grip_over_the_model_is_capped_and_marked(page, ideal_server):
+    _open(page, ideal_server, IDEAL_OK, 1)
+    assert page.evaluate("CMP._gripTxt(1.28)") == "≥ 100 %"
+    assert page.evaluate("CMP._gripTxt(0.964)") == "96 %"
+    html = page.evaluate("CMP._gripHtml(1.28)")
+    assert "≥ 100 %" in html and "class=\"over\"" in html
 
 
 def test_headline_is_always_the_range_with_the_ceiling(page, ideal_server):
     _open(page, ideal_server, IDEAL_OK, 1)
     _add_ideal(page)
     d = _payload(page, IDEAL_OK, 1)
+    # a realistic car (mu 1.5-1.6) on a ring driven below its limit gains time
+    assert 0.3 < d["ideal"]["gain_s"] < 5 and d["ideal"]["gain_min_s"] > 0
     head = page.inner_text("#ideal-head").replace("−", "-")
     i = d["ideal"]
     assert f"at least -{i['gain_min_s']:.2f} s" in head.lower() and f"expected -{i['gain_s']:.2f} s" in head.lower()
@@ -190,7 +245,8 @@ def test_keyboard(page, ideal_server):
     v = page.evaluate("CMP.view")
     assert v["s0"] <= s0 + 1 and v["s1"] >= s1 - 1 and v["s1"] - v["s0"] < page.evaluate("S.mapData.lap_len_m || 1e9")
     # the table is a real table with headers
-    assert page.locator("#ideal-table th[scope='col']").count() >= 4
+    # three columns since the UX round (grip / load moved to a detail row)
+    assert page.locator("#ideal-table th[scope='col']").count() == 3
     assert page.locator("#ideal-table caption").count() == 1
     # the button says it is on screen (pressed again: no second request)
     page.focus("#cmp-ideal-btn")

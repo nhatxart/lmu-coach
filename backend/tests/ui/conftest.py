@@ -165,9 +165,11 @@ def ideal_server(tmp_path_factory):
     (ref / "sources" / "synthetic_hill_ring.json").write_text(
         json.dumps({"center": [GPS_REF_LAT, GPS_REF_LON]}), encoding="utf-8")
     for f in (IDEAL_OK, IDEAL_LOW, IDEAL_REFUSED, IDEAL_SLOW):
+        # speed_scale 0.6: a realistic car (serve_for_ui) is faster than this
+        # driver, so the ideal lap gains time (at 1.0 it gained nothing)
         write_hilly_session(sessions / f, vehicle_class="LMGT3", lap_offsets=(0.0, 1.0, -1.0),
-                            slip_angles=True, speed_wave=0.15)
-    write_hilly_session(sessions / CMP_B, vehicle_class="LMGT3", lap_offsets=(2.0, 2.0), speed_scale=0.97)
+                            slip_angles=True, speed_wave=0.15, speed_scale=0.6)
+    write_hilly_session(sessions / CMP_B, vehicle_class="LMGT3", lap_offsets=(2.0, 2.0), speed_scale=0.58)
     proc, base = _start(sessions, ref, env={"UI_IDEAL_FAKE": "1"})
     yield base
     _stop(proc)
