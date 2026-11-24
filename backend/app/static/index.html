@@ -41,6 +41,8 @@
   --c-yaw:#FB923C; --us:#60A5FA; --os:#FB923C; --c-corner:#FBBF24;
   /* lap comparison: your lap and up to four ghosts (CMP PALETTE / ME_COL in JS) */
   --ghost-1:#F472B6; --ghost-2:#A3E635; --ghost-3:#FB923C; --ghost-4:#A78BFA; --you:#E8ECF6;
+/* the ideal lap's ghost (CMP IDEAL_COL in JS) */
+--ghost-ideal:#FDE047;
   /* type */
   --font-ui:'Fira Sans',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
   --font-data:'Fira Code',ui-monospace,'Cascadia Mono',Consolas,monospace;
@@ -401,6 +403,36 @@ canvas.cmp-tr.grabbing{cursor:grabbing;}
   background:rgba(7,11,20,.82);border:1px solid var(--line);font:600 15px var(--font-data);font-variant-numeric:tabular-nums;pointer-events:none;}
 #cmp-pill span{display:inline-flex;align-items:center;gap:6px;} #cmp-pill i{width:10px;height:10px;border-radius:50%;display:inline-block;}
 #cmp-pill .pos{color:var(--c-brk);} #cmp-pill .neg{color:var(--c-thr);}
+/* Ideal lap card (CMP.addIdeal): headline range, flags, per-corner table */
+.ideal-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
+.ideal-actions button{min-height:44px;}
+#cmp-ideal-btn{border-color:var(--ghost-ideal);}
+#cmp-ideal-btn[aria-busy="true"]{opacity:.8;}
+.ideal-msg{margin-top:8px;font-size:var(--fs-xs);color:var(--text-2);min-height:1.2em;}
+.ideal-msg.refused{color:var(--warn);}
+.ideal-msg .el{font-family:var(--font-data);font-variant-numeric:tabular-nums;color:var(--text-3);}
+.ideal-head{margin:10px 0 2px;font:600 var(--fs-sm)/1.3 var(--font-ui);}
+.ideal-head b{font-family:var(--font-data);font-variant-numeric:tabular-nums;color:var(--ghost-ideal);}
+.ideal-line{font-size:var(--fs-xs);color:var(--text-2);margin-top:4px;font-variant-numeric:tabular-nums;}
+.ideal-line b{font-family:var(--font-data);font-weight:600;color:var(--text);}
+.conf-badge{display:inline-block;font:700 12px var(--font-ui);letter-spacing:.04em;padding:2px 8px;border-radius:999px;border:1px solid var(--line-strong);color:var(--text-2);}
+.conf-badge[data-conf="high"]{color:var(--accent);border-color:var(--accent);}
+.conf-badge[data-conf="low"]{color:var(--warn);border-color:var(--warn);background:rgba(251,191,36,.1);}
+.ideal-notes{margin:6px 0 0;padding-left:18px;font-size:var(--fs-xs);color:var(--text-2);}
+.ideal-notes li.warn{color:var(--warn);}
+.ideal-note{margin-top:6px;font-size:var(--fs-xs);color:var(--text-3);}
+.ideal-tbl-wrap{margin-top:10px;overflow-x:auto;}
+.ideal-tbl{width:100%;border-collapse:collapse;font-size:var(--fs-xs);font-variant-numeric:tabular-nums;}
+.ideal-tbl caption{text-align:left;color:var(--text-3);padding-bottom:4px;}
+.ideal-tbl th,.ideal-tbl td{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;}
+.ideal-tbl thead th{font-weight:600;color:var(--text-2);}
+.ideal-tbl thead th span{font-weight:400;color:var(--text-3);}
+.ideal-tbl td.num{font-family:var(--font-data);white-space:nowrap;}
+.ideal-tbl .sub{color:var(--text-3);white-space:nowrap;}
+.ideal-tbl tr.straight th,.ideal-tbl tr.straight td{color:var(--text-3);}
+.ideal-tbl .atlim{color:var(--text-3);}
+.ideal-tbl .xtra{color:var(--warn);cursor:help;}
+.ideal-zoom{min-height:32px;padding:0 8px;font-weight:600;}
 .panel-body{flex:1;overflow-y:auto;padding:var(--sp-4);display:flex;flex-direction:column;gap:var(--sp-4);container-type:inline-size;container-name:panel;}
 .panel-body.hidden{display:none;}
 .card{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--sp-3) var(--sp-3) var(--sp-3);
@@ -841,6 +873,19 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
               <button type="button" id="cmp-al-dist" role="radio" aria-checked="false" tabindex="-1" onclick="CMP.setAlign('dist')" title="The ghost alongside you: line and angle differences show">Same distance</button>
             </div>
           </div>
+        </section>
+        <!-- Ideal lap (CMP.addIdeal; design 2026-11-10-ideal-lap-design.md
+             §7, §12 Q1-Q6/Q11): this car on the selected lap's own line, as a
+             ghost (yellow) plus the range, the flags and a per-corner table.
+             Filled by CMP.renderIdeal. -->
+        <section class="card" id="cmp-ideal" aria-labelledby="h-cmp-ideal">
+          <h3 class="sec" id="h-cmp-ideal">Ideal lap<span class="sec-unit" id="ideal-lapref"></span></h3>
+          <div class="ideal-actions">
+            <button type="button" id="cmp-ideal-btn" onclick="CMP.addIdeal()" aria-describedby="ideal-msg"><svg class="i sm" aria-hidden="true"><use href="#i-sparkles"/></svg>Ideal lap (this car, this line)</button>
+            <button type="button" id="ideal-cancel" class="ghost" onclick="CMP.cancelIdeal()" hidden>Cancel</button>
+          </div>
+          <div class="ideal-msg" id="ideal-msg" role="status" aria-live="polite"></div>
+          <div id="ideal-body"></div>
         </section>
         <!-- Traces over YOUR lap distance, one shared zoom window (CMP.view).
              Each canvas is focusable: the hint below says how to drive it. -->
@@ -3053,6 +3098,10 @@ const CMP=(()=>{
 const PALETTE=['#F472B6','#A3E635','#FB923C','#A78BFA'];
 const ME_COL='#E8ECF6';
 const MAX_GHOSTS=PALETTE.length;
+// The ideal lap's ghost (:root --ghost-ideal). It is a ghost like the others
+// (list, delta, traces, map marker, chase view) but does not take one of the
+// four slots, is labelled "Ideal", and belongs to the lap it was built for.
+const IDEAL_COL='#FDE047';
 const GREY='rgba(120,132,156,0.32)';
 const EST='Estimate from 10 Hz position and game lap distance';
 const ANCHOR_S=1;      // seconds before your closing line over which the delta joins the official lap-time difference (attach)
@@ -3065,7 +3114,12 @@ const st={
   gen:0,
   index:null,indexReq:null,fillTok:0,
   held:[],          // ghosts waiting for a fresh index after a lap change (onMainLap)
+  ideal:null,       // the ideal lap of your lap: {state:'ok'|'refused'|'error', lap, res?, g?, msg?}
+  idealReq:null,    // the request in flight: {gen, lap, ctrl (AbortController), t0, timer}
 };
+const plainGhosts=()=>st.ghosts.filter(g=>!g.ideal);
+// "Ideal", else G1..G4 over the ordinary ghosts (the ideal does not shift their numbers)
+const gLabel=g=>g.ideal?'Ideal':`G${plainGhosts().indexOf(g)+1}`;
 
 // ── small helpers ──
 // Fractional index of value v in a non-decreasing array (clamped to the ends;
@@ -3281,6 +3335,7 @@ const live=()=>st.me&&S.mapData===st.me.d;
 function drawLines2D(ctx){
   if(!live())return;
   st.ghosts.forEach(g=>{
+    if(g.ideal)return;                 // the ideal runs on your own line: nothing to draw
     const G=g.L;
     ctx.save();ctx.strokeStyle=g.col;ctx.globalAlpha=.75;ctx.lineWidth=1.6;ctx.setLineDash([5,4]);ctx.beginPath();
     for(let i=0;i<G.n;i++){const[sx,sz]=toScreen(G.x[i]+g.dx,G.z[i]+g.dz);i?ctx.lineTo(sx,sz):ctx.moveTo(sx,sz);}
@@ -3296,14 +3351,14 @@ function drawMarkers2D(ctx){
     ctx.fillStyle=g.col;ctx.strokeStyle=g.col;ctx.lineWidth=2;ctx.globalAlpha=.55;
     ctx.beginPath();ctx.moveTo(11,0);ctx.lineTo(-8,-7);ctx.lineTo(-4,0);ctx.lineTo(-8,7);ctx.closePath();ctx.fill();
     ctx.globalAlpha=1;ctx.stroke();ctx.restore();
-    ctx.save();ctx.font=fontData(9,true);ctx.fillStyle=g.col;ctx.fillText(`G${k+1}`,sx+10,sz-8);ctx.restore();
+    ctx.save();ctx.font=fontData(9,true);ctx.fillStyle=g.col;ctx.fillText(gLabel(g),sx+10,sz-8);ctx.restore();
   }
 }
 // Your segment i coloured by the slope of ghost 1's delta there (per metre),
 // normalised to the lap's 95th-percentile slope (slopeMx, see attach) and
 // clamped to [-1, 1]: teal = gaining, coral = losing, grey below 8 % (flat).
 function deltaColAt(i){
-  const g=st.ghosts[0];
+  const g=plainGhosts()[0]||st.ghosts[0];      // ghost 1; the ideal lap when it is the only one
   if(!live()||!g||i>=g.delta.length-1)return GREY;
   const v=clamp((g.delta[i+1]-g.delta[i])/Math.max(g.sMe[i+1]-g.sMe[i],0.5)/g.slopeMx,-1,1),t=Math.abs(v);
   if(t<0.08)return'rgba(200,206,220,0.45)';
@@ -3484,7 +3539,7 @@ TRACES.forEach(([id])=>{
 
 // ── list, pill, status ──
 function setStatus(msg){const e=document.getElementById('cmp-status');if(e)e.textContent=msg||'';}
-function rowTitle(g,k){return`<span class="nw">G${k+1} · L${g.lap} ·</span> <span class="nw">${fmtTime(g.lapTime)}</span>`;}
+function rowTitle(g){return`<span class="nw">${gLabel(g)} · L${g.lap} ·</span> <span class="nw">${fmtTime(g.lapTime)}</span>`;}
 function rowSub(g){
   const q=parseSession(g.file);
   const parts=[isMine(g.src,g.file)?'this session':escHtml([g.model||q.car,q.when].filter(Boolean).join(' · '))];
@@ -3499,12 +3554,14 @@ function renderList(){
   const meLap=S.laps.find(l=>l.lap_number===S.lap),p=S.file?parseSession(S.file):null;
   let h=`<div class="cmp-row"><i class="cmp-sw" style="background:${ME_COL}"></i><div style="min-width:0"><div class="cmp-t"><span class="nw">You · L${S.lap??'—'} ·</span> <span class="nw">${meLap?fmtTime(meLap.lap_time_s):'—'}</span></div>`+
         `<div class="cmp-sub">${p?escHtml([(myEntry()||{}).car_model||p.car,p.when].filter(Boolean).join(' · ')):'select a lap'}</div></div><span class="cmp-d">ref</span><span></span></div>`;
-  st.ghosts.forEach((g,k)=>{
+  st.ghosts.forEach(g=>{
     const d=live()?deltaAt(g):0;
-    h+=`<div class="cmp-row" data-ghost="${g.id}"><i class="cmp-sw" style="background:${g.col}"></i><div style="min-width:0"><div class="cmp-t">${rowTitle(g,k)}</div>`+
-       `<div class="cmp-sub" title="${escHtml(g.file)}">${rowSub(g)}</div></div>`+
+    const conf=g.ideal&&st.ideal&&st.ideal.res?st.ideal.res.fit.confidence:null;
+    const sub=g.ideal?`your line · ${escHtml(conf==='low'?'low confidence':(conf||'')+' confidence')}`:rowSub(g);
+    h+=`<div class="cmp-row" data-ghost="${g.id}"${g.ideal?' data-ideal="1"':''}><i class="cmp-sw" style="background:${g.col}"></i><div style="min-width:0"><div class="cmp-t">${rowTitle(g)}</div>`+
+       `<div class="cmp-sub" title="${escHtml(g.ideal?'This car on this lap\'s line, each axle at its grip limit where you were not (expected level)':g.file)}">${sub}</div></div>`+
        `<span class="cmp-d ${dCls(d)}" data-g="${g.id}" title="${escHtml(deltaTitle(g))}">${fmtD(d)}</span>`+
-       `<button type="button" class="cmp-x ghost" onclick="CMP.remove(${g.id})" aria-label="Remove ghost ${k+1}"><svg class="i sm" aria-hidden="true"><use href="#i-x"/></svg></button></div>`;
+       `<button type="button" class="cmp-x ghost" onclick="CMP.remove(${g.id})" aria-label="${g.ideal?'Remove the ideal lap':'Remove ghost '+gLabel(g).slice(1)}"><svg class="i sm" aria-hidden="true"><use href="#i-x"/></svg></button></div>`;
   });
   [...st.held,...st.pending].forEach(g=>{
     h+=`<div class="cmp-row pending"><i class="cmp-sw" style="background:${g.col}"></i><div style="min-width:0"><div class="cmp-t">L${g.lap} · ${fmtTime(g.lapTime)}</div>`+
@@ -3632,7 +3689,7 @@ async function add(src,file,lap){
   lap=+lap;
   const me=st.me;
   if(!me||!live())return refuse('Load a lap first');
-  if(st.ghosts.length+st.pending.length+st.held.length>=MAX_GHOSTS)return refuse(`Up to ${MAX_GHOSTS} ghosts: remove one to add another`);
+  if(plainGhosts().length+st.pending.length+st.held.length>=MAX_GHOSTS)return refuse(`Up to ${MAX_GHOSTS} ghosts: remove one to add another`);
   if((isMine(src,file)&&lap===S.lap)||onScreen(src,file,lap))return refuse('That lap is already on screen');
   const gen=st.gen;
   try{if(!entryOf(src,file)||!myEntry())await loadIndex(true);}
@@ -3643,7 +3700,7 @@ async function add(src,file,lap){
   const why=entryRefusal(e);if(why)return refuse(why);
   const le=e.laps.find(l=>l.lap_number===lap);
   if(!le||!le.complete)return refuse(`L${lap} is not a complete lap`);
-  const used=[...st.ghosts,...st.pending,...st.held].map(g=>g.col);
+  const used=[...plainGhosts(),...st.pending,...st.held].map(g=>g.col);
   const g={id:++st.seq,src,file,lap,lapTime:le.lap_time_s,col:PALETTE.find(c=>!used.includes(c)),
            cls:e.car_class||'unknown',model:e.car_model||'',trackKey:trackKeyOf(e,file),d:null,L:null};
   st.pending.push(g);renderList();setStatus('');
@@ -3667,6 +3724,8 @@ async function add(src,file,lap){
   return{ok:true};
 }
 function remove(id){
+  // removing the ideal ghost takes its card content (range, table) with it
+  if(st.ghosts.some(g=>g.id===id&&g.ideal)){st.ideal=null;renderIdeal();}
   const cnt=()=>st.ghosts.length+st.pending.length+st.held.length,n=cnt();
   st.ghosts=st.ghosts.filter(g=>g.id!==id);st.pending=st.pending.filter(g=>g.id!==id);st.held=st.held.filter(g=>g.id!==id);
   if(cnt()!==n)changed();
@@ -3705,6 +3764,11 @@ document.getElementById('cmp-align').addEventListener('keydown',e=>{
 function onMainLap(){
   st.gen++;
   st.pending=[];                       // their payloads are dropped on arrival
+  // The ideal lap belongs to the lap it was built on (its line, its corners):
+  // a request in flight is cancelled and the ideal ghost and table go.
+  endIdealReq(true);st.ideal=null;
+  st.ghosts=plainGhosts();
+  renderIdeal();
   const keep=st.ghosts.concat(st.held);st.held=[];st.ghosts=[];
   if(!S.mapData){st.me=null;st.ghosts=keep;updateRange();changed(false);return;}
   st.me=prepLap(S.mapData,S.lapDur);
@@ -3738,11 +3802,166 @@ function refit(list,draw){
   setStatus(dropped.length?'Removed '+dropped.join('; '):'');
   changed(draw);
 }
-function onTab(){fillFiles(true);renderList();drawTraces();}
+// ── the ideal lap (design 2026-11-10-ideal-lap-design.md §7, §12 Q1-Q6/Q11) ──
+// GET /sessions/{src}/{file}/ideal-lap?lap_number=N: this car on YOUR lap's
+// line with each axle at its grip limit where you were not (§5.4). Its
+// trace comes at /trackmap's driven-line points with its own game clock t,
+// ending at the ideal lap time (§7), so the ghost is your own payload with
+// another t and speed: no new geometry, and the finish anchor of attach
+// works. The request takes ~7 s warm, up to ~15 s cold; it runs in the
+// background, can be cancelled, and is dropped on a lap change (onMainLap).
+const IDEAL_LIMIT={front:'Front',rear:'Rear',brake:'Brakes',traction:'Traction',power:'Power',
+  measured:'Your limit',driven:'Your lap'};
+const IDEAL_LIMIT_WHY={front:'The front axle is at its grip limit at the ideal\'s slowest point',
+  rear:'The rear axle is at its grip limit at the ideal\'s slowest point',
+  brake:'Braking limit', traction:'Traction limit (wheelspin)', power:'Engine power',
+  measured:'Your tyres were measured at their limit here: the ideal keeps your speed',
+  driven:'The model is slower than you here: the ideal keeps your lap'};
+const fmtGain=v=>(v>0.0005?'−':v<-0.0005?'+':'±')+Math.abs(v).toFixed(2);   // a gain is time off your lap
+const pct=u=>u==null?'—':`${Math.round(100*u)} %`;
+function endIdealReq(abort){
+  const r=st.idealReq;if(!r)return;
+  st.idealReq=null;clearInterval(r.timer);
+  if(abort)try{r.ctrl.abort();}catch(e){}
+}
+function cancelIdeal(){
+  if(!st.idealReq)return;
+  endIdealReq(true);
+  setIdealMsg('Cancelled.');
+  renderIdeal(true);
+}
+function setIdealMsg(txt,cls){
+  const m=document.getElementById('ideal-msg');if(!m)return;
+  m.className='ideal-msg'+(cls?' '+cls:'');m.textContent=txt||'';
+}
+// The ghost: your payload with the ideal's clock and speed at your points.
+// The trace normally has exactly your points; if not (the server fell back
+// to its 2 m grid), it is read at your lap distance.
+function idealGhost(res,me){
+  const dl=me.d.driven_line,n=me.n,tr=res.trace;
+  let t=tr.t,v=tr.v_kmh;
+  if(t.length!==n){
+    const s=lapDistArr(tr.lap_dist);
+    t=Array.from({length:n},(_,i)=>lerpAt(tr.t,fAt(s,me.sPrim[i])));
+    v=Array.from({length:n},(_,i)=>lerpAt(tr.v_kmh,fAt(s,me.sPrim[i])));
+  }
+  const d={...me.d,driven_line:{x:dl.x,z:dl.z,y:dl.y,heading:dl.heading,lap_dist:dl.lap_dist,t:Array.from(t),speed:Array.from(v)}};
+  const T=res.ideal.time_s;
+  return{id:++st.seq,ideal:true,src:S.source,file:S.file,lap:S.lap,lapTime:T,col:IDEAL_COL,
+         cls:myClass(),model:res.car_model||'',trackKey:myTrack(),d,L:prepLap(d,T)};
+}
+async function addIdeal(){
+  if(!S.file||!st.me||!live())return refuse('Load a lap first');
+  if(st.ghosts.some(g=>g.ideal))return refuse('The ideal lap of this lap is already on screen');
+  if(st.idealReq)return refuse('The ideal lap is being computed');
+  const me=st.me,gen=st.gen,src=S.source,file=S.file,lap=S.lap;
+  const req={gen,lap,ctrl:new AbortController(),t0:performance.now(),timer:null};
+  st.idealReq=req;st.ideal=null;setStatus('');
+  renderIdeal();
+  // elapsed seconds in their own aria-hidden span, so the live region
+  // announces "Computing…" once, not every second
+  req.timer=setInterval(()=>{const e=document.getElementById('ideal-el');
+    if(e&&st.idealReq===req)e.textContent=` ${Math.round((performance.now()-req.t0)/1000)} s`;},1000);
+  let res=null,err=null;
+  try{
+    const r=await fetch(`/sessions/${src}/${encodeURIComponent(file)}/ideal-lap?lap_number=${lap}`,{signal:req.ctrl.signal});
+    if(!r.ok)throw new Error(await r.text());
+    res=await r.json();
+  }catch(x){err=x;}
+  // cancelled, or your lap changed (onMainLap ended it): dropped without a word
+  if(st.idealReq!==req)return{ok:false,reason:'cancelled'};
+  endIdealReq(false);
+  if(gen!==st.gen||st.me!==me||!live()||S.file!==file||S.lap!==lap){renderIdeal();return{ok:false,reason:'Your lap changed'};}
+  if(err){st.ideal={state:'error',lap,msg:String(err.message||err).slice(0,200)};renderIdeal();return{ok:false,reason:st.ideal.msg};}
+  if(!res||res.status!=='ok'||!res.trace||!res.ideal){
+    st.ideal={state:'refused',lap,msg:(res&&res.reason)||'no ideal lap'};renderIdeal();return{ok:false,reason:st.ideal.msg};
+  }
+  const g=idealGhost(res,me),why=attach(g,me);
+  if(why){st.ideal={state:'error',lap,msg:why};renderIdeal();return{ok:false,reason:why};}
+  st.ideal={state:'ok',lap,res,g};
+  st.ghosts.push(g);changed();renderIdeal();
+  return{ok:true};
+}
+// The card: button state, message, and for a result the headline range,
+// ceiling, public line, confidence and flags, and the corner table.
+function renderIdeal(keepMsg){
+  const btn=document.getElementById('cmp-ideal-btn'),cancel=document.getElementById('ideal-cancel'),
+        body=document.getElementById('ideal-body'),ref=document.getElementById('ideal-lapref');
+  if(!btn||!body)return;
+  const busy=!!st.idealReq,I=st.ideal;
+  btn.setAttribute('aria-busy',busy?'true':'false');
+  btn.disabled=!S.file;
+  cancel.hidden=!busy;
+  ref.textContent=S.file&&S.lap!=null?`your line: L${S.lap}`:'';
+  if(busy){
+    const m=document.getElementById('ideal-msg');
+    m.className='ideal-msg';
+    m.innerHTML=`<span class="spinner" aria-hidden="true"></span> Computing the ideal lap for L${st.idealReq.lap}…<span class="el" id="ideal-el" aria-hidden="true"></span> <span class="dimtext">(usually under 10 s, up to ~15 s the first time)</span>`;
+  }else if(I&&I.state==='refused')setIdealMsg(`No ideal lap for L${I.lap}: ${I.msg}`,'refused');
+  else if(I&&I.state==='error')setIdealMsg(`Could not compute the ideal lap: ${I.msg}`,'refused');
+  else if(!keepMsg)setIdealMsg(I&&I.state==='ok'?'':'This car on your own line, each axle at its grip limit where you were not. Added as a ghost with a corner table.');
+  if(!I||I.state!=='ok'){body.innerHTML='';return;}
+  const r=I.res,i=r.ideal,f=r.fit||{},conf=f.confidence||'medium';
+  const ax=f.axles||{};
+  const notes=[];
+  if(f.transferred||f.scope==='car')notes.push(['warn','Estimate from other tracks: fewer than 3 clean laps of this car on this track']);
+  if(f.setup_differs&&f.setup_differs.length)notes.push(['warn',`Setup differs from the laps the grip was learned on: ${f.setup_differs.join(', ')}`]);
+  ['front','rear'].forEach(a=>{const c=ax[a]&&ax[a].clamp_conflict;
+    if(c>0)notes.push(['',`${a==='front'?'Front':'Rear'}: the model disagrees with your measured limit at ${Math.round(100*c)} % of the points held to your speed`]);});
+  const xc=(r.corners||[]).filter(c=>c.extrapolated);
+  if(xc.length)notes.push(['warn',`${xc.map(c=>c.name).join(', ')}: faster than this car was ever seen at its limit (marked *): an extrapolation`]);
+  if(r.public_check==='faster_than_public_best')notes.push(['warn','Faster than the public best for this car: almost surely a model error']);
+  (f.notes||[]).forEach(t=>{if(!/^transferred/.test(t))notes.push([/differs|varies|capped|assumed|default/.test(t)?'warn':'',t]);});
+  const confTxt=conf==='low'?'Low confidence':conf==='high'?'High confidence':'Medium confidence';
+  const scope=f.scope==='car'?'car fit, other tracks':'fit on this track';
+  let h=`<p class="ideal-head" id="ideal-head">At least <b>${fmtGain(i.gain_min_s)} s</b>, expected <b>${fmtGain(i.gain_s)} s</b></p>`+
+    `<div class="ideal-line">Ideal <b>${fmtTime(i.time_s)}</b> · your L${r.lap_number} <b>${fmtTime(r.lap_time_s)}</b> · range ${fmtGain(i.gain_min_s)} to ${fmtGain(i.gain_max_s)} s</div>`+
+    `<div class="ideal-line" id="ideal-ceiling" title="All four tyres at their limit at once: what another setup could reach, not this car as set up">Setup potential: up to <b>${fmtGain(r.ceiling.gain_s)} s</b></div>`;
+  const p=r.public;
+  if(p){
+    const best=p.car_best_s||p.class_ref_s,what=p.car_best_s?'public best for this car':'public class reference';
+    h+=`<div class="ideal-line" id="ideal-public">Your lap ${p.driven_pct} % of the ${what}${p.band?` (${escHtml(p.band)})`:''} · ideal lap ${p.ideal_pct} % · public best <b>${fmtTime(best)}</b>${p.patch?` (patch ${escHtml(String(p.patch))})`:''}</div>`;
+  }
+  h+=`<div class="ideal-line"><span class="conf-badge" id="ideal-conf" data-conf="${escHtml(conf)}">${confTxt}</span> ${escHtml(scope)}, ${f.n_laps??'?'} laps in ${f.n_files??'?'} file${f.n_files===1?'':'s'} · grip level ±${Math.round(100*(f.beta||0))} %</div>`;
+  if(notes.length)h+=`<ul class="ideal-notes">${notes.map(([c,t])=>`<li class="${c}">${escHtml(t)}</li>`).join('')}</ul>`;
+  if(r.note)h+=`<div class="ideal-note">${escHtml(r.note)}</div>`;
+  // per-corner table (§12 Q3): time available at least / expected, what
+  // limits there, the grip you used per axle (Q5) with each tyre's load share
+  const L=lapLen()||1;
+  const rows=(r.corners||[]).map(c=>{
+    const s0=Math.max(0,c.s0),s1=c.s1>=c.s0?Math.min(L,c.s1):L;
+    const nm=c.kind==='corner'?c.name:'Straight';
+    const zoom=`<button type="button" class="ideal-zoom ghost" data-s0="${s0.toFixed(1)}" data-s1="${s1.toFixed(1)}" onclick="CMP.zoomTo(${s0.toFixed(1)},${s1.toFixed(1)})" aria-label="Show ${escHtml(nm)} on the graphs (${Math.round(s0)} to ${Math.round(s1)} m)">${escHtml(nm)}</button>`;
+    const t=`${fmtGain(c.gain_min_s)} / ${fmtGain(c.gain_s)}`;
+    if(c.kind!=='corner')
+      return`<tr class="straight" data-kind="straight"><th scope="row">${zoom}</th><td class="num">${t}</td><td colspan="2"></td></tr>`;
+    const lim=IDEAL_LIMIT[c.binding]||escHtml(c.binding||'—');
+    const x=c.extrapolated?` <span class="xtra" title="Faster than this car was ever seen at its limit: an extrapolation">*<span class="sr-only"> (extrapolated)</span></span>`:'';
+    const where=c.verdict==='at_limit'?'<span class="atlim">at the limit</span>':escHtml(c.where||'');
+    const ls=c.load_share,lsTxt=ls?`FL ${Math.round(100*ls.front[0])} · FR ${Math.round(100*ls.front[1])} · RL ${Math.round(100*ls.rear[0])} · RR ${Math.round(100*ls.rear[1])} %`:'';
+    return`<tr data-kind="corner"><th scope="row">${zoom}<div class="sub">${where}</div></th>`+
+      `<td class="num">${t}</td>`+
+      `<td><span title="${escHtml(IDEAL_LIMIT_WHY[c.binding]||'')}">${lim}</span>${x}<div class="sub">${Math.round(c.vmin_ref_kmh)} → ${Math.round(c.vmin_ideal_kmh)} km/h</div></td>`+
+      `<td class="num">F ${pct(c.u_front_ref)} · R ${pct(c.u_rear_ref)}<div class="sub" title="Each tyre's share of its axle's load at the ideal's slowest point">${lsTxt}</div></td></tr>`;
+  }).join('');
+  h+=`<div class="ideal-tbl-wrap" tabindex="0" role="region" aria-label="Ideal lap per corner"><table class="ideal-tbl" id="ideal-table">`+
+    `<caption>Per corner, in seconds off your lap. Grip used: the most you used of each axle's grip; load: each tyre's share of its axle.</caption>`+
+    `<thead><tr><th scope="col">Corner</th><th scope="col">Time available <span>at least / expected</span></th><th scope="col">Limit <span>min speed you → ideal</span></th><th scope="col">Grip used by you <span>front / rear, load</span></th></tr></thead>`+
+    `<tbody>${rows}</tbody></table></div>`;
+  body.innerHTML=h;
+}
+// A corner window on every trace (the table's corner buttons), 30 m either side.
+function zoomTo(s0,s1){if(!live())return;setView(+s0-30,+s1+30);}
+function onTab(){fillFiles(true);renderList();drawTraces();renderIdeal(true);}
 
 renderList();
+renderIdeal();
 return{
   get ghosts(){return Object.freeze(st.ghosts.slice());},   // read-only view
+  // the ideal lap (button "Ideal lap (this car, this line)"): add, cancel the
+  // request in flight, zoom the traces to a corner; `ideal` is the last
+  // response on screen (null when none), for tests
+  addIdeal,cancelIdeal,zoomTo,get ideal(){return st.ideal&&st.ideal.res||null;},
   get align(){return st.align;},
   get view(){return{s0:st.view.s0,s1:st.view.s1};},          // metres of your lap distance
   setView:(s0,s1)=>setView(+s0,+s1),

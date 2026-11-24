@@ -42,6 +42,86 @@ FUJI_OTHER = "Fuji_Speedway-Synthetic_Car_2-2026-11-11T10_00_00Z.duckdb"  # LMGT
 # keep_server fixture), because keeping writes files and delete removes one.
 KEEP_ORIG = "Synthetic_Hill_Ring-Synthetic_Car_1-2026-11-12T10_00_00Z.duckdb"   # recorder file, laps 0-2
 KEEP_NATIVE = "Synthetic_Hill_Ring_P_2026-11-13T10_00_00Z.duckdb"               # no RecordedBy (an LMU export)
+# Ideal lap (test_ideal_lap.py, the ideal_server fixture). The ring cannot be
+# FITTED (no Susp Force, one speed), so with UI_IDEAL_FAKE=1 the server's
+# ideal-lap store is a fake with a known car per file (as test_ideal_endpoint);
+# everything after the store (solver, corners, trace on the driven line) is real.
+IDEAL_OK = "Synthetic_Hill_Ring-Synthetic_Car_1-2026-11-14T10_00_00Z.duckdb"      # medium confidence
+IDEAL_LOW = "Synthetic_Hill_Ring-Synthetic_Car_1-2026-11-15T10_00_00Z.duckdb"     # low: car scope, setup differs, public line
+IDEAL_REFUSED = "Synthetic_Hill_Ring-Synthetic_Car_1-2026-11-16T10_00_00Z.duckdb"  # insufficient_data
+IDEAL_SLOW = "Synthetic_Hill_Ring-Synthetic_Car_1-2026-11-17T10_00_00Z.duckdb"    # the store takes IDEAL_DELAY_S
+IDEAL_DELAY_S = 4.0
+IDEAL_REFUSAL = "3 clean laps on this track needed, have 1"
+
+
+def install_fake_ideal_store(main_mod) -> None:
+    """UI_IDEAL_FAKE=1: main._ideal_store -> a store with a known car per file."""
+    import time
+    sys.path.insert(0, str(BACKEND / "tests"))
+    from types import SimpleNamespace
+    from app import ideal_lap
+    from app.ideal_store import Refusal
+    from test_ideal_solver import _car
+
+    def axle():
+        return {"mu1": 1.5, "k": 0.0, "c": 0.0, "status": "observed", "saturation": "knee", "knee_deg": 4.0,
+                "n_sat": 1000, "ratio_sd": 0.05, "v3_peak_slip_deg": None, "knee_vs_v3": None, "terms": "fitted",
+                "v_sat": [10.0, 30.0], "trim": "none", "trim_w": 0.0}
+
+    def info(**kw):
+        d = {"scope": "track", "key": "synthetic|1200", "n_laps": 6, "n_files": 2, "load_source": "susp",
+             "confidence": "medium", "beta": 0.03, "game_version": "test", "notes": [],
+             "axles": {"front": axle(), "rear": axle()}, "s_front": {"value": 0.5, "source": "estimate"},
+             "kappa_brake": {"value": 1.0, "status": "fitted"}, "kappa_trac": {"value": 1.0, "status": "fitted"},
+             "drag": {"d0": 0.0, "d2": 0.0, "source": "prior"}, "selfcheck": None, "transferred": False,
+             "fingerprint": "f-ok", "setup": {}, "setup_differs": []}
+        d.update(kw)
+        return d
+
+    # The synthetic ring is driven at a high, nearly constant speed: a car with
+    # ordinary grip (mu 1.6) is slower everywhere, the envelope is your own lap
+    # and every gain is 0.00. This one gains ~4 s (probe, 11/24/2026), so the
+    # headline and the table have non-zero numbers to check.
+    car = _car(mu=(5.0, 5.2), power=3.0)
+
+    class FakeStore:
+        def car_for_lap(self, path, lap_number=None):
+            name = Path(path).name
+            if name == IDEAL_REFUSED:
+                return Refusal(IDEAL_REFUSAL)
+            if name == IDEAL_SLOW:
+                time.sleep(IDEAL_DELAY_S)
+                return car, info(fingerprint="f-slow")
+            if name == IDEAL_LOW:
+                return car, info(scope="car", transferred=True, confidence="low", beta=0.05, fingerprint="f-low",
+                                 setup_differs=["camber_f", "press_r"],
+                                 notes=["transferred: estimate from other tracks"])
+            return car, info()
+
+        def _reduction(self, path):
+            return SimpleNamespace(car_model="Synthetic Car LMGT3", car_class="LMGT3", game_version="test")
+
+    real_public = ideal_lap.public_block
+    state = {"low": False}
+
+    def public_block(car_model, car_class, slug, layout_len_m, game_version, lap_time_s, ideal_s, ceiling_s):
+        # IDEAL_LOW gets a public line (the real one reads public_laptimes.json, absent here)
+        if state["low"]:
+            best = round(lap_time_s * 0.96, 3)
+            return ({"car_best_s": best, "class_ref_s": best, "patch": "1.4", "patch_match": True,
+                     "driven_pct": round(100 * lap_time_s / best, 2), "ideal_pct": round(100 * ideal_s / best, 2),
+                     "band": "Midpack"}, "ok")
+        return real_public(car_model, car_class, slug, layout_len_m, game_version, lap_time_s, ideal_s, ceiling_s)
+
+    real_build = ideal_lap.build_ideal_lap
+
+    def build(path, lap_number=None, store=None, points=None, source="sessions"):
+        state["low"] = Path(path).name == IDEAL_LOW
+        return real_build(path, lap_number, store=store, points=points, source=source)
+    ideal_lap.public_block = public_block
+    ideal_lap.build_ideal_lap = build
+    fake = FakeStore()
+    main_mod._ideal_store = lambda: fake
 
 
 def main(argv: list[str]) -> None:
@@ -58,6 +138,8 @@ def main(argv: list[str]) -> None:
     app.main.OWN_SESSIONS_DIR = sessions
     if len(argv) > 3:
         app.main.REFERENCE_LAPS_DIR = Path(argv[3]).resolve()
+    if os.environ.get("UI_IDEAL_FAKE") == "1":
+        install_fake_ideal_store(app.main)
     uvicorn.run(app.main.app, host="127.0.0.1", port=port, log_level="warning")
 
 

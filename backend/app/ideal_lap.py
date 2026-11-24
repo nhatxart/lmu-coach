@@ -169,6 +169,10 @@ def analyse_lap(car, info: dict, raw: dict, lap_time_s: float, beta: float | Non
     uf_d, ur_d = SV.usage(car, st.v, gxt_d, st.gy, st.gz)
     s_raw = raw["s"]
     uf_r, ur_r = np.interp(ln["s"], s_raw, uf_d), np.interp(ln["s"], s_raw, ur_d)
+    # §12 Q5 (UI step): each tyre's share of its axle's load on the driven lap,
+    # from the load model at the recorded state (FL, FR, RL, RR on the grid)
+    lam_d = np.asarray(car.lam(st.v, st.gx, st.gy, st.gz), float)
+    lam_g = np.vstack([np.interp(ln["s"], s_raw, lam_d[i]) for i in range(4)])
 
     # times: official lap time - (T_ref_grid - T_x): the grid's timing error cancels
     shown = lambda t_grid: float(lap_time_s - (t_ref - t_grid))       # noqa: E731
@@ -209,7 +213,11 @@ def analyse_lap(car, info: dict, raw: dict, lap_time_s: float, beta: float | Non
             "verdict": "at_limit" if gmin <= CORNER_AT_LIMIT_S else "time_available",
             "where": None if gmin <= CORNER_AT_LIMIT_S else where,
             "measured_share": round(float(np.mean(ln["sat_ref"][m])) if ln.get("sat_ref") is not None else 0.0, 3),
-            "extrapolated": extrap})
+            "extrapolated": extrap,
+            # at the ideal's minimum-speed point: [left, right] share of each axle
+            "load_share": {ax: [round(float(lam_g[a, k] / (lam_g[a, k] + lam_g[b_, k])), 3),
+                                round(float(lam_g[b_, k] / (lam_g[a, k] + lam_g[b_, k])), 3)]
+                           for ax, (a, b_) in (("front", (0, 1)), ("rear", (2, 3)))}})
     # time outside the windows: straight rows between corners (in lap order)
     rest = ~covered
     if rest.any():

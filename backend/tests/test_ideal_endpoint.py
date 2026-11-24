@@ -91,6 +91,11 @@ def test_ideal_lap_schema_and_trace_on_the_driven_line(session, monkeypatch):
     assert d["corners"] and all(set(c) >= CORNER for c in d["corners"] if c["kind"] == "corner")
     assert {"front", "rear"} == set(d["fit"]["axles"]) and "clamp_conflict" in d["fit"]["axles"]["front"]
     assert isinstance(d["note"], str) and d["public"] is None and d["public_check"] is None
+    # §12 Q5: each tyre's share of its axle's load (left, right), per corner
+    for c in (c for c in d["corners"] if c["kind"] == "corner"):
+        assert set(c["load_share"]) == {"front", "rear"}
+        for pair in c["load_share"].values():
+            assert len(pair) == 2 and sum(pair) == pytest.approx(1.0, abs=0.002) and min(pair) > 0
 
 
 def test_lap_omitted_is_the_lap_trackmap_picks(session, monkeypatch):

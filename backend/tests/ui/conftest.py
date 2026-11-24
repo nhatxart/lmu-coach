@@ -23,6 +23,7 @@ sys.path.insert(0, str(HERE))               # serve_for_ui (file names)
 from serve_for_ui import (CMP_A, CMP_B, CMP_HYPER, CMP_KEPT, CMP_LAYOUT, CMP_NOLD,  # noqa: E402
                           CMP_V1, CMP_WAVE, FUJI_A, FUJI_B, FUJI_OTHER, HILLY, KEEP_NATIVE, KEEP_ORIG,
                           LEGACY, LIMITS, PARTIAL, SLIP)
+from serve_for_ui import IDEAL_LOW, IDEAL_OK, IDEAL_REFUSED, IDEAL_SLOW  # noqa: E402
 
 # SwiftShader: software WebGL, so the chase view renders without a GPU.
 # Verified with Chromium 156 headless (Playwright 1.5x) on Windows 11.
@@ -68,12 +69,13 @@ def _write_compare_files(sessions: Path, kept: Path | None, gps_ref=None) -> Non
                         lap_offsets=(1.0, 1.0), speed_scale=0.95, track_name="Fuji Speedway")
 
 
-def _start(sessions: Path, ref: Path, kept: Path | None = None):
+def _start(sessions: Path, ref: Path, kept: Path | None = None, env: dict | None = None):
     port = _free_port()
     args = [sys.executable, str(HERE / "serve_for_ui.py"), str(sessions), str(port), str(ref)]
     if kept is not None:
         args.append(str(kept))
-    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            env={**os.environ, **env} if env else None)
     base = f"http://127.0.0.1:{port}"
     deadline = time.time() + 60
     while True:
@@ -141,6 +143,32 @@ def server_no_origin(tmp_path_factory):
     ref.mkdir()
     _write_compare_files(sessions, None, gps_ref=(10.0, 20.0))
     proc, base = _start(sessions, ref)
+    yield base
+    _stop(proc)
+
+
+
+
+@pytest.fixture(scope="session")
+def ideal_server(tmp_path_factory):
+    """The ideal-lap UI (test_ideal_lap.py): IDEAL_OK / IDEAL_LOW / IDEAL_REFUSED /
+    IDEAL_SLOW (laps 0-2, slip angles, speed varying along the lap) and CMP_B
+    (a second file for an ordinary ghost), served with UI_IDEAL_FAKE=1 (a fake
+    ideal-lap store with a known car per file, serve_for_ui)."""
+    pytest.importorskip("uvicorn")
+    from synthetic_track import GPS_REF_LAT, GPS_REF_LON, write_hilly_session
+
+    root = tmp_path_factory.mktemp("ui_ideal")
+    sessions, ref = root / "sessions", root / "ref"
+    (ref / "sources").mkdir(parents=True)
+    sessions.mkdir()
+    (ref / "sources" / "synthetic_hill_ring.json").write_text(
+        json.dumps({"center": [GPS_REF_LAT, GPS_REF_LON]}), encoding="utf-8")
+    for f in (IDEAL_OK, IDEAL_LOW, IDEAL_REFUSED, IDEAL_SLOW):
+        write_hilly_session(sessions / f, vehicle_class="LMGT3", lap_offsets=(0.0, 1.0, -1.0),
+                            slip_angles=True, speed_wave=0.15)
+    write_hilly_session(sessions / CMP_B, vehicle_class="LMGT3", lap_offsets=(2.0, 2.0), speed_scale=0.97)
+    proc, base = _start(sessions, ref, env={"UI_IDEAL_FAKE": "1"})
     yield base
     _stop(proc)
 
