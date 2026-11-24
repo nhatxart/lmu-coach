@@ -202,8 +202,9 @@ def test_cli_topography_only(tmp_path, ref_dir, monkeypatch, capsys):
     monkeypatch.setenv("TRACK_REFERENCE_DIR", str(ref_dir))
     monkeypatch.syspath_prepend(str(TOOLS))
     import build_track_reference as btr
+    # --reference "": never read the repo's own data/reference_laps (kept laps)
     monkeypatch.setattr(sys, "argv", ["x", "--topography-only", "--sessions", str(sess),
-                                      "--track", "fuji"])
+                                      "--reference", "", "--track", "fuji"])
     assert btr.main() == 0
     out = capsys.readouterr().out
     assert "topography: fuji layouts=1" in out and "(1 with pose)" in out

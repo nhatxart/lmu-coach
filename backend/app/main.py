@@ -15,8 +15,10 @@ tool, not a multi-tenant service, so there's no need for a real DB here yet.
 from __future__ import annotations
 
 import copy
+import errno
 import logging
 import math
+import os
 import uuid
 from pathlib import Path
 
@@ -33,20 +35,20 @@ except ImportError:
     _HAS_SCIPY = False
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import session_index, track_reference, trackmap_elevation
+from . import lap_cut, session_index, track_reference, trackmap_elevation
 from .coach import LLMError, ask_followup, get_coaching_analysis
 from .track_db import find_track_in_registry, find_layout_in_track, annotate_report_with_corners
 from .grip_analysis import build_grip_report
-from .grip_profile import load_profile_for_lap, save_profile
+from .grip_profile import file_tyre_context, load_profile_for_lap, save_profile, tire_file_key
 from .tire_model import TIRE_GRID_HZ, compute_grip_utilization_for_lap, file_load_reference
 from .vehicle_dynamics import (body_slip_from_local_vel_deg, compute_body_slip_deg,
                                handling_balance)
 from .telemetry import (load_telemetry_file, get_car_setup_json, session_time_axes, reference_lap_time,
-                        dehold, lap_index)
+                        dehold, lap_index, kept_lap, kept_lap_of)
 from . import track_limits
 
 log = logging.getLogger(__name__)
@@ -185,10 +187,11 @@ def root():
         raise HTTPException(404, "UI not found — static/index.html missing")
     return FileResponse(str(index))
 
-# Read-only bind mounts set up in docker-compose.yml. OWN_SESSIONS is your
-# own LMU UserData/Telemetry folder; REFERENCE_LAPS is the local folder
-# where you manually drop .duckdb files (e.g. ones friends send you, or your
-# own exports) that aren't part of your live LMU session history.
+# Bind mounts set up in docker-compose.yml. OWN_SESSIONS is your own
+# recordings folder; REFERENCE_LAPS is the kept-laps folder (laps kept from
+# recordings by POST .../keep, plus .duckdb files you drop there yourself).
+# PREVIOUSLY both were mounted read-only; keep laps writes REFERENCE_LAPS, and
+# the deliberate delete of a recording whose laps were kept writes OWN_SESSIONS.
 OWN_SESSIONS_DIR = Path("/data/sessions")
 REFERENCE_LAPS_DIR = Path("/data/reference_laps")
 
@@ -279,6 +282,226 @@ def list_laps(source: str, file: str):
     }
 
 
+class KeepRequest(BaseModel):
+    laps: list[int]
+
+
+KEPT_FOLDER_READ_ONLY = "The kept-laps folder is read-only: rebuild with the new docker-compose.yml"
+KEPT_NO_TYRE_CONTEXT = ("tyre context unavailable: this lap counts in the tyre model "
+                        "with a one-lap load reference")
+
+
+def _bare_duckdb_name(file: str) -> str:
+    """A file name as the keep / delete routes take it: a bare name of a
+    recording, nothing that could reach outside the two folders (no
+    separators, drive or `..`), no dotfile (the .tmp / spool files), ending
+    .duckdb. _resolve_file guards the path too, but on Linux a backslash is
+    an ordinary character, so a Windows-style `..\\x` would only 404 there."""
+    if (not file or file != file.strip() or file.startswith(".") or ".." in file
+            or any(c in file for c in "/\\:\0") or not file.endswith(".duckdb")):
+        raise HTTPException(400, "Invalid file name")
+    return file
+
+
+def _is_read_only_error(e: BaseException) -> bool:
+    return isinstance(e, PermissionError) or (
+        isinstance(e, OSError) and e.errno in (errno.EACCES, errno.EPERM, errno.EROFS))
+
+
+@app.post("/sessions/sessions/{file}/keep")
+def keep_laps(file: str, req: KeepRequest):
+    """Keep laps (spec 4, 4.4a): each lap of a recording into its own file in
+    the kept-laps folder, checked by reading it back. The recording itself is
+    never changed. Per lap: the kept name already exists -> check it
+    (already_kept, never rewritten); else cut to .<name>.tmp, os.replace,
+    check, and on a failed check remove that file (only the one just written).
+    Every lap is validated before anything is written: one lap that cannot be
+    kept (CutError) refuses the whole request with 422.
+    `ok` = the request ran (false only in the 409 body); gate any delete on
+    `all_checked`. The 409 body lists the laps this request already kept."""
+    src = _resolve_file(_bare_duckdb_name(file), "sessions")
+    laps = list(dict.fromkeys(req.laps))
+    if not laps:
+        raise HTTPException(422, "No laps given")
+    try:
+        plans = [lap_cut.prepare(src, n) for n in laps]
+    except lap_cut.CutError as e:
+        raise HTTPException(422, str(e))
+    kept_dir = REFERENCE_LAPS_DIR
+    results = []
+    if not kept_dir.is_dir() or not os.access(kept_dir, os.W_OK):
+        return JSONResponse(status_code=409, content={"ok": False, "results": results,
+                                                      "error": KEPT_FOLDER_READ_ONLY})
+
+    tyre_context: dict | None = None
+
+    def original_tyre_context() -> dict:
+        """The original's file-level tyre-model context (spec 4.3), computed
+        once per request and only if a lap is written: a one-lap file cannot
+        recompute it, so it goes into every kept file's KeptTyreContext. A
+        failure keeps the lap anyway, with {} (the tyre model must not stop a
+        keep), and the lap's result carries a warning: the kept file is still
+        keyed by its original, so it is still counted once, but binned with a
+        context recomputed from one lap (often no load reference), and it may
+        refresh the profile's calibration."""
+        nonlocal tyre_context
+        if tyre_context is None:
+            try:
+                tlaps = load_telemetry_file(src, grid_hz=TIRE_GRID_HZ)
+                cal = load_profile_for_lap(tlaps[0]).deflection_calibration if tlaps else None
+                tyre_context = file_tyre_context(tlaps, cal or None)
+            except Exception:
+                log.exception("tyre context failed on %s; kept without it", src.name)
+                tyre_context = {}
+        return tyre_context
+
+    for info in plans:
+        dst = kept_dir / info.name
+        res = {"lap": info.lap, "kept_file": info.name, "status": "failed",
+               "lap_time_original": round(info.lap_time_s, 3), "lap_time_kept": None,
+               "error": None}
+        if dst.exists():
+            ok, t_kept, err = lap_cut.check_kept(dst, info.lap, info.lap_time_s, src)
+            res.update(status="already_kept" if ok else "failed", error=err,
+                       lap_time_kept=None if t_kept is None else round(t_kept, 3))
+            results.append(res)
+            continue
+        tmp = kept_dir / f".{info.name}.tmp"
+        try:
+            # a leftover of an interrupted keep (our own dotfile, never a user's)
+            tmp.unlink(missing_ok=True)
+            context = original_tyre_context()
+            lap_cut.cut_lap(src, info.lap, tmp, context)
+            os.replace(tmp, dst)
+            if not context:
+                # PREVIOUSLY the failure was only logged; the user never knew
+                # this lap is worth less to the tyre model. The status stays kept.
+                res["warning"] = KEPT_NO_TYRE_CONTEXT
+        except Exception as e:
+            tmp.unlink(missing_ok=True)
+            if _is_read_only_error(e):
+                # laps kept before this one stay (checked): list them
+                return JSONResponse(status_code=409, content={
+                    "ok": False, "results": results, "error": KEPT_FOLDER_READ_ONLY})
+            if isinstance(e, lap_cut.CutError):
+                raise HTTPException(422, str(e))
+            res["error"] = f"{type(e).__name__}: {e}"
+            results.append(res)
+            continue
+        ok, t_kept, err = lap_cut.check_kept(dst, info.lap, info.lap_time_s, src)
+        res.update(lap_time_kept=None if t_kept is None else round(t_kept, 3), error=err)
+        if ok:
+            res["status"] = "kept"
+        else:
+            dst.unlink(missing_ok=True)      # this request wrote it, and it failed
+            res["error"] = f"the kept file failed its check and was removed: {err}"
+        results.append(res)
+    return {"ok": True, "all_checked": all(r["status"] != "failed" for r in results),
+            "results": results}
+
+
+class DeleteRequest(BaseModel):
+    confirm: str            # the exact file name (sent by the "Delete permanently" button)
+    # kept laps of this file, checked before the delete. PREVIOUSLY required,
+    # so a missing key gave pydantic's 422; Fix: default [] so it is the
+    # route's own 412 "no kept laps", like an empty list.
+    kept_files: list[str] = []
+
+
+DELETE_IN_USE = ("The recording is in use (the game's recorder or another program may "
+                 "have it open). Try again in a moment.")
+
+
+def _kept_origin_and_lap(kept: Path) -> tuple[str | None, int | None]:
+    """(KeptFromFile, KeptLap) of a file in the kept-laps folder; (None, None)
+    when it is not a kept lap or cannot be read."""
+    try:
+        con = duckdb.connect(str(kept), read_only=True)
+        try:
+            meta = dict(con.execute("SELECT key, value FROM metadata").fetchall())
+        finally:
+            con.close()
+    except Exception:
+        return None, None
+    return (meta.get("KeptFromFile") or None), kept_lap(meta)
+
+
+@app.post("/sessions/sessions/{file}/delete")
+def delete_original(file: str, req: DeleteRequest):
+    """The deliberate delete of a recording (spec 4.4a). THIS IS THE ONLY CODE
+    THAT REMOVES ANYTHING FROM /data/sessions, and it removes exactly one file:
+    the original named in the URL, in OWN_SESSIONS_DIR (never REFERENCE_LAPS_DIR).
+
+    Refusals, all before anything is removed:
+    - 400: a name that is not a bare .duckdb name (URL or kept_files), or
+      `confirm` not exactly the file name (no trimming, case-sensitive: the
+      user confirmed this name, not one like it);
+    - 404: no such recording in the sessions folder;
+    - 412: no kept laps given, or one is not in the kept-laps folder, is not a
+      kept lap of THIS file (KeptFromFile), or fails the keep check
+      (lap_cut.check_kept, the same check the keep route runs) against it.
+      The check compares against the original, so it must run while the
+      original still exists: check every kept lap first, then remove;
+    - 409: the remove itself failed (Windows lock, permissions): the file stays.
+      This is a Windows/host-side guard: on Linux (Docker) the remove succeeds
+      even while another process has the file open (it keeps the inode until
+      it closes). The recorder never holds a finished recording's name (it
+      writes .<name>.duckdb.tmp and renames), and a leftover .spool/.tmp for
+      this name would be recovered by the recorder at its next start, which
+      re-creates the file rather than losing data.
+
+    After the remove, a `<file>.wal` sibling is removed too, best effort: once
+    its database is gone it is orphaned, and DuckDB would replay it onto any
+    future file of the same name. Nothing else is touched.
+    """
+    name = _bare_duckdb_name(file)
+    if req.confirm != name:
+        raise HTTPException(400, "Confirmation does not match the file name")
+    kept_names = [_bare_duckdb_name(k) for k in req.kept_files]
+    # _resolve_file with "sessions": the original can only come from the
+    # recordings folder, so a kept file's name here is a 404, never a delete.
+    src = _resolve_file(name, "sessions")
+    if not kept_names:
+        raise HTTPException(412, "No kept laps given: keep and check laps before deleting")
+
+    lap_times = None
+    for k in dict.fromkeys(kept_names):
+        kept = REFERENCE_LAPS_DIR / k
+        if not kept.is_file():
+            raise HTTPException(412, f"{k} is not in the kept-laps folder")
+        origin, lap = _kept_origin_and_lap(kept)
+        if origin != name or lap is None:
+            raise HTTPException(412, f"{k} was kept from {origin!r}, not {name!r}")
+        if lap_times is None:
+            con = duckdb.connect(str(src), read_only=True)
+            try:
+                # the same source of the original's lap time as the keep route
+                # (lap_cut._plan: lap_index's lap_time_s)
+                lap_times = {l.lap_number: float(l.lap_time_s) for l in lap_index(con)}
+            finally:
+                con.close()
+        if lap not in lap_times:
+            raise HTTPException(412, f"{k} is lap {lap}, which {name} does not have")
+        ok, _t, err = lap_cut.check_kept(kept, lap, lap_times[lap], src)
+        if not ok:
+            raise HTTPException(412, f"{k} failed its check against {name}: {err}")
+
+    try:
+        os.remove(src)
+    except OSError as e:     # PermissionError included (Windows: open elsewhere)
+        log.warning("delete of %s refused by the OS: %s", name, e)
+        raise HTTPException(409, DELETE_IN_USE)
+    session_index.forget(src)
+    wal = src.with_name(src.name + ".wal")
+    try:
+        if wal.is_file():
+            os.remove(wal)
+    except OSError as e:     # the recording is gone already: log, do not fail
+        log.warning("could not remove %s after deleting %s: %s", wal.name, name, e)
+    log.warning("deleted recording %s (kept laps checked: %s)", name, ", ".join(kept_names))
+    return {"ok": True, "deleted": name}
+
+
 @app.post("/analyze")
 async def analyze(ref: LapRef):
     path = _resolve_file(ref.file, ref.source)
@@ -319,6 +542,11 @@ async def analyze(ref: LapRef):
     profile = pre_update_profile
     tire_laps: list = []
     tire_error: str | None = None
+    # PREVIOUSLY the tyre data was keyed by this file's name, so a kept lap
+    # (spec 4.3) went in a second time under the kept file's name, binned with
+    # a context recomputed from one lap. Fix: a kept file is keyed by its
+    # original and carries the original's context (KeptTyreContext).
+    tire_key, tire_context = tire_file_key(path.name, lap.meta)
     grip_report["grip_utilization"] = None
     try:
         tire_laps = load_telemetry_file(path, grid_hz=TIRE_GRID_HZ)
@@ -326,12 +554,18 @@ async def analyze(ref: LapRef):
         tire_lap = next((l for l in tire_valid if l.lap_number == lap.lap_number), None)
         pre_update_baselines = pre_update_profile.compute_baselines()
         if tire_lap is not None:
+            if tire_context:
+                score_cal = tire_context.get("calibration") or {}
+                score_ref = tire_context.get("load_ref") or {}
+            else:
+                score_cal = pre_update_profile.deflection_calibration
+                score_ref = file_load_reference(tire_valid, score_cal)
             grip_report["grip_utilization"] = compute_grip_utilization_for_lap(
                 tire_lap,
                 pre_update_baselines["front_tire_model"],
                 pre_update_baselines["rear_tire_model"],
-                calibration=pre_update_profile.deflection_calibration,
-                load_ref=file_load_reference(tire_valid, pre_update_profile.deflection_calibration),
+                calibration=score_cal,
+                load_ref=score_ref,
                 front_fit=pre_update_profile.cached_fit("front"),
             )
     except Exception as e:  # /analyze must never fail because of the tyre model
@@ -363,7 +597,7 @@ async def analyze(ref: LapRef):
         snapshot = (copy.deepcopy(profile.tire_files), copy.deepcopy(profile.tire_fit_cache),
                     copy.deepcopy(profile.deflection_calibration), profile.car_class)
         try:
-            profile.ingest_tire_laps(tire_laps, file_key=path.name)
+            profile.ingest_tire_laps(tire_laps, file_key=tire_key, context=tire_context)
             grip_baselines = profile.compute_baselines()
         except Exception as e:
             log.exception("tyre ingest/refit failed on %s", path.name)
@@ -558,8 +792,20 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
             if (coordinate_origin["kind"] == "track"
                     and (coordinate_origin["lat"], coordinate_origin["lon"]) == (ref_lat, ref_lon)
                     and "Pos X" in tables and "Pos Z" in tables):
-                wx0 = con.execute('SELECT value FROM "Pos X" ORDER BY rowid LIMIT 1').fetchone()
-                wz0 = con.execute('SELECT value FROM "Pos Z" ORDER BY rowid LIMIT 1').fetchone()
+                # PREVIOUSLY Pos row 0 was taken as GPS row 0's instant. True
+                # for a recording (its 10 Hz gate fires on the first row), not
+                # for a kept lap (keep laps): it starts at a 100 Hz row and its
+                # first 10 Hz (GPS) row is the next gate tick, up to 0.1 s later,
+                # so a kept lap was drawn 5.1 m off its original on Fuji WRT
+                # 10/19 (final review I1). Fix: Pos at GPS row 0's game time.
+                # A recording: k0 = 0, unchanged. The row-count guard keeps
+                # files whose Pos X is not on the 100 Hz clock at row 0.
+                tf0, ts0 = session_time_axes(con)
+                n_pos = con.execute('SELECT count(*) FROM "Pos X"').fetchone()[0]
+                k0 = (int(np.searchsorted(tf0, ts0[0]))
+                      if tf0 is not None and ts0 is not None and len(ts0) and n_pos == len(tf0) else 0)
+                wx0 = con.execute(f'SELECT value FROM "Pos X" ORDER BY rowid LIMIT 1 OFFSET {k0}').fetchone()
+                wz0 = con.execute(f'SELECT value FROM "Pos Z" ORDER BY rowid LIMIT 1 OFFSET {k0}').fetchone()
                 if wx0 and wz0:
                     gx0 = (lon_raw[0] - ref_lon) * R * cos_lat
                     gz0 = (lat_raw[0] - ref_lat) * R
@@ -614,6 +860,23 @@ def get_trackmap(source: str, file: str, lap_number: int | None = None):
         ).fetchall()
     except Exception:
         lap_events = []
+
+    # A kept file (keep laps) holds one lap; its trailing margin starts an
+    # open lap n+1 (the Lap row that ends lap n), which must not be picked
+    # or served. The auto-pick below would choose lap n anyway (n+1 is not
+    # closed), but an explicit other lap would get the margin or the whole file.
+    keep = kept_lap_of(con)
+    if keep is not None:
+        if lap_number is None:
+            lap_number = keep
+        elif lap_number != keep:
+            con.close()
+            raise HTTPException(404, f"Lap {lap_number} not in this kept file (it holds lap {keep})")
+        if not any(int(v) == keep for _, v in lap_events):
+            # Without its Lap row _lap_slice would serve the whole file as
+            # lap n; lap_index and load_telemetry_file list no lap for it.
+            con.close()
+            raise HTTPException(422, f"Kept file holds lap {keep} but has no Lap row for it")
 
     # Auto-select fastest complete lap when none specified
     if lap_number is None and len(lap_events) >= 2:

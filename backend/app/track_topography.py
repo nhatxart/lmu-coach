@@ -542,6 +542,38 @@ def _read_pit_laps(path: Path) -> set[int] | None:
         con.close()
 
 
+def topography_files(session_files: list, kept_files: list) -> list[Path]:
+    """The input files of one track's topography fit: every session file, plus
+    each kept file (metadata KeptFromFile) whose original is not among them.
+
+    WHY (spec 4.3 "Topography"): a kept lap is the same lap as lap KeptLap of
+    its original; fitting both would give that lap double weight. Once the
+    original is cleaned out of the sessions folder, the kept lap is the only
+    copy and must feed the fit. Files in the kept-laps folder without
+    KeptFromFile (someone else's laps put there by hand) are not ours and are
+    left out, as before this folder was read. Metadata is read read-only; an
+    unreadable kept file is left out (build_topography would skip it too)."""
+    import duckdb                       # local, like the other file readers here
+    sessions = [Path(f) for f in session_files]
+    names = {p.name for p in sessions}
+    out = list(sessions)
+    for f in kept_files:
+        f = Path(f)
+        try:
+            con = duckdb.connect(str(f), read_only=True)
+            try:
+                meta = dict(con.execute("SELECT key, value FROM metadata").fetchall())
+            finally:
+                con.close()
+        except Exception as e:
+            print(f"  {f.name}: skipped ({type(e).__name__}: {e})")
+            continue
+        origin = meta.get("KeptFromFile")
+        if origin and origin not in names:
+            out.append(f)
+    return out
+
+
 def build_topography(files: list[Path], slug: str, display_name: str) -> dict | None:
     """Fit every layout of one track from all its recordings (see the plan,
     Task 4). None when nothing gave heights or paint."""

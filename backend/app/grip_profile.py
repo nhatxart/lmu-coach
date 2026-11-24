@@ -108,6 +108,62 @@ def _keys_fingerprint(tire_files: dict, axle: str) -> str:
     return hashlib.sha1("\n".join(keys).encode()).hexdigest()
 
 
+def _first_calibration(laps: list) -> dict:
+    """The first lap's deflection->force fit that worked, else {} (a file with
+    Susp Force calibrates the cars whose files have only Susp Pos)."""
+    for lap in laps:
+        cal = fit_deflection_calibration(lap)
+        if cal:
+            return cal
+    return {}
+
+
+def file_tyre_context(laps: list, profile_calibration: dict | None) -> dict:
+    """
+    The file-level context ingest_tire_laps takes from a WHOLE recording, for a
+    kept lap of it (spec 2026-11-03 4.3): a one-lap file cannot recompute the
+    load reference (low-speed straights are on the out lap / pit lane), the
+    slow-lap cutoff (the file's fastest real lap) or the calibration.
+
+    calibration: the original's own first deflection fit, else the car profile's
+    (as ingest_tire_laps would use it), else None. load_ref: file_load_reference
+    over every < 600 s lap with that calibration. fastest_s: reference_lap_time.
+    `laps` are the original's at tire_model.TIRE_GRID_HZ. JSON-safe (stored in
+    the kept file's metadata KeptTyreContext).
+    """
+    valid = [l for l in laps if l.lap_time_s < 600]
+    cal = _first_calibration(valid) or profile_calibration or None
+    load_ref = file_load_reference(valid, cal) if valid else {}
+    # over the < 600 s laps, the same set ingest_tire_laps takes it from
+    fastest = reference_lap_time(valid)
+    return {
+        "calibration": json.loads(json.dumps(cal)) if cal else None,
+        "load_ref": {k: float(v) for k, v in load_ref.items()},
+        "fastest_s": None if fastest is None else float(fastest),
+    }
+
+
+def tire_file_key(path_name: str, meta: dict) -> tuple[str, dict]:
+    """
+    (file key, context) for ingest_tire_laps. A kept file (metadata KeptFromFile)
+    is keyed by its ORIGINAL's name, so its lap (same lap number) is the
+    original's lap: present once whichever file is ingested first, and still
+    counted after the original is deleted. Its context is KeptTyreContext
+    ({} when absent or unreadable: the lap is then still keyed by its original,
+    so it is still counted once, but binned with a context recomputed from one
+    lap (often no load reference), and it may refresh the profile's calibration).
+    A recording: (its own name, {}).
+    """
+    origin = (meta or {}).get("KeptFromFile")
+    if not origin:
+        return path_name, {}
+    try:
+        context = json.loads(meta.get("KeptTyreContext") or "{}")
+    except (TypeError, ValueError):
+        context = {}
+    return origin, context if isinstance(context, dict) else {}
+
+
 @dataclass
 class GripProfile:
     car_name: str
@@ -231,7 +287,8 @@ class GripProfile:
 
     # ── tyre model: ingest ────────────────────────────────────────────────────
 
-    def ingest_tire_laps(self, laps: list, file_key: str) -> list[int]:
+    def ingest_tire_laps(self, laps: list, file_key: str,
+                         context: dict | None = None) -> list[int]:
         """
         Folds every usable lap of one recording into the tire model, once.
         PREVIOUSLY only the analyzed lap was added (one lap per /analyze, so
@@ -243,25 +300,38 @@ class GripProfile:
         recorder's Slip Angle channels (native LMU files) add nothing. The game
         version and track are stored once on the file entry, never per lap.
         `laps` must be loaded at tire_model.TIRE_GRID_HZ (the caller's job).
+
+        context: a kept lap's file_tyre_context (tire_file_key gives it, with the
+        ORIGINAL's file name as file_key). PREVIOUSLY a kept lap was ingested as a
+        file of its own: a second copy of the lap under a new key, binned against
+        a load reference, slow-lap cutoff and calibration recomputed from one lap
+        plus margins (a flying lap has no low-speed straight, so often no load
+        reference at all). Fix: with a non-empty context its calibration,
+        load_ref and fastest_s are used as they are, and the profile's
+        calibration is not refreshed from the kept file.
         """
         valid = [l for l in laps if l.lap_time_s < 600]
         if not valid:
             return []
-        # BUG FIX (10/18/2026): the cutoff reference was min(lap_time_s), which
-        # the unfinished last lap or a mid-lap join usually won, so only that
-        # partial lap got in. Reference = fastest real lap; partial laps are
-        # still ingested (their steady-state samples are as good as any).
-        fastest = reference_lap_time(valid) or min(l.lap_time_s for l in valid)
-        # Learn/refresh the deflection->force calibration from any lap that
-        # has Susp Force, before extracting, so this file can use it too.
-        for lap in valid:
-            cal = fit_deflection_calibration(lap)
+        if context:
+            calibration = context.get("calibration") or {}
+            load_ref = context.get("load_ref") or {}
+            fastest = context.get("fastest_s") or min(l.lap_time_s for l in valid)
+        else:
+            # BUG FIX (10/18/2026): the cutoff reference was min(lap_time_s), which
+            # the unfinished last lap or a mid-lap join usually won, so only that
+            # partial lap got in. Reference = fastest real lap; partial laps are
+            # still ingested (their steady-state samples are as good as any).
+            fastest = reference_lap_time(valid) or min(l.lap_time_s for l in valid)
+            # Learn/refresh the deflection->force calibration from any lap that
+            # has Susp Force, before extracting, so this file can use it too.
+            cal = _first_calibration(valid)
             if cal:
                 self.deflection_calibration = cal
-                break
-        # reference load from the whole file incl. slow laps (the out lap /
-        # pit lane is usually the only low-speed straight-line running)
-        load_ref = file_load_reference(valid, self.deflection_calibration)
+            calibration = self.deflection_calibration
+            # reference load from the whole file incl. slow laps (the out lap /
+            # pit lane is usually the only low-speed straight-line running)
+            load_ref = file_load_reference(valid, calibration)
         identity = identify_car(valid[0].meta, valid[0].car_name)
         if self.car_class == "unknown":
             self.car_class = identity.car_class
@@ -270,7 +340,7 @@ class GripProfile:
         for lap in valid:
             if str(lap.lap_number) in stored or lap.lap_time_s > fastest * TIRE_LAP_MAX_RATIO:
                 continue
-            samples = _lap_axle_samples(lap, self.deflection_calibration, load_ref)
+            samples = _lap_axle_samples(lap, calibration, load_ref)
             if samples is None:
                 continue
             bins = {a: bin_axle_samples(samples[a], samples[a]["mask"]) for a in AXLES}

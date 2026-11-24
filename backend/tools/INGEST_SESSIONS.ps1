@@ -8,6 +8,10 @@
 #   .\INGEST_SESSIONS.ps1 --month 2026-10 --save     write it
 #   .\INGEST_SESSIONS.ps1 --since 2026-10-14 --until 2026-10-18 --save
 #   .\INGEST_SESSIONS.ps1 --files "Fuji*" --tyre-only --save
+#   kept laps in data\reference_laps are read too (once); --reference-dir <dir> reads another
+#   folder, --reference-dir= (empty, with the =; a bare "" is dropped by PowerShell) skips them
+#
+# Relative folders (--sessions-dir, --reference-dir, --profiles-dir) resolve against the repo root.
 #
 # Stop the backend first (docker compose down): it reads the same profile files.
 $repo = Resolve-Path "$PSScriptRoot\..\.."

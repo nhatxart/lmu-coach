@@ -12,6 +12,12 @@ Baselines use real laps only: complete, and >= 85 % of the file's median
 (the unfinished last lap and a mid-lap join would skew peak G / slip). The
 tyre model takes those laps too (see telemetry.reference_lap_time).
 
+Kept laps: the kept-laps folder (--reference-dir, default data/reference_laps,
+"" = off) is read too, so a cleanout of the sessions folder loses nothing. A
+kept lap counts once: its tyre data is keyed under its original
+(grip_profile.tire_file_key), and its baselines are skipped while its original
+is in the sessions folder or in the ledger.
+
 Dry run unless --save. With --save the profiles are copied to
 <profiles>/backups/<timestamp>/ first.
 
@@ -133,7 +139,10 @@ def ideal_lap_pass(args, paths: list) -> int:
     tmp = None if args.save else tempfile.TemporaryDirectory()
     root = args.profiles_dir / "ideal_lap" if args.save else Path(tmp.name) / "ideal_lap"
     print(f"== ideal lap: {len(paths)} files, profiles in {root}")
-    store = IdealStore(root, [args.sessions_dir])
+    # the same folders as the app's store (main._ideal_store): sessions and the
+    # kept-laps folder; a kept lap whose original is here is not counted twice
+    dirs = [args.sessions_dir] + ([Path(args.reference_dir)] if args.reference_dir else [])
+    store = IdealStore(root, dirs)
     t0 = time.perf_counter()
     store.fit_all(paths)
     print(f"  {store.fits_done} group fits in {time.perf_counter() - t0:.0f} s")
@@ -143,9 +152,68 @@ def ideal_lap_pass(args, paths: list) -> int:
     return 0
 
 
+def select_files(sessions_dir: Path, reference_dir: Path | None, month: str | None = None,
+                 since: str | None = None, until: str | None = None,
+                 pattern: str | None = None) -> list[tuple[str, Path]]:
+    """(sort key, path) of every *.duckdb in sessions_dir and reference_dir that
+    passes the filters, sorted by the UTC stamp in the name.
+
+    WHY the kept-laps folder too (spec 4.3 "Rebuild tools"): after a cleanout
+    of the sessions folder a kept lap is the only copy of what the profile
+    learned from it, so a rebuild must read it. A kept name keeps the
+    original's stamp (`... L9 1m42.983-2026-10-19T23_18_37Z.duckdb`), so
+    --month/--since/--until select it with its original. Counting it once is
+    main()'s job (tire_file_key, and the baseline skip). None, or a folder
+    that does not exist, reads the sessions folder only."""
+    files = []
+    folders = [sessions_dir] + ([reference_dir] if reference_dir else [])
+    for rank, folder in enumerate(folders):
+        if not folder.is_dir():
+            continue
+        for p in folder.glob("*.duckdb"):
+            m = STAMP.search(p.name)
+            day = m.group(1) if m else ""
+            if month and not day.startswith(month):
+                continue
+            if since and day < since or until and day > until:
+                continue
+            if pattern and not fnmatch.fnmatch(p.name, pattern):
+                continue
+            files.append((m.group(0) if m else p.name, rank, p.name, p))
+    # BUG FIX / PREVIOUSLY sorted (stamp, path): a kept file shares its
+    # original's stamp, and "...\reference_laps\..." sorts before
+    # "...\sessions\...", so the kept copy went first and its bins won; the
+    # whole original was then skipped for that lap. The kept copy's bins come
+    # from its stored one-file context, which is {} when the keep step could
+    # not compute it. Fix: at equal stamps session files go first (folder
+    # rank), so the original supplies the lap whenever it is there.
+    files.sort()
+    return [(key, p) for key, _rank, _name, p in files]
+
+
+def baseline_skip_reason(meta: dict, sessions_dir: Path, ledger: set) -> str | None:
+    """Why a kept file's ABS/TC/slip baselines must not be folded in, else None.
+
+    The baselines have no per-lap key (spec 4.3), so de-duplication is per
+    file: a kept lap is already counted when its original is in the sessions
+    folder (this run or a later one reads it) or in the ledger (an earlier run
+    read it, and it may be gone now). A skipped kept file is not added to the
+    ledger: once its original is gone and was never ingested, it counts."""
+    origin = meta.get("KeptFromFile")
+    if not origin:
+        return None
+    if origin in ledger:
+        return f"its original {origin} is in the ledger"
+    if (sessions_dir / origin).exists():
+        return f"its original {origin} is in the sessions folder"
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--sessions-dir", type=Path, default=REPO / "data" / "sessions")
+    ap.add_argument("--reference-dir", default=str(REPO / "data" / "reference_laps"),
+                    help="the kept-laps folder (/data/reference_laps), read too; \"\" = off")
     ap.add_argument("--profiles-dir", type=Path, default=REPO / "data" / "grip_profiles")
     ap.add_argument("--month", help="YYYY-MM, from the UTC stamp in the file name")
     ap.add_argument("--since", help="YYYY-MM-DD (inclusive)")
@@ -168,18 +236,9 @@ def main() -> int:
     ledger_path = args.profiles_dir / ".ingest_ledger.json"
     ledger = set(json.loads(ledger_path.read_text())) if ledger_path.exists() else set()
 
-    files = []
-    for p in args.sessions_dir.glob("*.duckdb"):
-        m = STAMP.search(p.name)
-        day = m.group(1) if m else ""
-        if args.month and not day.startswith(args.month):
-            continue
-        if args.since and day < args.since or args.until and day > args.until:
-            continue
-        if args.files and not fnmatch.fnmatch(p.name, args.files):
-            continue
-        files.append((m.group(0) if m else p.name, p))
-    files.sort()
+    reference_dir = Path(args.reference_dir) if args.reference_dir else None
+    files = select_files(args.sessions_dir, reference_dir, args.month, args.since, args.until,
+                         args.files)
     if not files:
         print("no matching files")
         return 1
@@ -220,8 +279,11 @@ def main() -> int:
             continue
 
         if not args.tyre_only:
+            skip = baseline_skip_reason(valid[0].meta, args.sessions_dir, ledger)
             if path.name in ledger:
                 print("  baselines: already in ledger, skipped")
+            elif skip:
+                print(f"  baselines: kept lap, skipped ({skip})")
             else:
                 # the coaching report /analyze builds is on the default 20 Hz load, not the
                 # 50 Hz tyre grid, so the baselines are fed from a 20 Hz load of the file
@@ -247,7 +309,10 @@ def main() -> int:
         snapshot = (copy.deepcopy(prof.tire_files), copy.deepcopy(prof.tire_fit_cache),
                     copy.deepcopy(prof.deflection_calibration), prof.car_class)
         try:
-            added = prof.ingest_tire_laps(laps, file_key=path.name)
+            # a kept lap counts under its original (same key and lap number) with
+            # the original's context, so it is never ingested twice (spec 4.3)
+            key, context = gp.tire_file_key(path.name, valid[0].meta)
+            added = prof.ingest_tire_laps(laps, file_key=key, context=context)
         except Exception as e:
             print(f"  tyre model FAILED (rolled back): {e}")
             (prof.tire_files, prof.tire_fit_cache,

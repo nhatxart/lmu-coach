@@ -171,6 +171,25 @@ def test_car_scope_fallback_from_other_tracks(tmp_path, states):
     assert info["n_laps"] == 8
 
 
+def test_a_kept_lap_is_not_counted_twice_with_its_original(tmp_path, states):
+    """Merge of Keep laps: a kept file (reference_laps) repeats one lap of its
+    original. While the original is there the kept copy is left out of the
+    group; once the original is deleted the kept copy counts."""
+    w = World(tmp_path)
+    kept = "Synth-Synthetic GT L3 1m40.000-2026-11-01T10_00_00Z.duckdb"
+    w.add(_red(NAME, states[:4]), _entry(NAME))
+    w.add(_red(kept, states[2:3]), _entry(kept, source="reference_laps", kept_from=NAME, kept_lap=3))
+    g = w.store().group_for(w.path(NAME))
+    assert g.files == [NAME] and g.n_laps == 4
+    g2 = w.store().group_for(w.path(kept))           # asked for the kept file itself
+    assert g2.files == [NAME]
+    (w.sessions / NAME).unlink()
+    del w.entries[NAME]
+    w.add(_red(NAME2, states[4:7]), _entry(NAME2))
+    g3 = w.store().group_for(w.path(NAME2))
+    assert sorted(g3.files) == sorted([NAME2, kept]) and g3.n_laps == 4
+
+
 def test_newest_version_with_three_laps_is_the_fit_set(tmp_path, states):
     w = World(tmp_path)
     w.add(_red(NAME, states[:4], game_version="1.0"), _entry(NAME))

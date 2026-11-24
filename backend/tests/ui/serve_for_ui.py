@@ -38,6 +38,10 @@ CMP_WAVE = "Synthetic_Hill_Ring-Synthetic_Car_1-2026-11-08T10_00_00Z.duckdb"    
 FUJI_A = "Fuji_Speedway-Synthetic_Car_1-2026-11-09T10_00_00Z.duckdb"     # LMGT3, laps at lat 0 / 1 / -1
 FUJI_B = "Fuji_Speedway-Synthetic_Car_1-2026-11-10T10_00_00Z.duckdb"     # LMGT3, 3 % slower
 FUJI_OTHER = "Fuji_Speedway-Synthetic_Car_2-2026-11-11T10_00_00Z.duckdb"  # LMGT3, another car model, 5 % slower
+# Keep laps (test_keep.py): written per test into WRITABLE tmp folders (the
+# keep_server fixture), because keeping writes files and delete removes one.
+KEEP_ORIG = "Synthetic_Hill_Ring-Synthetic_Car_1-2026-11-12T10_00_00Z.duckdb"   # recorder file, laps 0-2
+KEEP_NATIVE = "Synthetic_Hill_Ring_P_2026-11-13T10_00_00Z.duckdb"               # no RecordedBy (an LMU export)
 
 
 def main(argv: list[str]) -> None:

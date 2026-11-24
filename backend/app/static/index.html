@@ -298,6 +298,33 @@ canvas.tire-cv{display:block;margin:0 auto;}
 .lap-chip .lap-best{font:700 11px var(--font-ui);letter-spacing:.08em;color:var(--on-accent);background:var(--accent);border-radius:5px;padding:1px 6px;}
 .lap-chip.selected{background:var(--accent-soft);border-color:var(--accent);}
 .lap-chip.selected .lap-n{color:var(--accent-strong);}
+/* Keep laps (spec 4.1): selection mode on the chips, KEPT tag, the keep dialog */
+.lap-chip.keep-on{border-style:dashed;}
+.lap-chip.keep-on[aria-pressed="true"]{background:rgba(251,191,36,.16);border-color:var(--warn);border-style:solid;}
+.lap-chip .keep-box{width:14px;height:14px;border:1.5px solid var(--text-3);border-radius:3px;align-self:center;display:inline-grid;place-items:center;
+  font:700 11px var(--font-ui);color:#1A1300;}
+.lap-chip[aria-pressed="true"] .keep-box{background:var(--warn);border-color:var(--warn);}
+.lap-chip .kept-tag{font:700 11px var(--font-ui);letter-spacing:.06em;color:var(--warn);}
+.keep-btn{flex-shrink:0;min-height:44px;align-self:stretch;}
+.keep-btn.on{background:rgba(251,191,36,.16);border-color:var(--warn);color:var(--warn);}
+button.danger{background:var(--danger);color:#1A0606;border-color:var(--danger);font-weight:600;}
+button.danger:hover{background:#FF8A8A;border-color:#FF8A8A;}
+#keep-dlg{background:var(--surface-2);color:var(--text);border:1px solid var(--line-strong);border-radius:var(--r-lg);padding:0;
+  width:min(600px,92vw);margin:auto;box-shadow:var(--shadow-3);}
+#keep-dlg::backdrop{background:rgba(0,0,0,.55);}
+#keep-dlg .kd-h{padding:14px 18px;border-bottom:1px solid var(--line);font:600 17px var(--font-ui);}
+#keep-dlg .kd-b{padding:14px 18px;display:flex;flex-direction:column;gap:10px;max-height:60vh;overflow:auto;font-size:15px;}
+#keep-dlg .kd-f{padding:12px 18px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;}
+#keep-dlg .kd-f .kd-left{margin-right:auto;}
+#keep-dlg code{font-size:13px;overflow-wrap:anywhere;color:var(--text-2);}   /* break at spaces first (break-all split ".duc|kdb") */
+#keep-dlg .kd-lap-h{font-weight:600;}
+#keep-dlg .kd-res{display:flex;gap:8px;align-items:baseline;}
+#keep-dlg .kd-res .kd-mark{font-weight:700;flex-shrink:0;}
+#keep-dlg .kd-res[data-status="kept"] .kd-mark,#keep-dlg .kd-res[data-status="already_kept"] .kd-mark{color:var(--c-thr);}
+#keep-dlg .kd-res[data-status="failed"] .kd-mark,#keep-dlg .kd-err{color:var(--danger);}
+#keep-dlg .kd-warnline{color:var(--warn);font-size:var(--fs-xs);}
+#keep-dlg .warnbox{border:1px solid var(--danger);border-radius:var(--r-sm);padding:10px 12px;color:var(--text-2);display:flex;flex-direction:column;gap:6px;}
+#keep-dlg .warnbox b{color:var(--text);}
 
 /* ── Telemetry panel ──────────────────────────────────────────────────────── */
 .right-panel{width:var(--panel-w);flex-shrink:0;display:flex;flex-direction:column;min-height:0;overflow:hidden;
@@ -697,6 +724,7 @@ canvas.trace{display:block;width:100%;background:var(--surface-1);border:1px sol
         <span id="pb-time">0:00.000</span>
       </div>
       <div class="lap-bar" id="lap-bar" role="group" aria-label="Laps"><span class="dimtext">—</span></div>
+      <dialog id="keep-dlg" aria-labelledby="kd-title"><div class="kd-h" id="kd-title"></div><div class="kd-b" id="kd-body"></div><div class="kd-f" id="kd-foot"></div></dialog>
     </div>
   </main>
 
@@ -1530,16 +1558,21 @@ async function loadSessions(){
   const render=(list,src)=>list.forEach(({f})=>{
     const p=parseSession(f);
     const btn=document.createElement('button');btn.type='button';btn.className='session-item';btn.title=f;
-    btn.dataset.search=f.toLowerCase().replace(/[_]/g,' ');
-    btn.innerHTML=`<span class="s-title">${escHtml(p.track)}${src==='reference_laps'?'<span class="s-tag">ref</span>':''}</span>`+
+    btn.dataset.search=f.toLowerCase().replace(/[_]/g,' ');btn.dataset.src=src;
+    btn.innerHTML=`<span class="s-title">${escHtml(p.track)}${src==='reference_laps'?'<span class="s-tag">kept</span>':''}</span>`+
                   `<span class="s-meta">${escHtml([p.car,p.when].filter(Boolean).join(' · '))}</span>`;
+    if(src===S.source&&f===S.file)btn.classList.add('active');   // a refresh keeps the open file marked
     btn.onclick=()=>selectSession(f,src,btn);el.appendChild(btn);
   });
+  // PREVIOUSLY the second group was "Reference laps" with a "ref" tag. Fix
+  // (spec 4.1 step 5): that folder is now where Keep laps writes, so it is
+  // "Kept laps", tagged "kept" (the Compare picker says "kept" too).
   const mine=all.filter(x=>x.src==='sessions'),refs=all.filter(x=>x.src==='reference_laps');
   if(mine.length){addGroup('My sessions');render(mine,'sessions');}
-  if(refs.length){addGroup('Reference laps');render(refs,'reference_laps');}
+  if(refs.length){addGroup('Kept laps');render(refs,'reference_laps');}
   filterSessions(document.getElementById('session-filter').value);
 }
+const sessionItem=(file,src)=>[...document.querySelectorAll('#session-list .session-item')].find(b=>b.title===file&&b.dataset.src===src)||null;
 function filterSessions(q){
   const needle=String(q||'').trim().toLowerCase().replace(/[_]/g,' ');
   const el=document.getElementById('session-list');let shown=0,groupShown=0,group=null;
@@ -1591,6 +1624,7 @@ function renderLapBar(){
     ch.onclick=()=>selectLap(lap.lap_number,ch);
     bar.appendChild(ch);
   });
+  if(window.KEEP)KEEP.onLapBar();      // the Keep laps button, KEPT tags (a new lap bar leaves keep mode)
 }
 async function selectLap(lapNum,chipEl){
   document.querySelectorAll('.lap-chip').forEach(c=>c.classList.remove('selected'));
@@ -3721,9 +3755,223 @@ return{
   },
   add,remove,setAlign,ghostPose,meAtDist,deltaAt,live,onMainLap,onPlayhead,drawLines2D,drawMarkers2D,deltaColAt,
   fillLaps,addSelected,addBestHere,addBestOther,addBestOtherCar,onTab,
+  // the session index for Keep laps (KEEP): which file may be kept, which
+  // laps are kept already; refreshIndex after a keep or delete re-reads it
+  // and refills the Compare picker, so a new kept lap is offered at once.
+  loadIndex,entryOf,
+  // (a request already in flight may predate the change: wait it out, then read again)
+  async refreshIndex(){if(st.indexReq)await st.indexReq.catch(()=>null);const ix=await loadIndex(true);fillFiles();return ix;},
 };
 })();
 window.CMP=CMP;   // the hooks test window.CMP (a top-level const is not a window property)
+
+// ════════════════════════════════════════════════════════════════════════════
+// Keep laps (spec 4.1 / 4.4a; plan 2026-11-08-keep-laps). "Keep laps…" at the
+// end of the lap bar switches the chips to selection (aria-pressed); "Keep N
+// laps" opens a dialog that names each file it will write; the backend
+// (POST /sessions/sessions/{file}/keep) writes and checks every lap and the
+// dialog lists the result per lap. Only when EVERY lap passed its check
+// (`all_checked`; `ok` only means the request ran) a separate, non-default
+// "Delete recording…" appears; it shows a warning naming the file and what is
+// lost, whose default is Cancel, and only its "Delete permanently" sends
+// POST …/delete with confirm = the exact file name and the kept files.
+// Nothing else in the page can delete. Recordings of the lmu-coach recorder
+// only: native LMU exports and kept files get a disabled button with the
+// reason in its title (from /sessions/index: recorded_by, kept_from).
+// ════════════════════════════════════════════════════════════════════════════
+const KEEP=(()=>{
+  const bar=document.getElementById('lap-bar'),dlg=document.getElementById('keep-dlg');
+  const $=id=>document.getElementById(id);
+  let on=false;const sel=new Set();
+  let state='pending',reason='Checking this file…',gen=0;
+  let kept=new Map();                    // lap number -> kept file, for the open file
+  // the dialog's action: the file and laps it is for, and the keep results
+  let act=null,busy=false;
+
+  // In keep mode a chip click ticks the chip instead of loading the lap
+  // (capture phase: the chip's own onclick never runs).
+  bar.addEventListener('click',e=>{
+    if(!on)return;const ch=e.target.closest('.lap-chip');if(!ch)return;
+    e.stopPropagation();e.preventDefault();
+    const n=+ch.dataset.lap;sel.has(n)?sel.delete(n):sel.add(n);paint();
+  },true);
+
+  function paint(){
+    bar.querySelectorAll('.lap-chip').forEach(ch=>{
+      const n=+ch.dataset.lap;
+      ch.classList.toggle('keep-on',on);
+      if(on)ch.setAttribute('aria-pressed',String(sel.has(n)));else ch.removeAttribute('aria-pressed');
+      let b=ch.querySelector('.keep-box');
+      if(on&&!b){b=document.createElement('span');b.className='keep-box';b.setAttribute('aria-hidden','true');ch.prepend(b);}
+      if(!on&&b)b.remove();
+      if(b)b.textContent=sel.has(n)?'✓':'';
+      let t=ch.querySelector('.kept-tag');
+      if(kept.has(n)&&!t){t=document.createElement('span');t.className='kept-tag';t.textContent='KEPT';ch.appendChild(t);}
+      if(!kept.has(n)&&t)t.remove();
+      if(kept.has(n))ch.title='Kept as '+kept.get(n);else ch.removeAttribute('title');
+    });
+    let btn=$('keep-btn');
+    if(!btn&&S.laps.length){btn=document.createElement('button');btn.id='keep-btn';btn.type='button';btn.onclick=toggle;bar.appendChild(btn);}
+    if(!btn)return;
+    if(state!=='ok')on=false;
+    btn.className='keep-btn'+(on?' on':'');
+    btn.textContent=!on?'Keep laps…':sel.size?`Keep ${sel.size} lap${sel.size===1?'':'s'}`:'Cancel';
+    btn.disabled=state!=='ok';
+    btn.dataset.state=state;
+    if(state!=='ok')btn.title=reason;else btn.removeAttribute('title');
+  }
+  // Can this file be kept, and which of its laps are kept already (index).
+  // force: re-read the index (after a keep or a delete).
+  async function refresh(force){
+    const tok=++gen,file=S.file,src=S.source;
+    kept=new Map();
+    if(src==='reference_laps'){state='disabled';reason='This is a kept lap: it cannot be kept again';paint();return;}
+    state='pending';reason='Checking this file…';paint();
+    let e=null,ix=null;
+    try{
+      ix=force?await CMP.refreshIndex():await CMP.loadIndex(false);
+      e=CMP.entryOf(src,file);
+      if(!e&&!force){ix=await CMP.refreshIndex();e=CMP.entryOf(src,file);}   // a file newer than the index
+    }catch(err){
+      if(tok!==gen)return;
+      state='disabled';reason='Could not read the session list: '+err.message;paint();return;
+    }
+    if(tok!==gen)return;
+    (ix&&ix.list||[]).forEach(x=>{if(x.source==='reference_laps'&&x.kept_from===file&&x.kept_lap!=null)kept.set(+x.kept_lap,x.file);});
+    if(e&&e.error){state='disabled';reason='This file cannot be read';}
+    else if(e&&e.kept_from){state='disabled';reason='This is a kept lap: it cannot be kept again';}
+    else if(e&&!String(e.recorded_by||'').startsWith('lmu-coach-recorder'))
+      {state='disabled';reason='Only files from the lmu-coach recorder can be kept (this one is an LMU export)';}
+    else state='ok';      // no index entry: the backend still refuses what it cannot keep
+    paint();
+  }
+  function toggle(){
+    if(!on){on=true;sel.clear();paint();return;}
+    if(sel.size){openDialog();return;}
+    on=false;paint();
+  }
+
+  // The kept file's name as lap_cut.kept_name builds it, to show BEFORE
+  // writing: `<track>-<car> L<n> <m>m<ss.sss>-<original's stamp>.duckdb`. The
+  // backend's name is the one used; the results show what it wrote.
+  const safe=s=>[...String(s)].map(c=>/[\p{L}\p{N} _-]/u.test(c)?c:'_').join('');
+  function plannedName(lap){
+    const m=S.file.replace(/\.duckdb$/,'').match(/(\d{4}-\d{2}-\d{2}T\d{2}_\d{2}_\d{2}Z)$/);
+    if(!m)return null;
+    const ms=Math.round(lap.lap_time_s*1000),sec=Math.floor(ms%60000/1000);
+    const lt=`${Math.floor(ms/60000)}m${String(sec).padStart(2,'0')}.${String(ms%1000).padStart(3,'0')}`;
+    return`${safe(lap.track_name||'unknown')}-${safe(lap.car_name||'unknown')} L${lap.lap_number} ${lt}-${m[1]}.duckdb`;
+  }
+  const plural=(n,w)=>`${n} ${w}${n===1?'':'s'}`;
+  function stage(title,body,foot,focusId){
+    $('kd-title').textContent=title;$('kd-body').innerHTML=body;$('kd-foot').innerHTML=foot;
+    if(!dlg.open)dlg.showModal();
+    const f=focusId&&$(focusId);if(f)f.focus();
+  }
+  const errBox=msg=>`<div class="kd-err" role="alert">${escHtml(msg)}</div>`;
+
+  function openDialog(){
+    const laps=[...sel].sort((a,b)=>a-b).map(n=>S.laps.find(l=>l.lap_number===n)).filter(Boolean);
+    act={file:S.file,laps,results:null,error:null,allChecked:false};
+    const fresh=laps.filter(l=>!kept.has(l.lap_number)).length;
+    const rows=laps.map(l=>{
+      const was=kept.get(l.lap_number),name=was||plannedName(l);
+      return`<div class="kd-lap"><div class="kd-lap-h">L${l.lap_number} · ${fmtTime(l.lap_time_s)}`+
+        (was?' <span class="dimtext">(already kept: checked again, not written again)</span>':'')+'</div>'+
+        (name?`<code class="kd-name">${escHtml(name)}</code>`:'<span class="dimtext">(named when written)</span>')+'</div>';
+    }).join('');
+    stage(`Keep ${plural(laps.length,'lap')}`,
+      `<div>Each lap becomes its own file in the kept-laps folder. The recording is not changed.</div>${rows}`+
+      '<div class="dimtext">After writing, each file is read back and checked (one lap, the same lap time) before anything else is offered.</div>',
+      `<button type="button" id="kd-cancel">Cancel</button><button type="button" class="primary" id="kd-go">${fresh?'Keep '+plural(fresh,'lap'):'Check '+plural(laps.length,'lap')}</button>`,
+      'kd-go');
+    $('kd-cancel').onclick=()=>dlg.close();          // keep mode and the ticks stay
+    $('kd-go').onclick=go;
+  }
+  async function go(){
+    busy=true;
+    const n=act.laps.length;
+    stage(`Keep ${plural(n,'lap')}`,`<div><span class="spinner"></span>Writing and checking ${plural(n,'lap')}…</div>`,
+      '<button type="button" class="primary" disabled>Done</button>',null);
+    let j=null,error=null;
+    try{
+      const r=await fetch(`/sessions/sessions/${encodeURIComponent(act.file)}/keep`,{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify({laps:act.laps.map(l=>l.lap_number)})});
+      try{j=await r.json();}catch{j=null;}
+      if(!r.ok)error=(j&&(j.error||(typeof j.detail==='string'?j.detail:null)))||`The backend answered ${r.status}`;
+      act.allChecked=r.ok&&!!j&&j.all_checked===true&&(j.results||[]).length>0;
+    }catch(err){error='Could not reach the backend: '+err.message;}
+    busy=false;
+    act.results=(j&&j.results)||[];act.error=error;
+    on=false;sel.clear();
+    showResults();
+    // refresh the session list (the new kept laps), the KEPT tags and the
+    // Compare picker; the open file stays open
+    loadSessions().catch(()=>null);
+    refresh(true);
+  }
+  function resultLine(r){
+    const nm=r.kept_file?`<code>${escHtml(r.kept_file)}</code>`:'';
+    const t=r.lap_time_kept!=null?` (${fmtTime(r.lap_time_kept)})`:'';
+    const text=r.status==='kept'?`L${r.lap}: written and checked, lap time matches${t}`
+      :r.status==='already_kept'?`L${r.lap}: already kept, checked again, lap time matches${t}`
+      :`L${r.lap}: not kept: ${r.error||'the check failed'}`;
+    return`<div class="kd-res" data-status="${escHtml(r.status)}"><span class="kd-mark" aria-hidden="true">${r.status==='failed'?'✗':'✓'}</span>`+
+      `<div><div>${escHtml(text)}</div>${nm}${r.warning?`<div class="kd-warnline">${escHtml(r.warning)}</div>`:''}</div></div>`;
+  }
+  function showResults(){
+    const a=act,res=a.results;
+    let body=res.map(resultLine).join('');
+    if(a.error)body+=errBox(a.error);
+    if(!a.allChecked&&res.some(r=>r.status==='failed'))
+      body+='<div class="dimtext">Not every lap passed its check, so the recording cannot be deleted from here. It is unchanged.</div>';
+    stage(a.error&&!res.length?'Laps not kept':'Kept laps',body,
+      (a.allChecked?'<button type="button" id="kd-delete" class="kd-left">Delete recording…</button>':'')+
+      '<button type="button" class="primary" id="kd-done">Done</button>','kd-done');
+    $('kd-done').onclick=()=>dlg.close();
+    if(a.allChecked)$('kd-delete').onclick=()=>warn(null);
+  }
+  const keptFiles=()=>act.results.filter(r=>r.status==='kept'||r.status==='already_kept').map(r=>r.kept_file);
+  function warn(error){
+    const a=act,keptN=new Set([...kept.keys(),...a.results.filter(r=>r.status!=='failed').map(r=>r.lap)]);
+    const others=S.file===a.file?S.laps.filter(l=>!keptN.has(l.lap_number)).length:0;
+    const lost=others?`Its other ${plural(others,'lap')} and their data for future grip-profile rebuilds are deleted with it. This cannot be undone.`
+      :'Every lap of it is kept; the recording itself is deleted. This cannot be undone.';
+    stage('Delete the recording?',
+      `<div class="warnbox"><b>Delete this recording permanently?</b><code>${escHtml(a.file)}</code>`+
+      `<span>Your kept laps stay in their own files.</span><span>${escHtml(lost)}</span></div>`+(error?errBox(error):''),
+      '<button type="button" id="kd-cancel">Cancel</button><button type="button" class="danger" id="kd-delete-go">Delete permanently</button>',
+      'kd-cancel');
+    $('kd-cancel').onclick=showResults;              // back to the results, nothing sent
+    $('kd-delete-go').onclick=del;
+  }
+  async function del(){
+    const a=act,files=keptFiles();
+    busy=true;$('kd-cancel').disabled=true;$('kd-delete-go').disabled=true;
+    let error=null;
+    try{
+      const r=await fetch(`/sessions/sessions/${encodeURIComponent(a.file)}/delete`,{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:a.file,kept_files:files})});
+      if(!r.ok){let j=null;try{j=await r.json();}catch{}error=(j&&(typeof j.detail==='string'?j.detail:j.error))||`The backend answered ${r.status}`;}
+    }catch(err){error='Could not reach the backend: '+err.message;}
+    busy=false;
+    if(error){warn(error);return;}
+    dlg.close();act=null;
+    // the original is gone: refresh the lists, then open its (first) kept lap
+    try{await loadSessions();}catch{}
+    try{await CMP.refreshIndex();}catch{}
+    const first=files[0],item=first&&sessionItem(first,'reference_laps');
+    if(item)selectSession(first,'reference_laps',item);
+    else{S.file=null;S.laps=[];renderLapBar();setOverlay('The recording was deleted');}
+  }
+  // Esc: closes the dialog, sends nothing; not while a request runs (its
+  // result must be seen).
+  dlg.addEventListener('cancel',e=>{if(busy)e.preventDefault();});
+  dlg.addEventListener('close',()=>{if(!on)paint();});
+  return{onLapBar(){on=false;sel.clear();paint();refresh(false);},refresh,
+         get state(){return{state,reason,on,selected:[...sel],kept:Object.fromEntries(kept)};}};
+})();
+window.KEEP=KEEP;
 </script>
 <script type="module">
 // ════════════════════════════════════════════════════════════════════════════

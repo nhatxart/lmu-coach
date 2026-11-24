@@ -350,7 +350,18 @@ class IdealStore:
             if e.get("error") or e.get("car_model") != car_model:
                 continue
             out.append((p, e))
-        return out
+        # Keep laps (merged from master): a kept file in reference_laps repeats
+        # one lap of its original. Counting both would weigh that lap twice in
+        # the fit, so a kept file is left out while its original is one of the
+        # group's files; once the original is deleted the kept copy counts.
+        names = {p.name for p, _ in out}
+        return [(p, e) for p, e in out if not (e.get("kept_from") and e["kept_from"] in names)]
+
+    @staticmethod
+    def _covered(entry: dict, paths) -> bool:
+        """True when `entry` is a kept file whose original is among `paths`."""
+        origin = entry.get("kept_from")
+        return bool(origin) and origin in {Path(p).name for p in paths}
 
     @staticmethod
     def _track_id(e: dict) -> str | None:
@@ -372,8 +383,15 @@ class IdealStore:
         """(key, files) of the track-scope group of `path`'s file."""
         tid = self._track_id(entry)
         same = [(p, e) for p, e in self._entries(entry["car_model"]) if self._track_id(e) == tid]
-        if not any(p.name == path.name for p, _ in same):
+        if not any(p.name == path.name for p, _ in same) and not self._covered(entry, [p for p, _ in same]):
             same.append((path, entry))
+        if not any(p.name == path.name for p, _ in same):     # a kept file whose original is here
+            lengths = [e.get("layout_len_m") or 0.0 for _, e in same]
+            origin = entry["kept_from"]
+            for g in self._layout_groups(lengths):
+                names = [same[i][0].name for i in g]
+                if origin in names:
+                    return f"{tid}|{min(lengths[i] for i in g):.0f}", [same[i][0] for i in g]
         lengths = [e.get("layout_len_m") or 0.0 for _, e in same]
         for g in self._layout_groups(lengths):
             names = [same[i][0].name for i in g]
@@ -460,7 +478,7 @@ class IdealStore:
         if isinstance(track, GroupEntry):
             return track
         all_paths = [p for p, _ in self._entries(car_model)]
-        if path.name not in {p.name for p in all_paths}:
+        if path.name not in {p.name for p in all_paths} and not self._covered(entry, all_paths):
             all_paths.append(path)
         car = self._fit_entry("__car__", "car", all_paths, car_class, car_model, prof)
         if isinstance(car, GroupEntry):

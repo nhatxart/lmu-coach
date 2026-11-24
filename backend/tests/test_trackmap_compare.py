@@ -370,3 +370,48 @@ def test_recorder_gps_origin_does_not_split_the_frame(tmp_path, monkeypatch, ref
         i = int(np.argmin(np.abs(np.array(dl["lap_dist"]) - 600.0)))
         pts.append((dl["x"][i], dl["z"][i]))
     assert math.dist(*pts) < 0.5, pts
+
+
+def test_kept_lap_shares_original_world_frame(tmp_path, monkeypatch, reference_dir):
+    """Final review I1 (11/22/2026): the world-frame shift above took Pos row
+    0 as GPS row 0's instant. A kept lap starts at a 100 Hz row 3 s before
+    the lap and its first 10 Hz (GPS) row is the next gate tick, up to 0.1 s
+    later, so the kept lap was drawn that far along the road off its
+    original (5.1 m on Fuji WRT 10/19). Here the crossings fall 0.04 s
+    before a 10 Hz row (cross_offset_ticks -4), so the cut's first row is
+    off the gate. The kept lap and the original's same lap must coincide."""
+    from app import lap_cut
+
+    _write_origin(reference_dir)
+    sessions, kept_dir = tmp_path / "sessions", tmp_path / "kept"
+    sessions.mkdir()
+    kept_dir.mkdir()
+    orig = sessions / "Synthetic Hill Ring-Synthetic Car _1-2026-11-12T10_00_00Z.duckdb"
+    write_hilly_session(orig, cross_offset_ticks=-4)
+    _as_recorder_gps(orig)
+    info = lap_cut.prepare(orig, 1)
+    lap_cut.cut_lap(orig, 1, kept_dir / info.name, {})
+    ok, _t, err = lap_cut.check_kept(kept_dir / info.name, 1, info.lap_time_s, orig)
+    assert ok, err
+    with duckdb.connect(str(kept_dir / info.name), read_only=True) as con:
+        tf, ts = telemetry.session_time_axes(con)
+    assert ts[0] - tf[0] > 0.01                        # GPS row 0 is not Pos row 0's instant
+
+    monkeypatch.setattr(main, "OWN_SESSIONS_DIR", sessions)
+    monkeypatch.setattr(main, "REFERENCE_LAPS_DIR", kept_dir)
+    c = TestClient(main.app)
+    lines = []
+    for src, f in (("sessions", orig.name), ("reference_laps", info.name)):
+        r = c.get(f"/sessions/{src}/{quote(f)}/trackmap", params={"lap_number": 1})
+        assert r.status_code == 200, r.text[:300]
+        d = r.json()
+        assert d["coordinate_origin"]["kind"] == "track"
+        lines.append(d["driven_line"])
+    a, b = lines
+    ta, tb = np.array(a["t"]), np.array(b["t"])
+    assert len(tb) > 100
+    dx = np.interp(tb, ta, a["x"]) - np.array(b["x"])
+    dz = np.interp(tb, ta, a["z"]) - np.array(b["z"])
+    off = float(np.max(np.hypot(dx, dz)))
+    print(f"kept vs original max offset {off:.4f} m")
+    assert off < 0.05, off

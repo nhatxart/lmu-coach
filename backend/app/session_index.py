@@ -21,7 +21,7 @@ import numpy as np
 
 from .car_identity import identify_car
 from .telemetry import (_get_lap_boundaries, _read_unpopulated_channels, channel_time,
-                        lap_index, session_time_axes)
+                        kept_lap, lap_index, session_time_axes)
 from .track_catalog import find_entry
 
 # abs path -> ((st_mtime_ns, st_size), entry). A recording only changes while
@@ -93,6 +93,15 @@ def _read_entry(path: Path, source: str) -> dict:
         # the same rounding as /laps, so the two agree key for key
         "laps": [{"lap_number": l.lap_number, "lap_time_s": round(l.lap_time_s, 3),
                   "complete": l.complete, "real": l.real} for l in laps],
+        # Kept laps (spec 4.3): a kept file is one lap of a recording under a
+        # new name. The Compare tab and the keep UI need to know which
+        # recording and lap it came from (so the same lap is not offered
+        # twice, and an original whose laps are kept can be shown as such),
+        # and whether a file is ours at all (only recorder files can be kept;
+        # native LMU exports have no RecordedBy).
+        "kept_from": meta.get("KeptFromFile") or None,
+        "kept_lap": kept_lap(meta),
+        "recorded_by": str(meta.get("RecordedBy") or ""),
     }
 
 
@@ -123,7 +132,15 @@ def _error_entry(path: Path, source: str, exc: Exception) -> dict:
     return {"source": source, "file": path.name, "track": None, "track_slug": None,
             "car_model": None, "car_class": "unknown", "layout_len_m": None,
             "coordinate_system": None, "laps": [],
+            "kept_from": None, "kept_lap": None, "recorded_by": "",
             "error": f"{type(exc).__name__}: {exc}"}
+
+
+def forget(path: Path) -> None:
+    """Drop one file's cached entry (the deliberate delete of a recording):
+    build_index prunes gone files too, but only on its next call, and nothing
+    should answer from a deleted file's entry meanwhile."""
+    _CACHE.pop(str(Path(path).resolve()), None)
 
 
 def build_index(folders: list[tuple[str, Path]]) -> list[dict]:
