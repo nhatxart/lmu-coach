@@ -3948,7 +3948,8 @@ function renderIdeal(keepMsg){
     return`<tr data-kind="corner"><th scope="row">${zoom}<div class="sub">${where}</div></th>`+
       `<td class="num">${t}</td>`+
       `<td><span title="${escHtml(IDEAL_LIMIT_WHY[c.binding]||'')}">${lim}</span>${x}<div class="sub">${Math.round(c.vmin_ref_kmh)} → ${Math.round(c.vmin_ideal_kmh)} km/h</div></td>`+
-      `<td class="num">F ${pct(c.u_front_ref)} · R ${pct(c.u_rear_ref)}<div class="sub" title="Each tyre's share of its axle's load at the ideal's slowest point">${lsTxt}</div></td></tr>`;
+      // over 100 %: you used more grip there than the model's level; the ideal keeps your speed
+      `<td class="num"${Math.max(c.u_front_ref||0,c.u_rear_ref||0)>1.005?' title="Over 100 %: you used more grip here than the fitted level; the ideal keeps your speed here"':''}>F ${pct(c.u_front_ref)} · R ${pct(c.u_rear_ref)}<div class="sub" title="Each tyre's share of its axle's load at the ideal's slowest point">${lsTxt}</div></td></tr>`;
   }).join('');
   h+=`<div class="ideal-tbl-wrap" tabindex="0" role="region" aria-label="Ideal lap per corner"><table class="ideal-tbl" id="ideal-table">`+
     `<caption>Per corner, in seconds off your lap. Grip used: the most you used of each axle's grip; load: each tyre's share of its axle.</caption>`+
