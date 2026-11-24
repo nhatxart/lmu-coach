@@ -14,13 +14,11 @@ the noisy driven lap. Limits are ~2.5 sd of the 9-seed spread (opus_p5_t6seeds):
   observed + fitted terms +-4 % per seed (mean +-2 %), observed + borrowed terms
   +-10 % (mean +-3.5 %), lower_bound in [0.85, 1.02] (mean <= 1.0: it may read
   low, never high);
-- braking capacity kb (s_f A_f + s_r A_r) at v 40, gy 0: +-7 % per seed, mean
-  +-4 %; traction capacity kt s_r A_r: -16 % / +4 % per seed, mean -8 % / +2 %
-  (a known low bias). §15.y kept §15 V6's +-4 % and -12 % / +4 %, which were
-  never measured over the nine seeds; with q 0.75 for every axle they read
-  braking 0.939-1.043 (sd 0.028; car B mean 0.970) and traction 0.863-0.991
-  (sd 0.035; car B mean 0.936), so these limits follow §15.y's own rule (~2.5 sd,
-  rounded out; builder's call, flagged to the design owner). kb, kt are not
+- braking capacity kb (s_f A_f + s_r A_r) at v 40, gy 0 (§15.z, kb at the
+  median): +-7 % per seed, mean +-4 %, noise-free +-3 %; traction capacity
+  kt s_r A_r (§15.z, kt at the 0.75 level): +-12 % per seed, mean +-4 %,
+  noise-free +-3 %. PREVIOUSLY (kt at the median) traction read 0.863-0.991,
+  car B mean 0.936, under limits of -16 % / +4 % (withdrawn). kb, kt are not
   asserted as ratios (they compensate the fitted capacity, review I2);
 - plain-model time on lap 3's line (no clamp, no measured power): both axles
   observed +-1.2 % per seed (mean +-0.6 %); an axle lower_bound in [-1.8, +0.5] %
@@ -121,7 +119,7 @@ def test_perfect_driver_per_seed(kind, seed):
         lo, hi = CAP_LIMITS[r["kinds"][j]]
         assert lo <= r["cap"][j] <= hi, ("capacity in v_sat", j, r["kinds"][j], r["cap"][j])
     assert abs(r["brake"] - 1) <= 0.07, ("braking capacity", r["brake"])
-    assert -0.16 <= r["trac"] - 1 <= 0.04, ("traction capacity", r["trac"])
+    assert abs(r["trac"] - 1) <= 0.12, ("traction capacity", r["trac"])
     lo, hi = _plain_limits(r["kinds"])
     assert lo <= r["plain"] <= hi, ("plain vs true", r["kinds"], r["plain"])
     assert r["gain"] <= 0.005                            # the phantom gain: design §11 trigger
@@ -138,7 +136,7 @@ def test_perfect_driver_means_over_the_seeds(kind):
             if caps:
                 assert lo <= np.mean(caps) <= hi, ("mean capacity", j, k, np.mean(caps))
     assert abs(np.mean([r["brake"] for r in rs]) - 1) <= 0.04
-    assert -0.08 <= np.mean([r["trac"] for r in rs]) - 1 <= 0.02
+    assert abs(np.mean([r["trac"] for r in rs]) - 1) <= 0.04, ("mean traction", np.mean([r["trac"] for r in rs]))
     lb = [r["plain"] for r in rs if "lower_bound" in r["kinds"]]
     ob = [r["plain"] for r in rs if "lower_bound" not in r["kinds"]]
     for xs, mean_lim in ((lb, _plain_limits(["lower_bound"], True)), (ob, _plain_limits([], True))):
@@ -152,4 +150,6 @@ def test_perfect_driver_without_noise(kind):
     for j in (0, 1):
         assert abs(r["cap"][j] - 1) <= 0.04, ("capacity", j, r["cap"][j])
     assert abs(r["plain"]) <= 0.003
+    assert abs(r["brake"] - 1) <= 0.03, ("braking capacity", r["brake"])
+    assert abs(r["trac"] - 1) <= 0.03, ("traction capacity", r["trac"])
     assert r["gain"] <= 0.001

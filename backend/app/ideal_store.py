@@ -32,7 +32,7 @@ from .ideal_state import LRU, FileReduction, MAX_GROUP_LAPS, load_reduction, set
 
 REDUCTIONS_IN_MEMORY = 12          # ~8 MB each; a fit group rarely has more files (the npz cache keeps all)
 
-VERSION = 2            # 2: validation round 1 (§15, §15.x, §15.y): profiles from before must refit
+VERSION = 3            # 2: validation round 1 (§15, §15.x, §15.y); 3: kt at q 0.75 (§15.z). Profiles from before refit
 LAYOUT_TOLERANCE = 0.03
 MIN_TRACK_LAPS, MIN_CAR_LAPS, HIGH_LAPS = 3, 6, 6
 BETA_TIGHT, BETA_TRACK, BETA_CAR = 0.02, 0.03, 0.05

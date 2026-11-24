@@ -20,7 +20,7 @@ from .ideal_state import G, GRID_HZ, State
 # Version of the fit code: part of every group's fingerprint (ideal_store), so
 # a profile fitted by older code is refitted. BUMP IT WITH ANY CHANGE THAT CAN
 # MOVE A FITTED NUMBER. 2: round 1 (continuous knee, k / c span rule).
-FIT_VERSION = 4                    # 3: level at q 0.75 (§15 V2); 4: lower_bound axles too (§15.y)
+FIT_VERSION = 5                    # 3: level at q 0.75 (§15 V2); 4: lower_bound axles too (§15.y); 5: kt at q 0.75 (§15.z)
 LEVEL_Q = 0.75                     # grip level of an observed axle and the per-file trim (§15 V2, B1)
 FRONT, REAR = (0, 1), (2, 3)
 AXLES = ("front", "rear")
@@ -671,9 +671,19 @@ def fit_group(reductions: list, car_class: str, v3_peaks: dict | None = None,
     axles = fit_axles(d, gxt, d["slip"], gf, v3_peaks, q)
     mu1, kk, cc = [a.mu1 for a in axles], [a.k for a in axles], [a.c for a in axles]
     Af, Ar = axle_capacity(d["lam"], d["v"], mu1, kk, cc)
-    qm = 0.5 if q is None else q            # kb, kt and the engine stay at the median (§15 V2)
+    qm = 0.5 if q is None else q            # kb and the engine stay at the median (§15 V2, §15.z)
     kb = fit_braking(d, gxt, Af, Ar, share["value"], gf, qm)
-    kt = fit_traction(d, gxt, Ar, share["value"], qm)
+    # kt at the level's quantile (design §15.z, probe opus_p7_kbkt).
+    # PREVIOUSLY the median, which read the traction capacity kt s_r A_r low
+    # (T6, 9 seeds: car A mean 0.949, car B 0.936, worst 0.863): the room
+    # sqrt(A_r^2 - gy^2) of the limit samples is steep in A_r (up to ~2.8x near
+    # |gy| = 0.8 A_r), so raising A_r to q 0.75 lowered the median ratio more than
+    # A_r rose (2.1-2.6 %), and TC-active samples are where that lap's room ran
+    # out (3-4 %, also without the q change). At q 0.75: means 0.992 / 0.981,
+    # noise-free 1.006 / 1.007. kb stays at the median: it is a ratio to S on
+    # near-straight samples, which scales with the level, so its product is
+    # unchanged by the level (A 1.008, B 0.970) and q 0.75 would overshoot (1.040).
+    kt = fit_traction(d, gxt, Ar, share["value"], LEVEL_Q if q is None else q)
     eng = fit_engine(d, qm)
 
     info = dict(has_forces=has_force, load_source=pooled_src,
