@@ -421,7 +421,11 @@ canvas.cmp-tr.grabbing{cursor:grabbing;}
 .ideal-notes{margin:6px 0 0;padding-left:18px;font-size:var(--fs-xs);color:var(--text-2);}
 .ideal-notes li.warn{color:var(--warn);}
 .ideal-note{margin-top:6px;font-size:var(--fs-xs);color:var(--text-3);}
-.ideal-tbl-wrap{margin-top:10px;overflow-x:auto;}
+/* max-width + min-width:0: the wrap scrolls the table sideways instead of
+   growing past the card (a flex child's min-width is auto) */
+.ideal-tbl-wrap{margin-top:10px;overflow-x:auto;max-width:100%;min-width:0;}
+#cmp-ideal{min-width:0;}
+#ideal-cancel[hidden]{display:none;}
 .ideal-tbl{width:100%;border-collapse:collapse;font-size:var(--fs-xs);font-variant-numeric:tabular-nums;}
 .ideal-tbl caption{text-align:left;color:var(--text-3);padding-bottom:4px;}
 .ideal-tbl th,.ideal-tbl td{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;}
@@ -3817,7 +3821,8 @@ const IDEAL_LIMIT_WHY={front:'The front axle is at its grip limit at the ideal\'
   brake:'Braking limit', traction:'Traction limit (wheelspin)', power:'Engine power',
   measured:'Your tyres were measured at their limit here: the ideal keeps your speed',
   driven:'The model is slower than you here: the ideal keeps your lap'};
-const fmtGain=v=>(v>0.0005?'−':v<-0.0005?'+':'±')+Math.abs(v).toFixed(2);   // a gain is time off your lap
+// PREVIOUSLY the sign threshold was 0.0005 while 2 decimals are shown: 0.004 read "−0.00". Fix: 0.005.
+const fmtGain=v=>(v>=0.005?'-':v<=-0.005?'+':'±')+Math.abs(v).toFixed(2);   // a gain is time off your lap
 const pct=u=>u==null?'—':`${Math.round(100*u)} %`;
 function endIdealReq(abort){
   const r=st.idealReq;if(!r)return;
@@ -3907,7 +3912,8 @@ function renderIdeal(keepMsg){
   if(f.transferred||f.scope==='car')notes.push(['warn','Estimate from other tracks: fewer than 3 clean laps of this car on this track']);
   if(f.setup_differs&&f.setup_differs.length)notes.push(['warn',`Setup differs from the laps the grip was learned on: ${f.setup_differs.join(', ')}`]);
   ['front','rear'].forEach(a=>{const c=ax[a]&&ax[a].clamp_conflict;
-    if(c>0)notes.push(['',`${a==='front'?'Front':'Rear'}: the model disagrees with your measured limit at ${Math.round(100*c)} % of the points held to your speed`]);});
+    if(Math.round(100*c)>=1)notes.push(   // under 0.5 % would read "at 0 %"
+      ['',`${a==='front'?'Front':'Rear'}: the model disagrees with your measured limit at ${Math.round(100*c)} % of the points held to your speed`]);});
   const xc=(r.corners||[]).filter(c=>c.extrapolated);
   if(xc.length)notes.push(['warn',`${xc.map(c=>c.name).join(', ')}: faster than this car was ever seen at its limit (marked *): an extrapolation`]);
   if(r.public_check==='faster_than_public_best')notes.push(['warn','Faster than the public best for this car: almost surely a model error']);
