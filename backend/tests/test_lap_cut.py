@@ -175,6 +175,31 @@ def _cut(src, lap, kept_dir):
     return dst, info
 
 
+def test_kept_lap_keeps_the_setting_events(dirs):
+    # 11/26/2026: Rear Brake Bias / Steering Wheel Range are on-change events
+    # usually logged once at the session start, long before a kept lap; the
+    # seed row must carry the value into the kept file, and the loader must
+    # step-hold it over the whole lap.
+    src = _original(dirs)
+    con = duckdb.connect(str(src))
+    con.execute("CREATE TABLE eventsList (eventName VARCHAR, unit VARCHAR)")
+    for t, rows in (("Rear Brake Bias", [(10.0, 0.44), (70.0, 0.47)]),
+                    ("Steering Wheel Range", [(10.0, 400.0)])):
+        con.execute(f'CREATE TABLE "{t}" (ts DOUBLE, value DOUBLE)')
+        con.executemany(f'INSERT INTO "{t}" VALUES (?, ?)', rows)
+        con.execute("INSERT INTO eventsList VALUES (?, 'x')", [t])
+    con.close()
+    dst, _ = _cut(src, 1, dirs[1])
+    ws = 50.05 - lap_cut.MARGIN_S
+    q = lambda t: _rows(dst, f'SELECT ts, value FROM "{t}" ORDER BY rowid')
+    assert q("Rear Brake Bias") == [(ws, 0.44), (70.0, 0.47)]
+    assert q("Steering Wheel Range") == [(ws, 400.0)]
+    (lap,) = telemetry.load_telemetry_file(dst)
+    assert lap.channels["Rear Brake Bias"][0] == pytest.approx(0.44)
+    assert lap.channels["Rear Brake Bias"][-1] == pytest.approx(0.47)
+    assert np.all(lap.channels["Steering Wheel Range"] == pytest.approx(400.0))
+
+
 def test_cut_event_seed_rows(dirs):
     src = _original(dirs)
     con = duckdb.connect(str(src))

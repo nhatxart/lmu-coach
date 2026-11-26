@@ -115,6 +115,8 @@ def fake_telem(et=100.0, lap=0, pos_x=0.0, **over):
         mABSActive=False, mTCActive=False,
         mFrontTireCompoundName=b"Medium", mRearTireCompoundName=b"Medium",
         mVehicleModel=b"Test Model",
+        mRearBrakeBias=0.44, mPhysicalSteeringWheelRange=400.0,
+        mVisualSteeringWheelRange=360.0,
         mWheels=[fake_wheel() for _ in range(4)],
     )
     t.update(over)
@@ -357,6 +359,93 @@ class WriteSessionTest(unittest.TestCase):
                     con.execute('select count(*) from "Other Cars"').fetchone()[0], 0)
             finally:
                 con.close()
+
+    # ── Driver-input channels (11/26/2026, "ideal inputs" Q3) ──────────────
+    def _input_file(self, frames):
+        """Write a session from (et, telem) frames; return (con, tmpdir)."""
+        buf = new_buffer(et=100.0)
+        scor = fake_scor()
+        buf.register_lap(0, 100.0)
+        for et, t in frames:
+            buf.add_sample(t, t.mWheels, scor, et)
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        with contextlib.redirect_stdout(io.StringIO()):
+            out = hf.write_session(buf, Path(d.name))
+        con = duckdb.connect(str(out), read_only=True)
+        self.addCleanup(con.close)
+        return con
+
+    def test_brake_pressure_is_a_100_hz_wheel_channel(self):
+        frames = []
+        for i in range(300):
+            et = 100.0 + i * 0.01
+            p = 0.0 if i < 100 else 0.8
+            wheels = [fake_wheel(mBrakePressure=p * k) for k in (1.0, 1.0, 0.7, 0.7)]
+            frames.append((et, fake_telem(et=et, pos_x=float(i), mWheels=wheels)))
+        con = self._input_file(frames)
+        ch = dict((r[0], r[1:]) for r in con.execute(
+            "select channelName, frequency, unit from channelsList").fetchall())
+        self.assertIn("Brake Pressure", ch)
+        self.assertEqual(ch["Brake Pressure"][0], ch["GPS Time"][0])   # same 100 Hz rate
+        self.assertIn("0-1", ch["Brake Pressure"][1])                   # raw, unit says so
+        rows = con.execute('select value1, value2, value3, value4 from "Brake Pressure" '
+                           'order by rowid').fetchall()
+        self.assertEqual(len(rows), 300)
+        self.assertEqual(rows[0], (0.0, 0.0, 0.0, 0.0))
+        self.assertAlmostEqual(rows[-1][0], 0.8)
+        self.assertAlmostEqual(rows[-1][2], 0.56)
+        meta = dict(con.execute("select key, value from metadata").fetchall())
+        self.assertEqual(meta["InputChannels"], "1")
+
+    def test_all_zero_brake_pressure_is_flagged_unpopulated(self):
+        frames = [(100.0 + i * 0.01, fake_telem(et=100.0 + i * 0.01, pos_x=float(i)))
+                  for i in range(300)]                       # fake wheels: mBrakePressure 0
+        con = self._input_file(frames)
+        units = dict(con.execute("select channelName, unit from channelsList").fetchall())
+        self.assertEqual(units["Brake Pressure"], "unpopulated_by_lmu")
+        self.assertEqual(con.execute('select count(*) from "Brake Pressure"').fetchone()[0], 0)
+
+    def test_bias_and_steering_range_are_on_change_events(self):
+        frames = []
+        for i in range(300):
+            et = 100.0 + i * 0.01
+            bias = 0.44 if i < 150 else 0.46           # driver moves the bias mid-session
+            frames.append((et, fake_telem(et=et, pos_x=float(i), mRearBrakeBias=bias)))
+        con = self._input_file(frames)
+        ev = dict(con.execute("select eventName, unit from eventsList").fetchall())
+        for name in ("Rear Brake Bias", "Steering Wheel Range", "Visual Steering Wheel Range"):
+            self.assertIn(name, ev)
+            self.assertNotEqual(ev[name], "unpopulated_by_lmu", name)
+        q = lambda t: [(round(a, 2), round(b, 4)) for a, b in con.execute(
+            f'select ts, value from "{t}" order by ts').fetchall()]
+        self.assertEqual(q("Rear Brake Bias"), [(100.0, 0.44), (101.5, 0.46)])
+        self.assertEqual(q("Steering Wheel Range"), [(100.0, 400.0)])
+        self.assertEqual(q("Visual Steering Wheel Range"), [(100.0, 360.0)])
+
+    def test_all_zero_setting_events_are_flagged_unpopulated(self):
+        frames = [(100.0 + i * 0.01, fake_telem(
+            et=100.0 + i * 0.01, pos_x=float(i), mRearBrakeBias=0.0,
+            mPhysicalSteeringWheelRange=0.0, mVisualSteeringWheelRange=0.0))
+            for i in range(300)]
+        con = self._input_file(frames)
+        ev = dict(con.execute("select eventName, unit from eventsList").fetchall())
+        for name in ("Rear Brake Bias", "Steering Wheel Range", "Visual Steering Wheel Range"):
+            self.assertEqual(ev[name], "unpopulated_by_lmu", name)
+            self.assertEqual(con.execute(f'select count(*) from "{name}"').fetchone()[0], 0)
+
+    def test_a_spool_from_before_the_input_channels_still_converts(self):
+        # A safety copy written by an older recorder has none of the new keys.
+        buf = self._recorded_buffer(n=300)
+        for k in ("Brake Pressure", "Rear Brake Bias", "Steering Wheel Range",
+                  "Visual Steering Wheel Range"):
+            buf.s.pop(k, None)
+        with tempfile.TemporaryDirectory() as d:
+            sp = hf.spool_session(buf, Path(d))
+            with contextlib.redirect_stdout(io.StringIO()):
+                hf.recover_spools(Path(d))
+            self.assertFalse(sp.exists())
+            self.assertEqual(len(list(Path(d).glob("*.duckdb"))), 1)
 
     def test_spool_roundtrip_keeps_meta(self):
         buf = self._recorded_buffer(n=20)

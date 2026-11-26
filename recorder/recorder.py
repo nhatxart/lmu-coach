@@ -56,9 +56,12 @@ Key design decisions:
   - One file per session; filename encodes track + car + session start time.
 
 Sampling:
-  100 Hz  — position, speed, inputs, G-forces, yaw, wheel/slip/susp, RPM
+  100 Hz  — position, speed, inputs, G-forces, yaw, wheel/slip/susp, RPM,
+            Brake Pressure (per wheel, raw; 11/26/2026)
   10 Hz   — track geometry (Path Lateral, Track Edge, Lap Dist), tyre thermals
-  Event   — Gear, ABS, TC, In Pits, Lap, Lap Time (on change / on crossing)
+  Event   — Gear, ABS, TC, In Pits, Lap, Lap Time (on change / on crossing),
+            Rear Brake Bias, Steering Wheel Range, Visual Steering Wheel Range
+            (on change; 11/26/2026)
 """
 
 from __future__ import annotations
@@ -148,6 +151,27 @@ HF_WHEEL_UNITS = {
     "Tire Deflection": "m",
     "Surface Type": "0=dry 1=wet 2=grass 3=dirt 4=gravel 5=kerb 6=special",
 }
+
+# Driver-input channels (11/26/2026, for the coach's "ideal inputs" maps; the
+# design's Q3). Brake Pressure is per wheel at 100 Hz like Brake Pos, because it
+# is what the pedal turns into at each corner. lmu_data.py says mBrakePressure
+# is "currently 0.0-1.0 ... will convert to true brake pressure (kPa) in
+# future", so it is stored RAW and the unit says which scale it was; a later
+# game version may switch to kPa without a recorder change, and a reader must
+# check the unit (or the GameVersion) before comparing files.
+BRAKE_PRESSURE_UNIT = "raw (0-1 now; LMU plans kPa)"
+# Setup values that only change when the driver adjusts them (bias in the car,
+# steering lock in the garage), so they are change-only event tables (ts, value)
+# like Gear/ABS/TC, NOT 100 Hz or 10 Hz scalars: one row per change instead of
+# 360,000 identical rows per hour, the exact time of a mid-lap bias change, and
+# lap_cut seeds an event table's value at the start of a kept lap
+# (_seed_event), so a kept lap still knows its bias. (table, telem field, unit)
+SETTING_EVENT_FIELDS = (
+    ("Rear Brake Bias",             "mRearBrakeBias",              "fraction on rear"),
+    # Units are not documented in lmu_data.py; rFactor 2 used degrees lock to lock.
+    ("Steering Wheel Range",        "mPhysicalSteeringWheelRange", "deg (unverified)"),
+    ("Visual Steering Wheel Range", "mVisualSteeringWheelRange",   "deg (unverified)"),
+)
 
 
 # ── Shared-memory helpers ────────────────────────────────────────────────────
@@ -608,6 +632,7 @@ class SessionBuffer:
         self._last_abs:   float | None = None
         self._last_tc:    float | None = None
         self._last_pits:  float | None = None
+        self._last_setting: dict[str, float] = {}   # SETTING_EVENT_FIELDS
 
         # Game time at which the next 10 Hz row is due (see add_sample).
         self._next_slow_et: float = session_et_start
@@ -729,6 +754,9 @@ class SessionBuffer:
                 # Marks files that carry Pos Y / Ori R* / Other Cars (the
                 # track-topography inputs); older files simply lack the key.
                 "PoseChannels":      "1",
+                # Marks files that carry Brake Pressure / Rear Brake Bias /
+                # Steering Wheel Range (11/26/2026); older files lack the key.
+                "InputChannels":     "1",
             })
 
         # ── HF extras, every sample ───────────────────────────────────────
@@ -803,6 +831,7 @@ class SessionBuffer:
         s["Susp Pos"].append(
             (wheels[0].mSuspensionDeflection, wheels[1].mSuspensionDeflection,
              wheels[2].mSuspensionDeflection, wheels[3].mSuspensionDeflection))
+        s["Brake Pressure"].append(tuple(w.mBrakePressure for w in wheels))   # raw
 
         # ── 10 Hz: scoring-sourced geometry + thermals ────────────────────
         # Gated by GAME TIME, not by sample count: the v4 recorder's
@@ -866,6 +895,13 @@ class SessionBuffer:
             self.tc_events.append((current_et, tc));    self._last_tc   = tc
         if ip != self._last_pits:
             self.pits_events.append((current_et, ip));  self._last_pits = ip
+        # Setup values: rows live in self.s (like Other Cars), so the safety
+        # copy carries them with no SPOOL_FIELDS change and an older copy
+        # simply has none.
+        for ch, attr, _ in SETTING_EVENT_FIELDS:
+            v = float(getattr(telem, attr))
+            if self._last_setting.get(ch) != v:
+                s[ch].append((current_et, v));  self._last_setting[ch] = v
 
         self.sample_count += 1
         self.tick         += 1
@@ -1080,6 +1116,9 @@ def write_session(buf: SessionBuffer, output_dir: Path) -> Path:
         _write_wheel("Tire Load",               hz, "N")
         _write_wheel("Tire Lateral Force",      hz, "N")
         _write_wheel("Tire Longitudinal Force", hz, "N")
+        # all-zero -> unpopulated_by_lmu (the _write_wheel rule), e.g. a car
+        # or game version that leaves the field empty
+        _write_wheel("Brake Pressure",          hz, BRAKE_PRESSURE_UNIT)
 
         # ── HF extras ─────────────────────────────────────────────────────────
         _write_scalar("Poll Time",             hz, "s")
@@ -1136,6 +1175,16 @@ def write_session(buf: SessionBuffer, output_dir: Path) -> Path:
         _write_event_scalar("ABS",   "",    buf.abs_events)
         _write_event_scalar("TC",    "",    buf.tc_events)
         _write_event_scalar("In Pits", "",  buf.pits_events)
+        # Setup events (SETTING_EVENT_FIELDS). Same all-zero rule as the wheel
+        # channels: a 0 bias or 0 deg lock is not a real setting, so a session
+        # whose only value is 0 is flagged unpopulated_by_lmu in eventsList and
+        # its table left empty. An empty list (a safety copy from before these
+        # channels) writes an empty table with the normal unit.
+        for _ch, _, _unit in SETTING_EVENT_FIELDS:
+            _rows = buf.s.get(_ch, [])
+            if _rows and not any(v for _, v in _rows):
+                _unit, _rows = "unpopulated_by_lmu", []
+            _write_event_scalar(_ch, _unit, _rows)
 
         print("    committing...", flush=True)
         _tc = time.monotonic()
@@ -1732,7 +1781,7 @@ def selftest(minutes: float) -> None:
     for c in ("GPS Time", "Pos X", "Pos Y", "Pos Z", "Ground Speed", "Steering Pos", "Throttle Pos",
               "Brake Pos", "Yaw Rate", "Engine RPM", "G Force Lat", "G Force Long", "G Force Vert"):
         s[c] = [random.random() for _ in range(n)]
-    for c in ("Wheel Speed", "Slip Angle", "Susp Pos"):
+    for c in ("Wheel Speed", "Slip Angle", "Susp Pos", "Brake Pressure"):
         s[c] = [tuple(random.random() for _ in range(4)) for _ in range(n)]
     for c in ("Grip Fraction", "Tire Load", "Tire Lateral Force", "Tire Longitudinal Force"):
         s[c] = [(0.0, 0.0, 0.0, 0.0)] * n

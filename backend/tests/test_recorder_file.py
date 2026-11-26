@@ -129,3 +129,72 @@ def test_channel_frequencies_are_readable(hf_file):
     assert freqs["GPS Time"] == pytest.approx(100.0, abs=0.01)
     assert freqs["Local Vel X"] == pytest.approx(100.0, abs=0.01)
     assert "Front Downforce" not in freqs   # all-zero in the fakes: flagged unpopulated
+
+
+# -- Driver-input channels (11/26/2026): Brake Pressure, Rear Brake Bias,
+# Steering Wheel Range. New recordings carry them; older files must still load.
+
+def _record(tmp_path, telem_over=None, wheel_pressure=None):
+    """Recorder file (3 laps as hf_file) with optional telem/wheel overrides."""
+    script = []
+    for i in range(600):
+        lap = 0 if i < 250 else (1 if i < 500 else 2)
+        over = dict(telem_over(i) if telem_over else {})
+        if wheel_pressure is not None:
+            over["mWheels"] = [fakes.fake_wheel(mBrakePressure=p) for p in wheel_pressure(i)]
+        script.append((fakes.fake_telem(et=100.0 + i * 0.01, lap=lap, pos_x=float(i), **over),
+                       fakes.fake_scor(mLastLapTime=60.0)))
+    fakes.FakeMMap.script = script
+    real = hf.MMapControl
+    hf.MMapControl = fakes.FakeMMap
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            hf.run_recorder(tmp_path, 2000.0)
+    finally:
+        hf.MMapControl = real
+    (path,) = tmp_path.glob("*.duckdb")
+    return path
+
+
+def test_input_channels_load_per_lap(tmp_path):
+    path = _record(
+        tmp_path,
+        # bias moved from 0.44 to 0.47 during lap 1 (i = 300 -> et 103.0)
+        telem_over=lambda i: {"mRearBrakeBias": 0.44 if i < 300 else 0.47},
+        wheel_pressure=lambda i: (0.9, 0.9, 0.6, 0.6) if 50 <= i < 150 else (0.0,) * 4)
+    with contextlib.redirect_stdout(io.StringIO()):
+        laps = {l.lap_number: l for l in telemetry.load_telemetry_file(path)}
+    ch0, ch1 = laps[0].channels, laps[1].channels
+    for w in ("FL", "FR", "RL", "RR"):
+        assert f"Brake Pressure {w}" in ch0
+    assert np.nanmax(ch0["Brake Pressure FL"]) == pytest.approx(0.9)
+    assert np.nanmax(ch0["Brake Pressure RR"]) == pytest.approx(0.6)
+    # step-held events: lap 0 all 0.44; lap 1 starts at 0.44, ends at 0.47
+    assert np.all(ch0["Rear Brake Bias"] == pytest.approx(0.44))
+    assert ch1["Rear Brake Bias"][0] == pytest.approx(0.44)
+    assert ch1["Rear Brake Bias"][-1] == pytest.approx(0.47)
+    assert np.all(ch1["Steering Wheel Range"] == pytest.approx(400.0))
+    assert np.all(ch1["Visual Steering Wheel Range"] == pytest.approx(360.0))
+    assert laps[0].meta["InputChannels"] == "1"
+
+
+def test_unpopulated_input_channels_are_left_out(tmp_path):
+    # fakes: mBrakePressure 0 on every wheel; here also bias and ranges 0
+    path = _record(tmp_path, telem_over=lambda i: {
+        "mRearBrakeBias": 0.0, "mPhysicalSteeringWheelRange": 0.0,
+        "mVisualSteeringWheelRange": 0.0})
+    with contextlib.redirect_stdout(io.StringIO()):
+        lap = telemetry.load_telemetry_file(path)[0]
+    assert not any(k.startswith("Brake Pressure") for k in lap.channels)
+    for k in ("Rear Brake Bias", "Steering Wheel Range", "Visual Steering Wheel Range"):
+        assert k not in lap.channels   # not a NaN column
+
+
+def test_a_file_without_the_input_channels_still_loads(tmp_path):
+    # synthetic_session writes an older-style file: none of the new tables
+    path = write_session(tmp_path / "old.duckdb")
+    with contextlib.redirect_stdout(io.StringIO()):
+        laps = telemetry.load_telemetry_file(path)
+    assert laps and "Brake Pos" in laps[0].channels
+    assert not any(k.startswith("Brake Pressure") for k in laps[0].channels)
+    assert "Rear Brake Bias" not in laps[0].channels

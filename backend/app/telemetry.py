@@ -95,6 +95,10 @@ WHEEL_CHANNELS = [
     "Surface Type",       # categorical code per wheel (see CATEGORICAL_CHANNELS)
     "Tire Lateral Force", # N; zero/flagged unpopulated on GT3
     "Ride Height",        # m per wheel; chase view's ground probe
+    # Recorder files from 11/26/2026 on (metadata InputChannels = "1"): raw
+    # mBrakePressure, 0-1 today; LMU says it will become kPa, so check the
+    # channelsList unit before comparing files. Flagged unpopulated when all 0.
+    "Brake Pressure",
 ]
 
 # Codes, not quantities: linear interpolation would invent surface types that
@@ -106,6 +110,20 @@ CATEGORICAL_CHANNELS = {"Surface Type"}
 EVENT_CHANNELS = [
     "ABS",
     "TC",
+]
+
+# Setup values the recorder logs on change (11/26/2026; recorder.py
+# SETTING_EVENT_FIELDS): rear brake bias (fraction on rear) and the steering
+# wheel's physical / visual range (degrees, unverified). Step-held onto the
+# grid like ABS/TC; the value before a lap's first change is the last one
+# logged before it (kept files are seeded with it by lap_cut._seed_event).
+# Unlike EVENT_CHANNELS, a table with no rows (flagged unpopulated_by_lmu in
+# eventsList, or a file without the table) gives NO channel rather than a
+# NaN column, so callers can test `in lap.channels`.
+SETTING_EVENT_CHANNELS = [
+    "Rear Brake Bias",
+    "Steering Wheel Range",
+    "Visual Steering Wheel Range",
 ]
 
 WHEEL_LABELS = ("FL", "FR", "RL", "RR")
@@ -639,6 +657,13 @@ def load_telemetry_file(
             event_series[ch] = _read_event(con, ch, fallback_freq_hz=freq, axes=axes)
         except duckdb.CatalogException:
             continue
+    for ch in SETTING_EVENT_CHANNELS:
+        try:
+            ts, vals, is_sparse = _read_event(con, ch, axes=axes)
+        except duckdb.CatalogException:
+            continue                 # older file / native export: no such table
+        if len(ts):
+            event_series[ch] = (ts, vals, is_sparse)
 
     lap_boundaries = _get_lap_boundaries(con)
     keep = kept_lap(meta)
