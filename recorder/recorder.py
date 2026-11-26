@@ -898,9 +898,13 @@ class SessionBuffer:
         # Setup values: rows live in self.s (like Other Cars), so the safety
         # copy carries them with no SPOOL_FIELDS change and an older copy
         # simply has none.
+        # BUG FIX (review 11/26/2026, Minor 1): NaN != NaN, so a NaN value
+        # looked like a change on EVERY tick (1000 rows for 1000 ticks, 360k
+        # rows/h). A NaN now equals the previous NaN: one row, like any value.
         for ch, attr, _ in SETTING_EVENT_FIELDS:
             v = float(getattr(telem, attr))
-            if self._last_setting.get(ch) != v:
+            last = self._last_setting.get(ch)
+            if last is None or (v != last and not (v != v and last != last)):
                 s[ch].append((current_et, v));  self._last_setting[ch] = v
 
         self.sample_count += 1

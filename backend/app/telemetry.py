@@ -646,7 +646,12 @@ def load_telemetry_file(
         try:
             freq = freqs.get(ch, 100.0)
             t, per_wheel = _read_wheel_channel(con, ch, freq, axes)
-            wheel_series[ch] = (t, per_wheel)
+            # PREVIOUSLY an empty table (e.g. Brake Pressure in a session
+            # converted from a safety copy made before 11/26/2026: real unit,
+            # no rows) became four all-NaN columns. Skip it like the settings,
+            # so `"Brake Pressure FL" in lap.channels` means there is data.
+            if len(t):
+                wheel_series[ch] = (t, per_wheel)
         except duckdb.CatalogException:
             continue
 

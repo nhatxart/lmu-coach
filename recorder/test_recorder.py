@@ -6,6 +6,7 @@ Run from the recorder\\ directory:
 
 import contextlib
 import io
+import math
 import tempfile
 import time
 import unittest
@@ -422,6 +423,19 @@ class WriteSessionTest(unittest.TestCase):
         self.assertEqual(q("Rear Brake Bias"), [(100.0, 0.44), (101.5, 0.46)])
         self.assertEqual(q("Steering Wheel Range"), [(100.0, 400.0)])
         self.assertEqual(q("Visual Steering Wheel Range"), [(100.0, 360.0)])
+
+    def test_a_nan_setting_is_one_row_not_one_per_tick(self):
+        # NaN != NaN: without care every tick would look like a change.
+        buf = new_buffer(et=100.0)
+        scor = fake_scor()
+        for i in range(1000):
+            et = 100.0 + i * 0.01
+            t = fake_telem(et=et, mRearBrakeBias=float("nan") if i < 600 else 0.45)
+            buf.add_sample(t, t.mWheels, scor, et)
+        rows = buf.s["Rear Brake Bias"]
+        self.assertEqual(len(rows), 2, rows[:5])
+        self.assertTrue(math.isnan(rows[0][1]))
+        self.assertEqual((round(rows[1][0], 6), rows[1][1]), (106.0, 0.45))
 
     def test_all_zero_setting_events_are_flagged_unpopulated(self):
         frames = [(100.0 + i * 0.01, fake_telem(

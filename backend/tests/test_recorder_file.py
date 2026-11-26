@@ -190,6 +190,33 @@ def test_unpopulated_input_channels_are_left_out(tmp_path):
         assert k not in lap.channels   # not a NaN column
 
 
+def test_an_old_spool_conversion_gets_no_nan_brake_pressure(tmp_path):
+    # A safety copy from before 11/26/2026 has no "Brake Pressure" rows, so the
+    # converted file has an EMPTY table with a real unit (not flagged).
+    buf = hf.SessionBuffer("Test Car #1", "Test Track", "Tester", origin_x=0.0,
+                           origin_z=0.0, poll_hz=1000.0, session_et_start=100.0)
+    buf.register_lap(0, 100.0)
+    for i in range(300):
+        et = 100.0 + i * 0.01
+        if i == 250:
+            buf.register_lap(1, et)
+        t = fakes.fake_telem(et=et, pos_x=float(i), mWheels=[
+            fakes.fake_wheel(mBrakePressure=0.5) for _ in range(4)])
+        buf.add_sample(t, t.mWheels, fakes.fake_scor(), et)
+    buf.s.pop("Brake Pressure")
+    with contextlib.redirect_stdout(io.StringIO()):
+        path = hf.write_session(buf, tmp_path)
+    con = duckdb.connect(str(path), read_only=True)
+    try:
+        assert con.execute('select count(*) from "Brake Pressure"').fetchone()[0] == 0
+    finally:
+        con.close()
+    with contextlib.redirect_stdout(io.StringIO()):
+        lap = telemetry.load_telemetry_file(path)[0]
+    assert not any(k.startswith("Brake Pressure") for k in lap.channels)
+    assert "Susp Pos FL" in lap.channels       # non-empty wheel tables still load
+
+
 def test_a_file_without_the_input_channels_still_loads(tmp_path):
     # synthetic_session writes an older-style file: none of the new tables
     path = write_session(tmp_path / "old.duckdb")
