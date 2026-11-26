@@ -118,8 +118,12 @@ def file_entry(path: Path, source: str) -> dict:
     except OSError as exc:
         return _error_entry(path, source, exc)
     hit = _CACHE.get(key)
-    if hit is not None and hit[0] == stamp and hit[1]["source"] == source:
-        return hit[1]
+    # PREVIOUSLY a hit also needed the same source, so a file asked for under
+    # two sources (the ideal-lap store and the index route, review M7) was
+    # re-read every time. The entry does not depend on the source except its
+    # own "source" field: another source gets a copy with that field set.
+    if hit is not None and hit[0] == stamp:
+        return hit[1] if hit[1]["source"] == source else {**hit[1], "source": source}
     try:
         entry = _read_entry(path, source)
     except Exception as exc:

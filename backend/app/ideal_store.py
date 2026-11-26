@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -296,20 +298,39 @@ class IdealStore:
     are injectable (the tests use synthetic ones)."""
 
     def __init__(self, root: str | Path, sessions_dirs: list, reducer=None, indexer=None,
-                 v3_peaks=_default_v3_peaks):
+                 v3_peaks=_default_v3_peaks, sources: list | None = None):
         self.root = Path(root)
         self.sessions_dirs = [Path(p) for p in sessions_dirs]
+        # The session-index source of each folder, as the app routes them: the
+        # first folder is "sessions", the others the kept-laps folder
+        # ("reference_laps"). PREVIOUSLY every file was indexed as "sessions",
+        # so the index route (reference_laps) and the store re-read each kept
+        # file in turn (review M7).
+        self.sources = list(sources) if sources else (
+            ["sessions"] + ["reference_laps"] * (len(self.sessions_dirs) - 1))
         self.cache_dir = self.root / "cache"
         self.reducer = reducer or (lambda p: load_reduction(p, self.cache_dir))
         if indexer is None:
-            from .session_index import file_entry
-            indexer = lambda p: file_entry(p, "sessions")   # noqa: E731
+            from . import session_index
+            indexer = lambda p: session_index.file_entry(p, self.source_of(p))   # noqa: E731
         self.indexer = indexer
         self.v3_peaks = v3_peaks
         self.fits_done = 0                       # how many group fits ran (tests, ingest log)
         self._red = LRU(REDUCTIONS_IN_MEMORY)
 
     # ── files ────────────────────────────────────────────────────────────
+    def source_of(self, path) -> str:
+        """The session-index source of the folder `path` is in ("sessions" when
+        it is in none of them)."""
+        parent = Path(path).parent
+        for d, s in zip(self.sessions_dirs, self.sources):
+            try:
+                if parent == d or parent.resolve() == d.resolve():
+                    return s
+            except OSError:
+                continue
+        return "sessions"
+
     def _paths(self) -> list[Path]:
         out = []
         for d in self.sessions_dirs:
@@ -338,7 +359,10 @@ class IdealStore:
     def save_profile(self, prof: dict) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         p = self.profile_path(prof["car_model"])
-        tmp = p.with_suffix(".json.tmp")
+        # PREVIOUSLY one "<car>.json.tmp": two requests for the same car (two
+        # tabs, FastAPI's thread pool) could interleave on it (review M8). Fix:
+        # a tmp per process and thread; replace() is atomic, the last one wins.
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         tmp.write_text(json.dumps(C._jsonable(prof)), encoding="utf-8")
         tmp.replace(p)
 

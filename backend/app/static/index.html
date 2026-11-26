@@ -42,7 +42,7 @@
   /* lap comparison: your lap and up to four ghosts (CMP PALETTE / ME_COL in JS) */
   --ghost-1:#F472B6; --ghost-2:#A3E635; --ghost-3:#FB923C; --ghost-4:#A78BFA; --you:#E8ECF6;
 /* the ideal lap's ghost (CMP IDEAL_COL in JS) */
---ghost-ideal:#FDE047;
+--ghost-ideal:#67E8F9;
   /* type */
   --font-ui:'Fira Sans',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
   --font-data:'Fira Code',ui-monospace,'Cascadia Mono',Consolas,monospace;
@@ -440,7 +440,8 @@ canvas.cmp-tr.grabbing{cursor:grabbing;}
 /* a corner and its detail row read as one block: the line goes under the detail */
 .ideal-tbl tr[data-kind="corner"] th,.ideal-tbl tr[data-kind="corner"] td{border-bottom:none;padding-bottom:2px;}
 .ideal-tbl tr.ideal-detail td{padding-top:0;color:var(--text-2);font-family:var(--font-data);font-size:12px;}
-.ideal-tbl .over{color:var(--info);font-weight:600;cursor:help;}
+/* not --info: sky blue would sit next to the cyan ideal (--ghost-ideal) in the card */
+.ideal-tbl .over{color:var(--text);font-weight:700;text-decoration:underline dotted;text-underline-offset:2px;cursor:help;}
 .ideal-tbl tr.straight th,.ideal-tbl tr.straight td{color:var(--text-3);}
 .ideal-tbl .atlim{color:var(--text-3);}
 .ideal-tbl .xtra{color:var(--warn);cursor:help;}
@@ -3131,7 +3132,10 @@ const MAX_GHOSTS=PALETTE.length;
 // The ideal lap's ghost (:root --ghost-ideal). It is a ghost like the others
 // (list, delta, traces, map marker, chase view) but does not take one of the
 // four slots, is labelled "Ideal", and belongs to the lap it was built for.
-const IDEAL_COL='#FDE047';
+// PREVIOUSLY #FDE047 (yellow) next to the warn yellow in the card (review M6):
+// now cyan #67E8F9, none of the ghost slots, you, warn, throttle or brake;
+// 11.8:1 on --surface-2. Keep in sync with :root --ghost-ideal and DESIGN.md.
+const IDEAL_COL='#67E8F9';
 const GREY='rgba(120,132,156,0.32)';
 const EST='Estimate from 10 Hz position and game lap distance';
 const ANCHOR_S=1;      // seconds before your closing line over which the delta joins the official lap-time difference (attach)
@@ -3929,7 +3933,10 @@ async function addIdeal(){
   let res=null,err=null;
   try{
     const r=await fetch(`/sessions/${src}/${encodeURIComponent(file)}/ideal-lap?lap_number=${lap}`,{signal:req.ctrl.signal});
-    if(!r.ok)throw new Error(await r.text());
+    // PREVIOUSLY the raw body: a 404/422 read 'Could not compute the ideal lap:
+    // {"detail":"..."}' (review M5). FastAPI's detail text when there is one.
+    if(!r.ok){const t=await r.text();let m=t;try{m=JSON.parse(t).detail||t;}catch(e){}
+      throw new Error(typeof m==='string'?m:JSON.stringify(m));}
     res=await r.json();
   }catch(x){err=x;}
   // cancelled, or your lap changed (onMainLap ended it): dropped without a word
@@ -3955,6 +3962,8 @@ function renderIdeal(keepMsg){
   const busy=!!st.idealReq,I=st.ideal;
   btn.setAttribute('aria-busy',busy?'true':'false');
   btn.disabled=!S.file;
+  // a keyboard user waiting on Cancel would fall to <body> when it hides (review M2)
+  if(!busy&&document.activeElement===cancel)btn.focus();
   cancel.hidden=!busy;
   ref.textContent=S.file&&S.lap!=null?`your line: L${S.lap}`:'';
   if(busy){
@@ -3975,8 +3984,10 @@ function renderIdeal(keepMsg){
       ['',`${a==='front'?'Front':'Rear'}: the model disagrees with your measured limit at ${Math.round(100*c)} % of the points held to your speed`]);});
   const xc=(r.corners||[]).filter(c=>c.extrapolated);
   if(xc.length)notes.push(['warn',`${xc.map(idealCornerName).join(', ')}: faster than this car was ever seen at its limit (marked *): an extrapolation`]);
-  if(r.public_check==='faster_than_public_best')notes.push(['warn','Faster than the public best for this car: almost surely a model error']);
-  (f.notes||[]).forEach(t=>{if(!/^transferred/.test(t))notes.push([/differs|varies|capped|assumed|default/.test(t)?'warn':'',t]);});
+  // PREVIOUSLY the card added its own "faster than the public best" note while
+  // the server's fit.notes carries the same warning: listed twice (review M1).
+  // The server's note is shown, as a warning.
+  (f.notes||[]).forEach(t=>{if(!/^transferred/.test(t))notes.push([/differs|varies|capped|assumed|default|public best/.test(t)?'warn':'',t]);});
   const confTxt=conf==='low'?'Low confidence':conf==='high'?'High confidence':'Medium confidence';
   const scope=f.scope==='car'?'car fit, other tracks':'fit on this track';
   let h=`<p class="ideal-head" id="ideal-head">At least <b>${fmtGain(i.gain_min_s)} s</b>, expected <b>${fmtGain(i.gain_s)} s</b></p>`+
@@ -4013,7 +4024,7 @@ function renderIdeal(keepMsg){
     return`<tr data-kind="corner"><th scope="row" id="${id}">${zoom}<div class="sub">${where}</div></th>`+
       `<td class="num">${t}</td>`+
       `<td><span title="${escHtml(IDEAL_LIMIT_WHY[c.binding]||'')}">${lim}</span>${x}</td></tr>`+
-      `<tr class="ideal-detail"><td colspan="3" headers="${id}">Grip used F ${gripHtml(c.u_front_ref)} · R ${gripHtml(c.u_rear_ref)}<span title="Each tyre's share of its axle's load at the ideal's slowest point">${lsTxt}</span></td></tr>`;
+      `<tr class="ideal-detail"><td colspan="3" headers="${id}">Grip used F ${gripHtml(c.u_front_ref)} · R ${gripHtml(c.u_rear_ref)}<span title="Each tyre's share of its axle's load on your lap, where the ideal is slowest">${lsTxt}</span></td></tr>`;
   }).join('');
   h+=`<div class="ideal-tbl-wrap" role="region" aria-label="Ideal lap per corner"><table class="ideal-tbl" id="ideal-table">`+
     `<caption>Time off your lap per corner, in seconds</caption>`+
@@ -4771,7 +4782,9 @@ function buildGhosts(list,mode,dl){
     if(!group)group=ghostBox(col,contacts);
     group.rotation.order='YZX';group.name='ghost:'+g.id;
     scene.add(group);
-    const line=ghostLine(g,col,dl);if(line)scene.add(line);
+    // the ideal runs on YOUR line: its line would sit on top of yours (the 2D
+    // map skips it too; review M3)
+    const line=g.ideal?null:ghostLine(g,col,dl);if(line)scene.add(line);
     ghostObjs.push({g,group,line,contacts,kind,fMe:0});
   });
 }
@@ -5643,7 +5656,7 @@ function state(){
     marker:car&&carRig&&!carRig.visible?'car':'chevron',
     carModel:car?{cls:car.cls,source:car.source,wheelbase:car.dims.wheelbase}:null,
     wheelColours:car?['fl','fr','rl','rr'].map(k=>'#'+car.wheels[k].userData.material.color.getHexString()):null,
-    carBuilds:st.carBuilds,carDisposals:st.carDisposals,carFailed:st.carFailed,ghosts:ghostObjs.length,
+    carBuilds:st.carBuilds,carDisposals:st.carDisposals,carFailed:st.carFailed,ghosts:ghostObjs.length,ghostLines:ghostObjs.filter(o=>o.line).length,
     geometries:renderer?renderer.info.memory.geometries:0,
     limitsMask:st.limitsMask,limitFrames:st.limitFrames,
     placement:{h:place.h,pitch:place.pitch,roll:place.roll},contacts:contacts(),forwardYaw:forwardYaw(),

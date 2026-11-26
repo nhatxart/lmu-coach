@@ -14,6 +14,7 @@
 | Text | `--text #E8ECF6` · `--text-2 #B4BED3` · `--text-3 #8E9AB5` (all ≥ 4.5:1 on every surface) |
 | Brand / state | `--accent #2EE6A0` · `--ring #7DD3FC` (focus) · `--danger #FF6B6B` · `--warn #FBBF24` |
 | Data series | speed `#38BDF8` · brake `#FF6B6B` · throttle `#2DD4A7` · steering `#94A3B8` · ABS `#C4A1FF` · TC `#FBBF24` · yaw `#FB923C` · understeer `#60A5FA` · oversteer `#FB923C` (all ≥ 3:1) |
+| Lap comparison (Compare tab) | you `--you #E8ECF6` · ghost slots `--ghost-1 #F472B6` (pink) · `--ghost-2 #A3E635` (lime) · `--ghost-3 #FB923C` (orange) · `--ghost-4 #A78BFA` (violet) · ideal lap `--ghost-ideal #67E8F9` (cyan, 11.8:1 on `--surface-2`; not yellow, so it never reads as `--warn`). Canvas literals: `PALETTE`, `ME_COL`, `IDEAL_COL` in the Compare script; change both places together |
 | Scale | 4px spacing grid · radii 8/10/14/18 · type 13/17/20/24/31px (the larger scale you asked for; nothing below 12px) |
 | Motion | 120/200/320ms, `cubic-bezier(.2,.8,.2,1)`; everything collapses under `prefers-reduced-motion` |
 

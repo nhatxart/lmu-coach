@@ -120,10 +120,12 @@ def install_fake_ideal_store(main_mod) -> None:
     def public_block(car_model, car_class, slug, layout_len_m, game_version, lap_time_s, ideal_s, ceiling_s):
         # IDEAL_LOW gets a public line (the real one reads public_laptimes.json, absent here)
         if state["low"]:
-            best = round(lap_time_s * 0.96, 3)
+            # x 0.99: slower than the ideal lap, so public_check fires (review M1)
+            best = round(lap_time_s * 0.99, 3)
             return ({"car_best_s": best, "class_ref_s": best, "patch": "1.4", "patch_match": True,
                      "driven_pct": round(100 * lap_time_s / best, 2), "ideal_pct": round(100 * ideal_s / best, 2),
-                     "band": "Midpack"}, "ok")
+                     "band": "Midpack"},
+                    "faster_than_public_best" if min(ideal_s, ceiling_s) < best * ideal_lap.PUBLIC_MARGIN else "ok")
         return real_public(car_model, car_class, slug, layout_len_m, game_version, lap_time_s, ideal_s, ceiling_s)
 
     real_build = ideal_lap.build_ideal_lap

@@ -19,7 +19,7 @@ from serve_for_ui import (CMP_B, IDEAL_DELAY_S, IDEAL_LOW, IDEAL_OK, IDEAL_REFUS
                           IDEAL_SLOW)
 
 LOADED = "() => S.mapData && document.getElementById('map-overlay').classList.contains('hidden')"
-IDEAL_COL = "#FDE047"
+IDEAL_COL = "#67E8F9"     # PREVIOUSLY #FDE047 (yellow, next to the warn yellow; review M6)
 HAS_IDEAL = "() => CMP.ghosts.some(g => g.ideal)"
 LIMIT_WORDS = {"front": "Front grip", "rear": "Rear grip", "brake": "Brakes", "traction": "Traction",
                "power": "Power", "measured": "At the limit already (kept your speed)",
@@ -234,6 +234,75 @@ def test_cancel_and_remove(page, ideal_server):
     page.locator('#cmp-list .cmp-row[data-ideal="1"] button').click()
     assert page.evaluate(HAS_IDEAL) is False and page.locator("#ideal-table").count() == 0
     assert page.errors == []
+
+
+# ── final-review fixes (M1, M2, M3, M5, M6) ──────────────────────────────────
+
+def test_the_public_best_warning_is_listed_once(page, ideal_server):
+    """M1: the server's note and the UI's own note said the same thing twice.
+    IDEAL_LOW's fake public best (lap x 0.99) is slower than the ideal lap."""
+    _open(page, ideal_server, IDEAL_LOW, 1)
+    _add_ideal(page)
+    assert _payload(page, IDEAL_LOW, 1)["public_check"] == "faster_than_public_best"
+    lis = page.locator("#cmp-ideal .ideal-notes li").all()
+    hits = [li for li in lis if "public best" in li.inner_text()]
+    assert len(hits) == 1 and "warn" in (hits[0].get_attribute("class") or "")
+    assert page.errors == []
+
+
+def test_focus_returns_to_the_button_when_the_request_ends(page, ideal_server):
+    """M2: Cancel is hidden when the request ends; focus must not fall to <body>."""
+    _open(page, ideal_server, IDEAL_SLOW, 1)
+    page.locator("#cmp-ideal-btn").click()
+    page.wait_for_function("() => document.getElementById('cmp-ideal-btn').getAttribute('aria-busy') === 'true'")
+    page.focus("#ideal-cancel")
+    page.wait_for_function(HAS_IDEAL, timeout=60000)
+    assert page.evaluate("document.activeElement.id") == "cmp-ideal-btn"
+    # and pressing Cancel from the keyboard leaves focus on the button too
+    _open(page, ideal_server, IDEAL_SLOW, 2)
+    page.locator("#cmp-ideal-btn").click()
+    page.wait_for_function("() => document.getElementById('cmp-ideal-btn').getAttribute('aria-busy') === 'true'")
+    page.focus("#ideal-cancel")
+    page.keyboard.press("Enter")
+    assert page.evaluate("document.activeElement.id") == "cmp-ideal-btn"
+    assert page.errors == []
+
+
+def test_the_chase_view_draws_no_line_for_the_ideal(page, ideal_server):
+    """M3: the ideal runs on your own line; the chase view drew it on top of yours."""
+    _open(page, ideal_server, IDEAL_OK, 1)
+    _add_ideal(page)
+    page.evaluate("([s, f, l]) => CMP.add(s, f, l)", ["sessions", CMP_B, 0])
+    page.wait_for_function("() => CMP.ghosts.length === 2")
+    page.get_by_role("radio", name="Chase", exact=True).click()
+    page.wait_for_function("() => window.Chase && Chase.state().built", timeout=30000)
+    page.evaluate("() => { const n = S.mapData.driven_line.x.length; S.playhead = 0.3; Chase.render(); }")
+    page.wait_for_function("() => Chase.state().ghosts === 2", timeout=10000)
+    assert page.evaluate("Chase.state().ghostLines") == 1        # the ordinary ghost only
+    assert page.errors == []
+
+
+def test_an_http_error_shows_its_message_not_json(page, ideal_server):
+    """M5: a 404/422 body {"detail": ...} was shown as raw JSON."""
+    _open(page, ideal_server, IDEAL_OK, 1)
+    page.route("**/ideal-lap?*", lambda r: r.fulfill(status=404, content_type="application/json",
+                                                      body='{"detail":"Session file not found"}'))
+    page.locator("#cmp-ideal-btn").click()
+    page.wait_for_function("() => document.getElementById('ideal-msg').textContent.includes('not found')")
+    msg = page.inner_text("#ideal-msg")
+    assert "Session file not found" in msg and "{" not in msg and "detail" not in msg
+
+
+def test_the_ideal_colour_is_the_token_and_not_yellow(page, ideal_server):
+    """M6: the canvas literal and the CSS token are the same colour, which is
+    none of the ghost slots, the warn yellow, throttle or brake."""
+    _open(page, ideal_server, IDEAL_OK, 1)
+    tok = page.evaluate("getComputedStyle(document.documentElement).getPropertyValue('--ghost-ideal').trim()")
+    others = page.evaluate("['--ghost-1','--ghost-2','--ghost-3','--ghost-4','--warn','--c-thr','--c-brk','--you']"
+                           ".map(v => getComputedStyle(document.documentElement).getPropertyValue(v).trim().toUpperCase())")
+    assert tok.upper() == IDEAL_COL.upper() and tok.upper() not in others
+    _add_ideal(page)
+    assert page.evaluate("CMP.ghosts.find(g => g.ideal).col").upper() == IDEAL_COL.upper()
 
 
 def test_keyboard(page, ideal_server):
