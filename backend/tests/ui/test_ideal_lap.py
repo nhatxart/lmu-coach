@@ -107,7 +107,12 @@ def test_corner_names_are_the_maps_labels(page, ideal_server):
     assert len(labels) >= 3                       # the map shows them
     names = page.eval_on_selector_all("#ideal-table tbody tr[data-kind='corner'] th button",
                                       "bs => bs.map(b => b.textContent.trim())")
-    assert names == ["T1/T2", "T3"]
+    # T1 and T2 are 70 m apart: since 11/26/2026 each has its own row (the
+    # server splits the bend at the map's labels; it was one row "T1/T2")
+    assert names == ["T1", "T2", "T3"]
+    d = _payload(page, IDEAL_OK, 1)
+    assert d["diagnostics"]["corner_source"] == "map_labels"
+    assert [c["name"] for c in d["corners"] if c["kind"] == "corner"] == names
     assert not any(re.fullmatch(r"C\d+", n) for n in names)
     assert page.errors == []
 
